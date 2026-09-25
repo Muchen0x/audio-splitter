@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Threading;
 using System.Windows.Forms;
 using NAudio.Wave;
@@ -10,12 +11,34 @@ namespace StereoSplitter
 {
     class Program
     {
+        internal const string MutexName = "StereoSplitter_GUI_SingleInstance";
+        internal const string ActivateEventName = "Local\\StereoSplitter_Activate";
+
         [STAThread]
         static void Main()
         {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm());
+            bool createdNew;
+            using (var mutex = new Mutex(true, MutexName, out createdNew))
+            {
+                if (!createdNew)
+                {
+                    // 已有实例: 发激活通知后退出
+                    try
+                    {
+                        using (var evt = EventWaitHandle.OpenExisting(ActivateEventName))
+                        {
+                            evt.Set();
+                        }
+                    }
+                    catch { }
+                    return;
+                }
+
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new MainForm());
+                GC.KeepAlive(mutex);
+            }
         }
     }
 
@@ -38,7 +61,16 @@ namespace StereoSplitter
         Button btnStart;
         TextBox txtLog;
         CheckBox chkMuteL, chkMuteR, chkMuteMaster;
+        CheckBox chkMinimizeToTray;
+        NotifyIcon trayIcon;
+        EventWaitHandle activateEvent;
+        bool exiting = false;
+        bool trayTipShown = false;
+        bool loadingSettings = true;
         float pendingGain = 1.0f;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool SetForegroundWindow(IntPtr hWnd);
 
         enum AppState { Ready, Starting, Running, Stopped, Failed }
         AppState state = AppState.Ready;
@@ -97,6 +129,8 @@ namespace StereoSplitter
             lblDot = new Label { Text = "●", Location = new Point(17, 260), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
             lblStatus = new Label { Text = "状态: 就绪", Location = new Point(37, 265), AutoSize = true, ForeColor = Color.Gray };
 
+            chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(335, 263), AutoSize = true };
+
             txtLog = new TextBox
             {
                 Location = new Point(15, 300),
@@ -108,11 +142,13 @@ namespace StereoSplitter
                 Font = new Font("Consolas", 9F)
             };
 
-            Controls.AddRange(new Control[] { lblL, cmbLeft, lblR, cmbRight, lblD, cmbDefault, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart, txtLog });
+            Controls.AddRange(new Control[] { lblL, cmbLeft, lblR, cmbRight, lblD, cmbDefault, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, chkMinimizeToTray, btnStart, txtLog });
 
             btnStart.Click += BtnStart_Click;
-            cmbLeft.SelectedIndexChanged += (s, e) => { if (!loadingDevices) BindChannelVolumeSync("[音量]"); };
-            cmbRight.SelectedIndexChanged += (s, e) => { if (!loadingDevices) BindChannelVolumeSync("[音量]"); };
+            chkMinimizeToTray.CheckedChanged += (s, e) => SaveSettings();
+            cmbLeft.SelectedIndexChanged += (s, e) => { if (!loadingDevices) { BindChannelVolumeSync("[音量]"); SaveSettings(); } };
+            cmbRight.SelectedIndexChanged += (s, e) => { if (!loadingDevices) { BindChannelVolumeSync("[音量]"); SaveSettings(); } };
+            cmbDefault.SelectedIndexChanged += (s, e) => { if (!loadingDevices) { BindDefaultVolumeSync("[音量]"); SaveSettings(); } };
             volLeft.Scroll += (s, e) =>
             {
                 lblVolLeft.Text = volLeft.Value + "%";
@@ -122,6 +158,7 @@ namespace StereoSplitter
                     try { syncLeftVol.MasterVolumeLevelScalar = volLeft.Value / 100f; }
                     catch (Exception ex) { Log("[错误] 同步左声道端点音量失败: " + ex.Message); }
                 }
+                SaveSettings();
             };
             volRight.Scroll += (s, e) =>
             {
@@ -132,6 +169,7 @@ namespace StereoSplitter
                     try { syncRightVol.MasterVolumeLevelScalar = volRight.Value / 100f; }
                     catch (Exception ex) { Log("[错误] 同步右声道端点音量失败: " + ex.Message); }
                 }
+                SaveSettings();
             };
             volMaster.Scroll += (s, e) =>
             {
@@ -143,6 +181,7 @@ namespace StereoSplitter
                     try { syncVol.MasterVolumeLevelScalar = volMaster.Value / 100f; }
                     catch (Exception ex) { Log("[错误] 同步端点音量失败: " + ex.Message); }
                 }
+                SaveSettings();
             };
             chkMuteMaster.CheckedChanged += (s, e) =>
             {
@@ -152,12 +191,14 @@ namespace StereoSplitter
                     try { syncVol.Mute = chkMuteMaster.Checked; }
                     catch { }
                 }
+                SaveSettings();
             };
             volGain.Scroll += (s, e) =>
             {
                 lblVolGain.Text = volGain.Value + "%";
                 pendingGain = volGain.Value / 100f;
                 if (engine != null) engine.SetGain(pendingGain);
+                SaveSettings();
             };
             chkMuteL.CheckedChanged += (s, e) =>
             {
@@ -166,6 +207,7 @@ namespace StereoSplitter
                     try { syncLeftVol.Mute = chkMuteL.Checked; }
                     catch { }
                 }
+                SaveSettings();
             };
             chkMuteR.CheckedChanged += (s, e) =>
             {
@@ -174,7 +216,11 @@ namespace StereoSplitter
                     try { syncRightVol.Mute = chkMuteR.Checked; }
                     catch { }
                 }
+                SaveSettings();
             };
+
+            LoadSettings();
+            InitTray();
 
             Load += MainForm_Load;
             FormClosing += MainForm_FormClosing;
@@ -218,7 +264,10 @@ namespace StereoSplitter
             chkMuteL.Enabled = !busy;
             chkMuteR.Enabled = !busy;
             chkMuteMaster.Enabled = !busy;
+            chkMinimizeToTray.Enabled = !busy;
             btnStart.Enabled = !busy;
+
+            if (trayIcon != null) trayIcon.Text = "Stereo Splitter - " + txt;
         }
 
         void MainForm_Load(object sender, EventArgs e)
@@ -230,7 +279,9 @@ namespace StereoSplitter
                 RecordRestoreTarget();
                 BindDefaultVolumeSync("[初始化]");
                 BindChannelVolumeSync("[初始化]");
+                ApplyIniVolumeOverrides();
                 SetAppState(AppState.Ready);
+                RegisterActivateHandler();
                 Log("[初始化] 就绪。在「默认输出」选择设备，点「开始分流」时自动完成配置。");
                 Log("[初始化] 提示: 默认输出设备不能与左右目标相同，否则会回环。");
             }
@@ -238,6 +289,10 @@ namespace StereoSplitter
             {
                 SetAppState(AppState.Failed);
                 Log("[错误] 初始化失败: " + ex.Message);
+            }
+            finally
+            {
+                loadingSettings = false;
             }
         }
 
@@ -282,7 +337,9 @@ namespace StereoSplitter
         {
             try
             {
-                var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                // 主音量绑定「默认输出」下拉选中项, 不是系统当前默认
+                if (cmbDefault.SelectedIndex < 0 || cmbDefault.SelectedIndex >= devices.Count) return;
+                var def = devices[cmbDefault.SelectedIndex];
 
                 if (syncDev == null || syncDev.ID != def.ID || syncVol == null)
                 {
@@ -352,6 +409,7 @@ namespace StereoSplitter
                         volMaster.Value = v;
                         lblVolMaster.Text = v + "%";
                         ApplyVolumes();
+                        SaveSettings();
                     }
                     if (chkMuteMaster.Checked != data.Muted)
                     {
@@ -441,6 +499,7 @@ namespace StereoSplitter
                     {
                         volLeft.Value = v;
                         lblVolLeft.Text = v + "%";
+                        SaveSettings();
                     }
                     if (chkMuteL.Checked != data.Muted) chkMuteL.Checked = data.Muted;
                     volSyncing = false;
@@ -462,6 +521,7 @@ namespace StereoSplitter
                     {
                         volRight.Value = v;
                         lblVolRight.Text = v + "%";
+                        SaveSettings();
                     }
                     if (chkMuteR.Checked != data.Muted) chkMuteR.Checked = data.Muted;
                     volSyncing = false;
@@ -562,6 +622,255 @@ namespace StereoSplitter
             }
         }
 
+        // ==================== 设置持久化 (exe 同目录 SplitterGUI.ini) ====================
+
+        string IniPath
+        {
+            get { return Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "SplitterGUI.ini"); }
+        }
+        Dictionary<string, string> settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        void LoadSettings()
+        {
+            settings.Clear();
+            try
+            {
+                if (File.Exists(IniPath))
+                {
+                    foreach (var line in File.ReadAllLines(IniPath))
+                    {
+                        int i = line.IndexOf('=');
+                        if (i <= 0) continue;
+                        settings[line.Substring(0, i).Trim()] = line.Substring(i + 1).Trim();
+                    }
+                }
+            }
+            catch { }
+
+            chkMinimizeToTray.Checked = GetInt("MinimizeToTray", 0) != 0;
+
+            int gain = Math.Max(0, Math.Min(200, GetInt("Gain", 100)));
+            volGain.Value = gain;
+            lblVolGain.Text = gain + "%";
+            pendingGain = gain / 100f;
+        }
+
+        int GetInt(string key, int def)
+        {
+            string s;
+            int v;
+            if (settings.TryGetValue(key, out s) && int.TryParse(s, out v)) return v;
+            return def;
+        }
+
+        string GetStr(string key)
+        {
+            string s;
+            settings.TryGetValue(key, out s);
+            return s;
+        }
+
+        string DeviceIdAt(int idx)
+        {
+            return (idx >= 0 && idx < devices.Count) ? devices[idx].ID : "";
+        }
+
+        void SaveSettings()
+        {
+            // 初始化阶段(读ini/Bind回读/覆盖回写)不落盘, 防止把ini冲成端点回读值
+            if (loadingSettings) return;
+            try
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine("MinimizeToTray=" + (chkMinimizeToTray.Checked ? 1 : 0));
+                sb.AppendLine("Gain=" + volGain.Value);
+                sb.AppendLine("DeviceLeft=" + DeviceIdAt(cmbLeft.SelectedIndex));
+                sb.AppendLine("DeviceRight=" + DeviceIdAt(cmbRight.SelectedIndex));
+                sb.AppendLine("DeviceDefault=" + DeviceIdAt(cmbDefault.SelectedIndex));
+                sb.AppendLine("VolumeLeft=" + volLeft.Value);
+                sb.AppendLine("VolumeRight=" + volRight.Value);
+                sb.AppendLine("VolumeMaster=" + volMaster.Value);
+                sb.AppendLine("MuteLeft=" + (chkMuteL.Checked ? 1 : 0));
+                sb.AppendLine("MuteRight=" + (chkMuteR.Checked ? 1 : 0));
+                sb.AppendLine("MuteMaster=" + (chkMuteMaster.Checked ? 1 : 0));
+                File.WriteAllText(IniPath, sb.ToString());
+            }
+            catch { }
+        }
+
+        void RestoreDeviceSelection(string key, NoWheelComboBox combo, string label)
+        {
+            string id = GetStr(key);
+            if (string.IsNullOrEmpty(id)) return;
+            int idx = devices.FindIndex(d => d.ID == id);
+            if (idx >= 0) combo.SelectedIndex = idx;
+            else Log("[初始化] 未找到已保存的" + label + "设备，使用默认选择");
+        }
+
+        void RestoreEndpointVolume(AudioEndpointVolume ep, TrackBar slider, Label lbl, int iniVal, string name)
+        {
+            if (ep == null) return;
+            try
+            {
+                ep.MasterVolumeLevelScalar = iniVal / 100f;
+            }
+            catch (Exception ex)
+            {
+                Log("[错误] 恢复" + name + "音量到端点失败: " + ex.Message);
+                try
+                {
+                    int real = Math.Max(0, Math.Min(100, (int)Math.Round(ep.MasterVolumeLevelScalar * 100)));
+                    slider.Value = real;
+                    lbl.Text = real + "%";
+                    Log("[提示] " + name + "音量回退为端点实际值 " + real + "%");
+                }
+                catch { }
+            }
+        }
+
+        void ApplyIniVolumeOverrides()
+        {
+            bool any = false;
+            volSyncing = true;
+            try
+            {
+                if (settings.ContainsKey("VolumeMaster"))
+                {
+                    int v = Math.Max(0, Math.Min(100, GetInt("VolumeMaster", 100)));
+                    volMaster.Value = v;
+                    lblVolMaster.Text = v + "%";
+                    RestoreEndpointVolume(syncVol, volMaster, lblVolMaster, v, "主");
+                    any = true;
+                }
+                if (settings.ContainsKey("MuteMaster"))
+                {
+                    bool m = GetInt("MuteMaster", 0) != 0;
+                    chkMuteMaster.Checked = m;
+                    if (syncVol != null)
+                    {
+                        try { syncVol.Mute = m; }
+                        catch (Exception ex)
+                        {
+                            Log("[错误] 恢复主静音失败: " + ex.Message);
+                            try { chkMuteMaster.Checked = syncVol.Mute; } catch { }
+                        }
+                    }
+                    any = true;
+                }
+                if (settings.ContainsKey("VolumeLeft"))
+                {
+                    int v = Math.Max(0, Math.Min(100, GetInt("VolumeLeft", 100)));
+                    volLeft.Value = v;
+                    lblVolLeft.Text = v + "%";
+                    RestoreEndpointVolume(syncLeftVol, volLeft, lblVolLeft, v, "左");
+                    any = true;
+                }
+                if (settings.ContainsKey("MuteLeft"))
+                {
+                    bool m = GetInt("MuteLeft", 0) != 0;
+                    chkMuteL.Checked = m;
+                    if (syncLeftVol != null)
+                    {
+                        try { syncLeftVol.Mute = m; }
+                        catch (Exception ex)
+                        {
+                            Log("[错误] 恢复左静音失败: " + ex.Message);
+                            try { chkMuteL.Checked = syncLeftVol.Mute; } catch { }
+                        }
+                    }
+                    any = true;
+                }
+                if (settings.ContainsKey("VolumeRight"))
+                {
+                    int v = Math.Max(0, Math.Min(100, GetInt("VolumeRight", 100)));
+                    volRight.Value = v;
+                    lblVolRight.Text = v + "%";
+                    RestoreEndpointVolume(syncRightVol, volRight, lblVolRight, v, "右");
+                    any = true;
+                }
+                if (settings.ContainsKey("MuteRight"))
+                {
+                    bool m = GetInt("MuteRight", 0) != 0;
+                    chkMuteR.Checked = m;
+                    if (syncRightVol != null)
+                    {
+                        try { syncRightVol.Mute = m; }
+                        catch (Exception ex)
+                        {
+                            Log("[错误] 恢复右静音失败: " + ex.Message);
+                            try { chkMuteR.Checked = syncRightVol.Mute; } catch { }
+                        }
+                    }
+                    any = true;
+                }
+            }
+            finally
+            {
+                volSyncing = false;
+            }
+
+            if (any)
+                Log("[初始化] 设置已加载: 主=" + volMaster.Value + "%/" + (chkMuteMaster.Checked ? "静音" : "开") +
+                    " 左=" + volLeft.Value + "%/" + (chkMuteL.Checked ? "静音" : "开") +
+                    " 右=" + volRight.Value + "%/" + (chkMuteR.Checked ? "静音" : "开") +
+                    " 增益=" + volGain.Value + "%");
+        }
+
+        // ==================== 托盘与单实例激活 ====================
+
+        void InitTray()
+        {
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("显示主窗口", null, (s, e) => RestoreFromTray());
+            menu.Items.Add("退出", null, (s, e) => { exiting = true; Close(); });
+
+            trayIcon = new NotifyIcon();
+            trayIcon.Icon = this.Icon != null ? this.Icon : SystemIcons.Application;
+            trayIcon.Text = "Stereo Splitter - 就绪";
+            trayIcon.ContextMenuStrip = menu;
+            trayIcon.Visible = true;
+            trayIcon.MouseDoubleClick += (s, e) => { if (e.Button == MouseButtons.Left) RestoreFromTray(); };
+        }
+
+        void HideToTray()
+        {
+            ShowInTaskbar = false;
+            Hide();
+            if (!trayTipShown)
+            {
+                trayTipShown = true;
+                try { trayIcon.ShowBalloonTip(3000, "Stereo Splitter", "已最小化到托盘，双击图标恢复窗口", ToolTipIcon.Info); }
+                catch { }
+            }
+        }
+
+        void RestoreFromTray()
+        {
+            if (!ShowInTaskbar) ShowInTaskbar = true;
+            if (!Visible) Show();
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            Activate();
+            SetForegroundWindow(Handle);
+        }
+
+        void RegisterActivateHandler()
+        {
+            try
+            {
+                activateEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ActivateEventName);
+                ThreadPool.RegisterWaitForSingleObject(activateEvent, delegate(object state, bool timedOut)
+                {
+                    try
+                    {
+                        if (IsHandleCreated && !IsDisposed)
+                            BeginInvoke(new Action(delegate { RestoreFromTray(); }));
+                    }
+                    catch { }
+                }, null, -1, true);
+            }
+            catch { }
+        }
+
         void RefreshDevices()
         {
             loadingDevices = true;
@@ -587,6 +896,12 @@ namespace StereoSplitter
                 if (cmbLeft.Items.Count > 0) cmbLeft.SelectedIndex = 0;
                 if (cmbRight.Items.Count > 1) cmbRight.SelectedIndex = 1;
                 if (cmbDefault.Items.Count > 0) cmbDefault.SelectedIndex = defIdx >= 0 ? defIdx : 0;
+
+                // 恢复 ini 保存的设备选择 (按设备 ID, 找不到则保留上面的默认)
+                RestoreDeviceSelection("DeviceLeft", cmbLeft, "左");
+                RestoreDeviceSelection("DeviceRight", cmbRight, "右");
+                RestoreDeviceSelection("DeviceDefault", cmbDefault, "默认输出");
+
                 Log("[初始化] 发现 " + devices.Count + " 个输出设备，默认输出: [" + defIdx + "] " + def.FriendlyName);
             }
             finally
@@ -694,6 +1009,14 @@ namespace StereoSplitter
 
         void MainForm_FormClosing(object sender, FormClosingEventArgs e)
         {
+            // 用户点×且勾选「关闭时最小化到托盘」→ 藏到托盘, 分流继续 (关机等系统关闭不拦截)
+            if (!exiting && chkMinimizeToTray.Checked && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                HideToTray();
+                return;
+            }
+
             StopEngine();
 
             // 恢复默认输出
@@ -721,6 +1044,19 @@ namespace StereoSplitter
             }
             UnbindChannel(ref syncLeftDev, ref syncLeftVol, LeftVol_OnVolumeNotification);
             UnbindChannel(ref syncRightDev, ref syncRightVol, RightVol_OnVolumeNotification);
+
+            SaveSettings();
+            if (activateEvent != null)
+            {
+                try { activateEvent.Close(); } catch { }
+                activateEvent = null;
+            }
+            if (trayIcon != null)
+            {
+                trayIcon.Visible = false;
+                trayIcon.Dispose();
+                trayIcon = null;
+            }
         }
 
         delegate void LogDelegate(string msg);
