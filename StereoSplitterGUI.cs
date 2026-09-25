@@ -22,11 +22,12 @@ namespace StereoSplitter
     class MainForm : Form
     {
         ComboBox cmbLeft, cmbRight;
-        TrackBar volLeft, volRight, volMaster;
-        Label lblVolLeft, lblVolRight, lblVolMaster;
+        TrackBar volLeft, volRight, volMaster, volGain;
+        Label lblVolLeft, lblVolRight, lblVolMaster, lblVolGain;
         Button btnStart;
         TextBox txtLog;
         CheckBox chkMuteL, chkMuteR;
+        float pendingGain = 1.0f;
 
         List<MMDevice> devices = new List<MMDevice>();
         MMDeviceEnumerator enumerator;
@@ -37,8 +38,8 @@ namespace StereoSplitter
         public MainForm()
         {
             Text = "Stereo Splitter - 双声道分流";
-            Size = new Size(520, 570);
-            MinimumSize = new Size(520, 570);
+            Size = new Size(520, 615);
+            MinimumSize = new Size(520, 615);
             Font = new Font("Microsoft YaHei UI", 9F);
 
             var lblL = new Label { Text = "左声道设备:", Location = new Point(15, 15), AutoSize = true };
@@ -61,11 +62,15 @@ namespace StereoSplitter
             volMaster = new TrackBar { Location = new Point(80, 145), Width = 300, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
             lblVolMaster = new Label { Text = "100%", Location = new Point(390, 150), AutoSize = true };
 
-            btnStart = new Button { Text = "开始分流", Location = new Point(190, 185), Width = 130, Height = 35 };
+            var lblG = new Label { Text = "增益:", Location = new Point(15, 185), AutoSize = true };
+            volGain = new TrackBar { Location = new Point(80, 180), Width = 300, Minimum = 0, Maximum = 200, Value = 100, TickFrequency = 10 };
+            lblVolGain = new Label { Text = "100%", Location = new Point(390, 185), AutoSize = true };
+
+            btnStart = new Button { Text = "开始分流", Location = new Point(190, 220), Width = 130, Height = 35 };
 
             txtLog = new TextBox
             {
-                Location = new Point(15, 230),
+                Location = new Point(15, 265),
                 Size = new Size(475, 265),
                 Multiline = true,
                 ReadOnly = true,
@@ -74,12 +79,18 @@ namespace StereoSplitter
                 Font = new Font("Consolas", 9F)
             };
 
-            Controls.AddRange(new Control[] { lblL, cmbLeft, lblR, cmbRight, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, btnStart, txtLog });
+            Controls.AddRange(new Control[] { lblL, cmbLeft, lblR, cmbRight, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, lblG, volGain, lblVolGain, btnStart, txtLog });
 
             btnStart.Click += BtnStart_Click;
             volLeft.Scroll += (s, e) => { lblVolLeft.Text = volLeft.Value + "%"; ApplyVolumes(); };
             volRight.Scroll += (s, e) => { lblVolRight.Text = volRight.Value + "%"; ApplyVolumes(); };
             volMaster.Scroll += (s, e) => { lblVolMaster.Text = volMaster.Value + "%"; ApplyVolumes(); };
+            volGain.Scroll += (s, e) =>
+            {
+                lblVolGain.Text = volGain.Value + "%";
+                pendingGain = volGain.Value / 100f;
+                if (engine != null) engine.SetGain(pendingGain);
+            };
             chkMuteL.CheckedChanged += (s, e) => ApplyVolumes();
             chkMuteR.CheckedChanged += (s, e) => ApplyVolumes();
 
@@ -162,6 +173,7 @@ namespace StereoSplitter
             {
                 engine = new AudioEngine(devices[cmbLeft.SelectedIndex], devices[rightIdxSafe()], Log);
                 engine.Start();
+                engine.SetGain(pendingGain);
                 running = true;
                 btnStart.Text = "停止分流";
                 ApplyVolumes();
@@ -219,6 +231,7 @@ namespace StereoSplitter
         WasapiLoopbackCapture loopback;
         WasapiOut leftOut, rightOut;
         BufferedWaveProvider leftBuf, rightBuf;
+        AlwaysFullProvider leftProvider, rightProvider;
         MMDevice leftDev, rightDev;
         Action<string> log;
 
@@ -244,8 +257,10 @@ namespace StereoSplitter
 
             leftOut = new WasapiOut(leftDev, AudioClientShareMode.Shared, true, 50);
             rightOut = new WasapiOut(rightDev, AudioClientShareMode.Shared, true, 50);
-            leftOut.Init(new AlwaysFullProvider(leftBuf));
-            rightOut.Init(new AlwaysFullProvider(rightBuf));
+            leftProvider = new AlwaysFullProvider(leftBuf);
+            rightProvider = new AlwaysFullProvider(rightBuf);
+            leftOut.Init(leftProvider);
+            rightOut.Init(rightProvider);
 
             loopback.DataAvailable += (s, e) =>
             {
@@ -268,6 +283,12 @@ namespace StereoSplitter
         {
             if (leftOut != null) leftOut.Volume = l;
             if (rightOut != null) rightOut.Volume = r;
+        }
+
+        public void SetGain(float gain)
+        {
+            if (leftProvider != null) leftProvider.Gain = gain;
+            if (rightProvider != null) rightProvider.Gain = gain;
         }
 
         public void Stop()
@@ -314,8 +335,11 @@ namespace StereoSplitter
     {
         readonly BufferedWaveProvider src;
         readonly byte[] tmp = new byte[65536];
+        volatile float gain = 1.0f;
 
         public AlwaysFullProvider(BufferedWaveProvider src) { this.src = src; }
+
+        public float Gain { get { return gain; } set { gain = value; } }
 
         public WaveFormat WaveFormat { get { return src.WaveFormat; } }
 
@@ -325,7 +349,14 @@ namespace StereoSplitter
             want = Math.Min(want, src.BufferedBytes);
             int got = want > 0 ? src.Read(tmp, 0, want) : 0;
             int n = got / 4;
-            for (int i = 0; i < n; i++) samples[offset + i] = BitConverter.ToSingle(tmp, i * 4);
+            float g = gain;
+            for (int i = 0; i < n; i++)
+            {
+                float v = BitConverter.ToSingle(tmp, i * 4) * g;
+                if (v > 1f) v = 1f;
+                else if (v < -1f) v = -1f;
+                samples[offset + i] = v;
+            }
             for (int i = n; i < count; i++) samples[offset + i] = 0f;
             return count;
         }
