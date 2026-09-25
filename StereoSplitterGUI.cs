@@ -34,10 +34,14 @@ namespace StereoSplitter
         NoWheelComboBox cmbLeft, cmbRight, cmbDefault;
         TrackBar volLeft, volRight, volMaster, volGain;
         Label lblVolLeft, lblVolRight, lblVolMaster, lblVolGain;
+        Label lblDot, lblStatus;
         Button btnStart;
         TextBox txtLog;
         CheckBox chkMuteL, chkMuteR, chkMuteMaster;
         float pendingGain = 1.0f;
+
+        enum AppState { Ready, Starting, Running, Stopped, Failed }
+        AppState state = AppState.Ready;
 
         MMDevice syncDev;
         AudioEndpointVolume syncVol;
@@ -87,6 +91,9 @@ namespace StereoSplitter
 
             btnStart = new Button { Text = "开始分流", Location = new Point(190, 255), Width = 130, Height = 35 };
 
+            lblDot = new Label { Text = "●", Location = new Point(17, 260), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
+            lblStatus = new Label { Text = "状态: 就绪", Location = new Point(37, 265), AutoSize = true, ForeColor = Color.Gray };
+
             txtLog = new TextBox
             {
                 Location = new Point(15, 300),
@@ -98,7 +105,7 @@ namespace StereoSplitter
                 Font = new Font("Consolas", 9F)
             };
 
-            Controls.AddRange(new Control[] { lblL, cmbLeft, lblR, cmbRight, lblD, cmbDefault, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, btnStart, txtLog });
+            Controls.AddRange(new Control[] { lblL, cmbLeft, lblR, cmbRight, lblD, cmbDefault, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart, txtLog });
 
             btnStart.Click += BtnStart_Click;
             volLeft.Scroll += (s, e) => { lblVolLeft.Text = volLeft.Value + "%"; ApplyVolumes(); };
@@ -136,6 +143,47 @@ namespace StereoSplitter
             FormClosing += MainForm_FormClosing;
         }
 
+        void SetAppState(AppState s)
+        {
+            state = s;
+
+            string txt;
+            Color c;
+            switch (s)
+            {
+                case AppState.Starting:
+                    c = Color.Orange; txt = "启动中..."; break;
+                case AppState.Running:
+                    c = Color.LimeGreen; txt = "运行中"; break;
+                case AppState.Stopped:
+                    c = Color.Gray; txt = "已停止"; break;
+                case AppState.Failed:
+                    c = Color.Red; txt = "启动失败(见日志)"; break;
+                default:
+                    c = Color.Gray; txt = "就绪"; break;
+            }
+            lblDot.ForeColor = c;
+            lblStatus.ForeColor = c;
+            lblStatus.Text = "状态: " + txt;
+
+            running = (s == AppState.Running);
+            btnStart.Text = running ? "停止分流" : "开始分流";
+
+            bool busy = (s == AppState.Starting);
+            bool run = (s == AppState.Running);
+            cmbLeft.Enabled = !busy && !run;
+            cmbRight.Enabled = !busy && !run;
+            cmbDefault.Enabled = !busy && !run;
+            volLeft.Enabled = !busy;
+            volRight.Enabled = !busy;
+            volMaster.Enabled = !busy;
+            volGain.Enabled = !busy;
+            chkMuteL.Enabled = !busy;
+            chkMuteR.Enabled = !busy;
+            chkMuteMaster.Enabled = !busy;
+            btnStart.Enabled = !busy;
+        }
+
         void MainForm_Load(object sender, EventArgs e)
         {
             try
@@ -144,11 +192,13 @@ namespace StereoSplitter
                 RefreshDevices();
                 RecordRestoreTarget();
                 BindDefaultVolumeSync("[初始化]");
+                SetAppState(AppState.Ready);
                 Log("[初始化] 就绪。在「默认输出」选择设备，点「开始分流」时自动完成配置。");
                 Log("[初始化] 提示: 默认输出设备不能与左右目标相同，否则会回环。");
             }
             catch (Exception ex)
             {
+                SetAppState(AppState.Failed);
                 Log("[错误] 初始化失败: " + ex.Message);
             }
         }
@@ -398,20 +448,25 @@ namespace StereoSplitter
                 return;
             }
 
+            SetAppState(AppState.Starting);
+
             // 点击开始时自动配置: 设默认输出 + 重绑音量 + 自动选左右 + 回环检查
             if (!AutoConfigure())
             {
+                SetAppState(AppState.Failed);
                 MessageBox.Show("自动配置失败，已中止启动。\n详见日志。", "启动中止");
                 return;
             }
 
             if (cmbLeft.SelectedIndex < 0 || cmbRight.SelectedIndex < 0)
             {
+                SetAppState(AppState.Failed);
                 MessageBox.Show("请选择左右设备。", "提示");
                 return;
             }
             if (cmbLeft.SelectedIndex == cmbRight.SelectedIndex)
             {
+                SetAppState(AppState.Failed);
                 MessageBox.Show("左右设备不能相同。", "提示");
                 return;
             }
@@ -424,6 +479,7 @@ namespace StereoSplitter
                 for (int i = 0; i < devices.Count; i++)
                     if (i != cmbLeft.SelectedIndex && i != cmbRight.SelectedIndex)
                         others.Add("[" + i + "] " + devices[i].FriendlyName);
+                SetAppState(AppState.Failed);
                 MessageBox.Show(
                     "默认输出设备与目标设备相同，会造成声音回环！\n\n" +
                     "请先在 Windows 声音设置中把默认输出改为:\n" + string.Join("\n", others),
@@ -436,8 +492,7 @@ namespace StereoSplitter
                 engine = new AudioEngine(devices[cmbLeft.SelectedIndex], devices[rightIdxSafe()], Log);
                 engine.Start();
                 engine.SetGain(pendingGain);
-                running = true;
-                btnStart.Text = "停止分流";
+                SetAppState(AppState.Running);
                 ApplyVolumes();
                 Log("[启动] 分流已启动 (增益 " + (int)Math.Round(pendingGain * 100) + "%)");
             }
@@ -445,6 +500,7 @@ namespace StereoSplitter
             {
                 Log("[错误] 启动失败: " + ex.Message);
                 if (engine != null) { engine.Dispose(); engine = null; }
+                SetAppState(AppState.Failed);
                 MessageBox.Show("启动失败: " + ex.Message, "错误");
             }
         }
@@ -458,9 +514,11 @@ namespace StereoSplitter
                 try { engine.Stop(); engine.Dispose(); } catch { }
                 engine = null;
             }
-            running = false;
-            btnStart.Text = "开始分流";
-            Log("[停止] 分流已停止。");
+            if (state == AppState.Running || state == AppState.Starting)
+            {
+                SetAppState(AppState.Stopped);
+                Log("[停止] 分流已停止。");
+            }
         }
 
         void ApplyVolumes()
