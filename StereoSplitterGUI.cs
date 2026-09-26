@@ -106,6 +106,8 @@ namespace StereoSplitter
         // 左右声道进入时的原静音状态 (静音锁定 + 退出恢复, 与捕获消音对称)
         bool leftMuteEntered = false, leftMuteApplied = false;
         bool rightMuteEntered = false, rightMuteApplied = false;
+        // 绑定(启动分流)时的原端点音量, 停止/失败/退出时还原 (UI不回滚)
+        float captureVolEntered = 1f, leftVolEntered = 1f, rightVolEntered = 1f;
 
         List<MMDevice> devices = new List<MMDevice>();
         MMDeviceEnumerator enumerator;
@@ -561,6 +563,7 @@ namespace StereoSplitter
                     syncVol.OnVolumeNotification += SyncVol_OnVolumeNotification;
                     captureMuteEntered = syncVol.Mute;
                     captureMuteApplied = false;
+                    captureVolEntered = syncVol.MasterVolumeLevelScalar; // 原音量, 停止时还原
                     // 勾选跟人走: 换绑后新设备立即消音 (旧设备已按 applied 恢复原状态)
                     if (chkMuteCapture.Checked)
                     {
@@ -651,14 +654,14 @@ namespace StereoSplitter
             bool okR = BindOneChannel(stage, "右", cmbRight.SelectedIndex, ref syncRightDev, ref syncRightVol,
                 RightVol_OnVolumeNotification, volRight, lblVolRight, chkMuteR);
 
-            // 记录进入时原静音状态 (未被我们改过 → 解绑时无需恢复)
+            // 记录进入时原静音/原音量状态 (未被我们改过 → 解绑时无需恢复静音; 音量停止时无条件还原)
             if (syncLeftVol != null)
             {
-                try { leftMuteEntered = syncLeftVol.Mute; leftMuteApplied = false; } catch { }
+                try { leftMuteEntered = syncLeftVol.Mute; leftMuteApplied = false; leftVolEntered = syncLeftVol.MasterVolumeLevelScalar; } catch { }
             }
             if (syncRightVol != null)
             {
-                try { rightMuteEntered = syncRightVol.Mute; rightMuteApplied = false; } catch { }
+                try { rightMuteEntered = syncRightVol.Mute; rightMuteApplied = false; rightVolEntered = syncRightVol.MasterVolumeLevelScalar; } catch { }
             }
 
             if (cmbLeft.SelectedIndex >= 0 && cmbLeft.SelectedIndex == cmbRight.SelectedIndex)
@@ -1212,6 +1215,20 @@ namespace StereoSplitter
         {
             bool had = syncVol != null || syncLeftVol != null || syncRightVol != null;
             if (!had) return;
+
+            // 还原启动分流前的端点音量 (绑定时记录; 没调过则幂等写回同值; UI滑条不回滚)
+            if (syncVol != null)
+            {
+                try { syncVol.MasterVolumeLevelScalar = captureVolEntered; } catch { }
+            }
+            if (syncLeftVol != null)
+            {
+                try { syncLeftVol.MasterVolumeLevelScalar = leftVolEntered; } catch { }
+            }
+            if (syncRightVol != null)
+            {
+                try { syncRightVol.MasterVolumeLevelScalar = rightVolEntered; } catch { }
+            }
 
             // 恢复捕获设备进入时的原静音状态 (我们改过才恢复)
             if (captureMuteApplied && syncVol != null)
