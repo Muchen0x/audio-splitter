@@ -56,7 +56,6 @@ namespace StereoSplitter
     {
         NoWheelComboBox cmbLeft, cmbRight, cmbDefault, cmbLatency;
         NumericUpDown nudDelayL, nudDelayR;
-        CheckBox chkWaterLog;
         NumericUpDown nudWaterInterval;
         static readonly int[][] LatencyProfiles = new int[][] {
             new int[] { 100, 50 },
@@ -168,7 +167,7 @@ namespace StereoSplitter
             chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(435, 214), AutoSize = true };
 
             var lblG = new Label { Text = "增益:", Location = new Point(15, 250), AutoSize = true };
-            volGain = new TrackBar { Location = new Point(80, 245), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 200, Value = 100, TickFrequency = 10 };
+            volGain = new TrackBar { Location = new Point(80, 245), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 300, Value = 100, TickFrequency = 10 };
             lblVolGain = new Label { Text = "100%", Location = new Point(390, 250), AutoSize = true };
 
             btnStart = new Button { Text = "开始分流", Location = new Point(190, 285), Width = 130, Height = 35 };
@@ -183,14 +182,13 @@ namespace StereoSplitter
 
             chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(290, 107), AutoSize = true };
 
-            // 水位监控组: 在日志面板标题行, 清除日志按钮左边
-            var lblWater = new Label { Text = "水位监控:", Location = new Point(60, 8), AutoSize = true };
-            chkWaterLog = new CheckBox { Text = "启用", Location = new Point(135, 7), AutoSize = true };
-            var lblWaterIv = new Label { Text = "间隔", Location = new Point(192, 8), AutoSize = true };
-            nudWaterInterval = new NumericUpDown { Location = new Point(227, 5), Width = 60, Minimum = 5, Maximum = 3600, Value = 30 };
-            var lblWaterSec = new Label { Text = "秒", Location = new Point(291, 8), AutoSize = true };
+            // 水位监控组: 日志面板标题行右侧, 清除日志按钮左边 (间隔0=关闭监控)
+            var lblWater = new Label { Text = "水位监控:", Location = new Point(209, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            var lblWaterIv = new Label { Text = "间隔", Location = new Point(275, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            nudWaterInterval = new NoWheelNumeric { Location = new Point(313, 5), Width = 60, Minimum = 0, Maximum = 3600, Value = 30, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            var lblWaterSec = new Label { Text = "秒", Location = new Point(377, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
 
-            var lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true };
+            var lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true, Font = new Font("Microsoft YaHei UI", 10F) };
             btnClearLog = new Button
             {
                 Text = "清除日志",
@@ -219,7 +217,7 @@ namespace StereoSplitter
             txtLog.ContextMenuStrip = cmsLog;
 
             splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblL, cmbLeft, lblDL, nudDelayL, lblMsL, lblR, cmbRight, lblDR, nudDelayR, lblMsR, lblLatency, cmbLatency, chkMinimizeToTray, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart });
-            splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, chkWaterLog, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
+            splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
 
             btnStart.Click += BtnStart_Click;
             btnRefresh.Click += (s, e) => RefreshDevicesClick();
@@ -232,10 +230,17 @@ namespace StereoSplitter
             cmbLatency.SelectedIndexChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudDelayL.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudDelayR.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
-            chkWaterLog.CheckedChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudWaterInterval.ValueChanged += (s, e) =>
             {
-                if (waterTimer != null) waterTimer.Interval = Math.Max(5, (int)nudWaterInterval.Value) * 1000;
+                if (waterTimer != null)
+                {
+                    if ((int)nudWaterInterval.Value == 0) waterTimer.Stop(); // 间隔0=关闭水位监控
+                    else
+                    {
+                        waterTimer.Interval = Math.Max(5, (int)nudWaterInterval.Value) * 1000;
+                        waterTimer.Start();
+                    }
+                }
                 if (!loadingSettings) SaveSettings();
             };
             cmbLeft.SelectedIndexChanged += (s, e) => { if (!loadingDevices) SaveSettings(); };
@@ -353,9 +358,9 @@ namespace StereoSplitter
             };
             waterTimer.Tick += (s, e) =>
             {
-                if (chkWaterLog.Checked && running && engine != null) Log("[状态] 缓冲水位 " + engine.BufferStatus());
+                if (running && engine != null && (int)nudWaterInterval.Value > 0) Log("[状态] 缓冲水位 " + engine.BufferStatus());
             };
-            waterTimer.Start();
+            if ((int)nudWaterInterval.Value > 0) waterTimer.Start();
 
             Load += MainForm_Load;
             FormClosing += MainForm_FormClosing;
@@ -405,7 +410,6 @@ namespace StereoSplitter
             cmbLatency.Enabled = !busy && !run;
             nudDelayL.Enabled = !busy && !run;
             nudDelayR.Enabled = !busy && !run;
-            chkWaterLog.Enabled = !busy;
             nudWaterInterval.Enabled = !busy;
             btnStart.Enabled = !busy;
 
@@ -814,10 +818,11 @@ namespace StereoSplitter
             cmbLatency.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("LatencyProfile", 0)));
             nudDelayL.Value = Math.Max(0, Math.Min(2000, GetInt("DelayLeft", 0)));
             nudDelayR.Value = Math.Max(0, Math.Min(2000, GetInt("DelayRight", 0)));
-            chkWaterLog.Checked = GetInt("WaterLogOn", 1) != 0;
-            nudWaterInterval.Value = Math.Max(5, Math.Min(3600, GetInt("WaterIntervalSec", 30)));
+            int wi = GetInt("WaterIntervalSec", 30);
+            if (wi != 0) wi = Math.Max(5, Math.Min(3600, wi)); // 0=关闭, 1-4 按 5 秒
+            nudWaterInterval.Value = wi;
 
-            int gain = Math.Max(0, Math.Min(200, GetInt("Gain", 100)));
+            int gain = Math.Max(0, Math.Min(300, GetInt("Gain", 100)));
             volGain.Value = gain;
             lblVolGain.Text = gain + "%";
             pendingGain = gain / 100f;
@@ -854,7 +859,6 @@ namespace StereoSplitter
                 sb.AppendLine("LatencyProfile=" + Math.Max(0, cmbLatency.SelectedIndex));
                 sb.AppendLine("DelayLeft=" + (int)nudDelayL.Value);
                 sb.AppendLine("DelayRight=" + (int)nudDelayR.Value);
-                sb.AppendLine("WaterLogOn=" + (chkWaterLog.Checked ? 1 : 0));
                 sb.AppendLine("WaterIntervalSec=" + (int)nudWaterInterval.Value);
                 sb.AppendLine("Gain=" + volGain.Value);
                 sb.AppendLine("DeviceLeft=" + DeviceIdAt(cmbLeft.SelectedIndex));
@@ -873,7 +877,6 @@ namespace StereoSplitter
                 settings["LatencyProfile"] = Math.Max(0, cmbLatency.SelectedIndex).ToString();
                 settings["DelayLeft"] = ((int)nudDelayL.Value).ToString();
                 settings["DelayRight"] = ((int)nudDelayR.Value).ToString();
-                settings["WaterLogOn"] = chkWaterLog.Checked ? "1" : "0";
                 settings["WaterIntervalSec"] = ((int)nudWaterInterval.Value).ToString();
                 settings["Gain"] = volGain.Value.ToString();
                 settings["DeviceLeft"] = DeviceIdAt(cmbLeft.SelectedIndex);
@@ -1404,11 +1407,64 @@ namespace StereoSplitter
         }
     }
 
-    // 不接受焦点的 SplitContainer: 点击/拖动分隔条不产生焦点框
+    // 鼠标滚轮不改值的 NumericUpDown (只允许手动输入/上下按钮)
+    class NoWheelNumeric : NumericUpDown
+    {
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+        }
+    }
+
+    // 不接受焦点的 SplitContainer: 点击/拖动分隔条不产生焦点虚线框
     class NoFocusSplitContainer : SplitContainer
     {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr GetFocus();
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr SetFocus(IntPtr hWnd);
+
+        IntPtr restoreFocus = IntPtr.Zero;
+
         protected override void Select(bool directed, bool forward)
         {
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.Style &= ~0x00010000; // WS_TABSTOP: 去掉样式, 焦点虚线框无从绘制
+                return cp;
+            }
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x0201)                       // WM_LBUTTONDOWN: child 能收到, 此刻记录旧焦点 (Focus 尚未发生)
+            {
+                restoreFocus = GetFocus();
+                base.WndProc(ref m);
+                return;
+            }
+            if (m.Msg == 0x0007)                       // WM_SETFOCUS: 焦点被抢到分隔条 → 立即还回
+            {
+                IntPtr target = (restoreFocus != IntPtr.Zero && restoreFocus != Handle) ? restoreFocus : IntPtr.Zero;
+                if (target == IntPtr.Zero)
+                {
+                    Form f = FindForm();
+                    if (f != null) target = f.Handle;  // 兜底还给窗体
+                }
+                if (target != IntPtr.Zero && target != Handle) SetFocus(target);
+                return;
+            }
+            if (m.Msg == 0x0021)                       // WM_MOUSEACTIVATE (顶层才收得到, 保留无害)
+            {
+                m.Result = (IntPtr)3;                  // MA_NOACTIVATE
+                return;
+            }
+            base.WndProc(ref m);
         }
     }
 
