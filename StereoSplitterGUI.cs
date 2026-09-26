@@ -54,7 +54,15 @@ namespace StereoSplitter
 
     class MainForm : Form
     {
-        NoWheelComboBox cmbLeft, cmbRight, cmbDefault;
+        NoWheelComboBox cmbLeft, cmbRight, cmbDefault, cmbLatency;
+        static readonly int[][] LatencyProfiles = new int[][] {
+            new int[] { 100, 50 },
+            new int[] { 50, 30 },
+            new int[] { 25, 20 },
+            new int[] { 15, 10 },
+            new int[] { 5, 5 },
+        };
+        System.Windows.Forms.Timer waterTimer;
         TrackBar volLeft, volRight, volMaster, volGain;
         Label lblVolLeft, lblVolRight, lblVolMaster, lblVolGain;
         Label lblDot, lblStatus;
@@ -92,8 +100,8 @@ namespace StereoSplitter
         public MainForm()
         {
             Text = "Stereo Splitter - 双声道分流";
-            Size = new Size(520, 655);
-            MinimumSize = new Size(520, 655);
+            Size = new Size(520, 690);
+            MinimumSize = new Size(520, 690);
             Font = new Font("Microsoft YaHei UI", 9F);
 
             var lblL = new Label { Text = "左声道设备:", Location = new Point(15, 15), AutoSize = true };
@@ -131,9 +139,15 @@ namespace StereoSplitter
 
             chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(335, 263), AutoSize = true };
 
+            var lblLatency = new Label { Text = "启动延迟:", Location = new Point(15, 298), AutoSize = true };
+            cmbLatency = new NoWheelComboBox { Location = new Point(110, 295), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbLatency.Items.AddRange(new object[] { "标准 (预缓冲100ms)", "低延迟 (50ms)", "极低 (25ms, 可能断音)", "超低 (15ms, 断音增多)", "极限 (5ms, 频繁断音)" });
+            cmbLatency.SelectedIndex = 0;
+            var lblLatencyHint = new Label { Text = "重启分流后生效", Location = new Point(320, 300), AutoSize = true, ForeColor = Color.Gray };
+
             txtLog = new TextBox
             {
-                Location = new Point(15, 300),
+                Location = new Point(15, 335),
                 Size = new Size(475, 265),
                 Multiline = true,
                 ReadOnly = true,
@@ -142,10 +156,11 @@ namespace StereoSplitter
                 Font = new Font("Consolas", 9F)
             };
 
-            Controls.AddRange(new Control[] { lblL, cmbLeft, lblR, cmbRight, lblD, cmbDefault, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, chkMinimizeToTray, btnStart, txtLog });
+            Controls.AddRange(new Control[] { lblL, cmbLeft, lblR, cmbRight, lblD, cmbDefault, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, chkMinimizeToTray, lblLatency, cmbLatency, lblLatencyHint, btnStart, txtLog });
 
             btnStart.Click += BtnStart_Click;
             chkMinimizeToTray.CheckedChanged += (s, e) => SaveSettings();
+            cmbLatency.SelectedIndexChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             cmbLeft.SelectedIndexChanged += (s, e) => { if (!loadingDevices) { BindChannelVolumeSync("[音量]"); SaveSettings(); } };
             cmbRight.SelectedIndexChanged += (s, e) => { if (!loadingDevices) { BindChannelVolumeSync("[音量]"); SaveSettings(); } };
             cmbDefault.SelectedIndexChanged += (s, e) => { if (!loadingDevices) { BindDefaultVolumeSync("[音量]"); SaveSettings(); } };
@@ -222,6 +237,13 @@ namespace StereoSplitter
             LoadSettings();
             InitTray();
 
+            waterTimer = new System.Windows.Forms.Timer { Interval = 30000 };
+            waterTimer.Tick += (s, e) =>
+            {
+                if (running && engine != null) Log("[状态] 缓冲水位 " + engine.BufferStatus());
+            };
+            waterTimer.Start();
+
             Load += MainForm_Load;
             FormClosing += MainForm_FormClosing;
         }
@@ -265,6 +287,7 @@ namespace StereoSplitter
             chkMuteR.Enabled = !busy;
             chkMuteMaster.Enabled = !busy;
             chkMinimizeToTray.Enabled = !busy;
+            cmbLatency.Enabled = !busy;
             btnStart.Enabled = !busy;
 
             if (trayIcon != null) trayIcon.Text = "Stereo Splitter - " + txt;
@@ -648,6 +671,7 @@ namespace StereoSplitter
             catch { }
 
             chkMinimizeToTray.Checked = GetInt("MinimizeToTray", 0) != 0;
+            cmbLatency.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("LatencyProfile", 0)));
 
             int gain = Math.Max(0, Math.Min(200, GetInt("Gain", 100)));
             volGain.Value = gain;
@@ -683,6 +707,7 @@ namespace StereoSplitter
             {
                 var sb = new System.Text.StringBuilder();
                 sb.AppendLine("MinimizeToTray=" + (chkMinimizeToTray.Checked ? 1 : 0));
+                sb.AppendLine("LatencyProfile=" + Math.Max(0, cmbLatency.SelectedIndex));
                 sb.AppendLine("Gain=" + volGain.Value);
                 sb.AppendLine("DeviceLeft=" + DeviceIdAt(cmbLeft.SelectedIndex));
                 sb.AppendLine("DeviceRight=" + DeviceIdAt(cmbRight.SelectedIndex));
@@ -966,7 +991,8 @@ namespace StereoSplitter
             try
             {
                 engine = new AudioEngine(devices[cmbLeft.SelectedIndex], devices[rightIdxSafe()], Log);
-                engine.Start(pendingGain, CurrentMaster());
+                int prof = cmbLatency.SelectedIndex < 0 ? 0 : cmbLatency.SelectedIndex;
+                engine.Start(pendingGain, CurrentMaster(), LatencyProfiles[prof][0], LatencyProfiles[prof][1]);
                 SetAppState(AppState.Running);
                 ApplyVolumes();
                 Log("[启动] 端点绑定: 主=" + DevInfo(syncDev) + " / 左=" + DevInfo(syncLeftDev) + " / 右=" + DevInfo(syncRightDev));
@@ -1048,6 +1074,12 @@ namespace StereoSplitter
             UnbindChannel(ref syncRightDev, ref syncRightVol, RightVol_OnVolumeNotification);
 
             SaveSettings();
+            if (waterTimer != null)
+            {
+                waterTimer.Stop();
+                waterTimer.Dispose();
+                waterTimer = null;
+            }
             if (activateEvent != null)
             {
                 try { activateEvent.Close(); } catch { }
@@ -1081,6 +1113,7 @@ namespace StereoSplitter
         AlwaysFullProvider leftProvider, rightProvider;
         MMDevice leftDev, rightDev;
         Action<string> log;
+        volatile int sampleRate;
 
         public AudioEngine(MMDevice leftDev, MMDevice rightDev, Action<string> log)
         {
@@ -1089,7 +1122,7 @@ namespace StereoSplitter
             this.log = log;
         }
 
-        public void Start(float gain, float master)
+        public void Start(float gain, float master, int prebufferMs, int outLatencyMs)
         {
             var enumerator = new MMDeviceEnumerator();
             var captureDev = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
@@ -1097,14 +1130,15 @@ namespace StereoSplitter
 
             loopback = new WasapiLoopbackCapture(captureDev);
             var wf = loopback.WaveFormat;
+            sampleRate = wf.SampleRate;
             log("[启动] 格式: " + wf.SampleRate + "Hz / " + wf.Encoding + " / " + wf.BitsPerSample + "bit / " + wf.Channels + "ch");
 
             var outFormat = WaveFormat.CreateIeeeFloatWaveFormat(wf.SampleRate, 1);
             leftBuf = new BufferedWaveProvider(outFormat) { BufferDuration = TimeSpan.FromMilliseconds(500), DiscardOnBufferOverflow = true };
             rightBuf = new BufferedWaveProvider(outFormat) { BufferDuration = TimeSpan.FromMilliseconds(500), DiscardOnBufferOverflow = true };
 
-            leftOut = new WasapiOut(leftDev, AudioClientShareMode.Shared, true, 50);
-            rightOut = new WasapiOut(rightDev, AudioClientShareMode.Shared, true, 50);
+            leftOut = new WasapiOut(leftDev, AudioClientShareMode.Shared, true, outLatencyMs);
+            rightOut = new WasapiOut(rightDev, AudioClientShareMode.Shared, true, outLatencyMs);
             leftProvider = new AlwaysFullProvider(leftBuf);
             rightProvider = new AlwaysFullProvider(rightBuf);
             // Play 之前设好增益/主音量, 否则首帧以满音量(1.0)出声造成跳变
@@ -1123,9 +1157,11 @@ namespace StereoSplitter
 
             loopback.StartRecording();
 
+            // 预缓冲字节数按采样率动态计算 (mono float32 = 4字节/样本)
+            int prebufferBytes = (int)((long)wf.SampleRate * prebufferMs * 4 / 1000);
             int waits = 0;
-            while (leftBuf.BufferedBytes < 19200 && waits < 100) { Thread.Sleep(20); waits++; }
-            log("[启动] 预缓冲完成 (" + leftBuf.BufferedBytes + " 字节)");
+            while (leftBuf.BufferedBytes < prebufferBytes && waits < 100) { Thread.Sleep(20); waits++; }
+            log("[启动] 预缓冲完成 (" + leftBuf.BufferedBytes + " 字节, 档位 " + prebufferMs + "ms / 输出 " + outLatencyMs + "ms)");
 
             leftOut.Play();
             rightOut.Play();
@@ -1144,6 +1180,18 @@ namespace StereoSplitter
         {
             if (leftProvider != null) leftProvider.Gain = gain;
             if (rightProvider != null) rightProvider.Gain = gain;
+        }
+
+        public string BufferStatus()
+        {
+            try
+            {
+                if (leftBuf == null || rightBuf == null || sampleRate <= 0) return "-";
+                int msL = leftBuf.BufferedBytes * 1000 / (sampleRate * 4);
+                int msR = rightBuf.BufferedBytes * 1000 / (sampleRate * 4);
+                return "L=" + msL + "ms R=" + msR + "ms";
+            }
+            catch { return "-"; }
         }
 
         public void Stop()
