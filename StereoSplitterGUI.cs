@@ -294,15 +294,15 @@ namespace StereoSplitter
             volLeft.Scroll += (s, e) =>
             {
                 lblVolLeft.Text = volLeft.Value + "%";
-                // 调音量即取消静音 (主动操作优先于勾选状态)
-                if (chkMuteL.Checked) chkMuteL.Checked = false;
+                // 音量到0自动勾选静音; 拖离0自动取消 (主动操作优先于勾选状态)
+                if (chkMuteL.Checked != (volLeft.Value == 0)) chkMuteL.Checked = volLeft.Value == 0;
                 // 双向同步: 写入左声道设备端点音量
                 if (!volSyncing && syncLeftVol != null)
                 {
                     try
                     {
                         syncLeftVol.MasterVolumeLevelScalar = volLeft.Value / 100f;
-                        if (syncLeftVol.Mute) syncLeftVol.Mute = false;
+                        if (volLeft.Value > 0 && syncLeftVol.Mute) syncLeftVol.Mute = false;
                     }
                     catch (Exception ex) { Log("[错误] 同步左声道端点音量失败: " + ex.Message); }
                 }
@@ -311,15 +311,15 @@ namespace StereoSplitter
             volRight.Scroll += (s, e) =>
             {
                 lblVolRight.Text = volRight.Value + "%";
-                // 调音量即取消静音 (主动操作优先于勾选状态)
-                if (chkMuteR.Checked) chkMuteR.Checked = false;
+                // 音量到0自动勾选静音; 拖离0自动取消 (主动操作优先于勾选状态)
+                if (chkMuteR.Checked != (volRight.Value == 0)) chkMuteR.Checked = volRight.Value == 0;
                 // 双向同步: 写入右声道设备端点音量
                 if (!volSyncing && syncRightVol != null)
                 {
                     try
                     {
                         syncRightVol.MasterVolumeLevelScalar = volRight.Value / 100f;
-                        if (syncRightVol.Mute) syncRightVol.Mute = false;
+                        if (volRight.Value > 0 && syncRightVol.Mute) syncRightVol.Mute = false;
                     }
                     catch (Exception ex) { Log("[错误] 同步右声道端点音量失败: " + ex.Message); }
                 }
@@ -329,8 +329,8 @@ namespace StereoSplitter
             {
                 lblVolMaster.Text = volMaster.Value + "%";
                 ApplyVolumes();
-                // 调音量即取消采样层主静音 (捕获消音锁定不受拖动影响)
-                if (chkMuteMaster.Checked) chkMuteMaster.Checked = false;
+                // 音量到0自动勾选主静音; 拖离0取消 (捕获消音锁定不受拖动影响)
+                if (chkMuteMaster.Checked != (volMaster.Value == 0)) chkMuteMaster.Checked = volMaster.Value == 0;
                 // 双向同步: 写入当前默认输出设备的端点音量 (不改捕获消音状态)
                 if (!volSyncing && syncVol != null)
                 {
@@ -756,6 +756,9 @@ namespace StereoSplitter
                         lblVolMaster.Text = v + "%";
                         ApplyVolumes();
                         SaveSettings();
+                        // 维持"值0=静音"不变式: 外部(音量键/混音器)同步置0时同样自动勾选, 升离0自动取消
+                        bool want = (v == 0);
+                        if (chkMuteMaster.Checked != want) chkMuteMaster.Checked = want;
                     }
                     if (chkMuteCapture.Checked && !data.Muted)
                     {
@@ -1243,6 +1246,11 @@ namespace StereoSplitter
             {
                 volSyncing = false;
             }
+
+            // 存量设置音量为0 → 补勾静音 (与拖到0自动静音规则一致)
+            if (volLeft.Value == 0) chkMuteL.Checked = true;
+            if (volRight.Value == 0) chkMuteR.Checked = true;
+            if (volMaster.Value == 0) chkMuteMaster.Checked = true;
 
             if (any)
                 Log("[初始化] 设置已加载: 主=" + volMaster.Value + "%/" + (chkMuteMaster.Checked ? "静音" : "开") +
