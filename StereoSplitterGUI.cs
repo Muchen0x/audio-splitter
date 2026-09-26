@@ -71,6 +71,9 @@ namespace StereoSplitter
         Label lblDot, lblStatus;
         Button btnStart;
         Button btnRefresh;
+        Button btnClearLog;
+        string sessionLogFile;
+        SplitContainer splitContainer;
         TextBox txtLog;
         CheckBox chkMuteL, chkMuteR, chkMuteMaster, chkMuteCapture;
         CheckBox chkMinimizeToTray;
@@ -107,9 +110,30 @@ namespace StereoSplitter
         public MainForm()
         {
             Text = "Stereo Splitter - 双声道分流";
-            Size = new Size(520, 760);
-            MinimumSize = new Size(520, 760);
+            Size = new Size(530, 486);
+            MinimumSize = new Size(530, 486);
             Font = new Font("Microsoft YaHei UI", 9F);
+
+            // 上下可拖动面板: 内容区 | 6px灰分隔条 | 日志区 (参照 tk.PanedWindow)
+            splitContainer = new NoFocusSplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                SplitterWidth = 6,
+                BackColor = Color.FromArgb(0x88, 0x88, 0x88),
+                FixedPanel = FixedPanel.Panel1,
+                Panel1MinSize = 0,
+                Panel2MinSize = 110,
+                Size = new Size(500, 500),
+                TabStop = false
+            };
+            // 显式恢复浅色面板, 阻断 BackColor(#888) 传播 → #888 只作用于分隔条
+            splitContainer.Panel1.BackColor = SystemColors.Control;
+            splitContainer.Panel2.BackColor = SystemColors.Control;
+            splitContainer.Panel1.AutoScroll = true;
+            // 初始340时日志区=111(客户457); 窗高减10 → 330 保持日志111不变
+            splitContainer.SplitterDistance = 330;
+            Controls.Add(splitContainer);
 
             var lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
             cmbDefault = new NoWheelComboBox { Location = new Point(110, 12), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -159,28 +183,51 @@ namespace StereoSplitter
 
             chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(290, 107), AutoSize = true };
 
-            var lblWater = new Label { Text = "水位监控:", Location = new Point(15, 358), AutoSize = true };
-            chkWaterLog = new CheckBox { Text = "启用", Location = new Point(78, 357), AutoSize = true };
-            var lblWaterIv = new Label { Text = "间隔", Location = new Point(130, 358), AutoSize = true };
-            nudWaterInterval = new NumericUpDown { Location = new Point(168, 355), Width = 60, Minimum = 5, Maximum = 3600, Value = 30 };
-            var lblWaterSec = new Label { Text = "秒", Location = new Point(232, 358), AutoSize = true };
-            var lblWaterHint = new Label { Text = "仅分流运行中记录", Location = new Point(270, 358), AutoSize = true, ForeColor = Color.Gray };
+            // 水位监控组: 在日志面板标题行, 清除日志按钮左边
+            var lblWater = new Label { Text = "水位监控:", Location = new Point(60, 8), AutoSize = true };
+            chkWaterLog = new CheckBox { Text = "启用", Location = new Point(135, 7), AutoSize = true };
+            var lblWaterIv = new Label { Text = "间隔", Location = new Point(192, 8), AutoSize = true };
+            nudWaterInterval = new NumericUpDown { Location = new Point(227, 5), Width = 60, Minimum = 5, Maximum = 3600, Value = 30 };
+            var lblWaterSec = new Label { Text = "秒", Location = new Point(291, 8), AutoSize = true };
+
+            var lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true };
+            btnClearLog = new Button
+            {
+                Text = "清除日志",
+                Location = new Point(405, 4),
+                Width = 85,
+                Height = 22,
+                Anchor = AnchorStyles.Top | AnchorStyles.Right
+            };
 
             txtLog = new TextBox
             {
-                Location = new Point(15, 405),
-                Size = new Size(475, 265),
+                Location = new Point(15, 30),
+                Size = new Size(475, 202),
                 Multiline = true,
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
-                BackColor = Color.White,
-                Font = new Font("Consolas", 9F)
+                BorderStyle = BorderStyle.Fixed3D,
+                BackColor = Color.FromArgb(250, 250, 250),
+                Font = new Font("Consolas", 9F),
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
             };
+            var cmsLog = new ContextMenuStrip();
+            cmsLog.Items.Add("复制", null, (s, e) => txtLog.Copy());
+            cmsLog.Items.Add(new ToolStripSeparator());
+            cmsLog.Items.Add("全选", null, (s, e) => txtLog.SelectAll());
+            txtLog.ContextMenuStrip = cmsLog;
 
-            Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblL, cmbLeft, lblDL, nudDelayL, lblMsL, lblR, cmbRight, lblDR, nudDelayR, lblMsR, lblLatency, cmbLatency, chkMinimizeToTray, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, lblWater, chkWaterLog, lblWaterIv, nudWaterInterval, lblWaterSec, lblWaterHint, btnStart, txtLog });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblL, cmbLeft, lblDL, nudDelayL, lblMsL, lblR, cmbRight, lblDR, nudDelayR, lblMsR, lblLatency, cmbLatency, chkMinimizeToTray, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart });
+            splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, chkWaterLog, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
 
             btnStart.Click += BtnStart_Click;
             btnRefresh.Click += (s, e) => RefreshDevicesClick();
+            btnClearLog.Click += (s, e) =>
+            {
+                txtLog.Clear();
+                try { if (sessionLogFile != null) File.WriteAllText(sessionLogFile, ""); } catch { }
+            };
             chkMinimizeToTray.CheckedChanged += (s, e) => SaveSettings();
             cmbLatency.SelectedIndexChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudDelayL.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
@@ -191,9 +238,9 @@ namespace StereoSplitter
                 if (waterTimer != null) waterTimer.Interval = Math.Max(5, (int)nudWaterInterval.Value) * 1000;
                 if (!loadingSettings) SaveSettings();
             };
-            cmbLeft.SelectedIndexChanged += (s, e) => { if (!loadingDevices) { BindChannelVolumeSync("[音量]"); SaveSettings(); } };
-            cmbRight.SelectedIndexChanged += (s, e) => { if (!loadingDevices) { BindChannelVolumeSync("[音量]"); SaveSettings(); } };
-            cmbDefault.SelectedIndexChanged += (s, e) => { if (!loadingDevices) { BindDefaultVolumeSync("[音量]"); SaveSettings(); } };
+            cmbLeft.SelectedIndexChanged += (s, e) => { if (!loadingDevices) SaveSettings(); };
+            cmbRight.SelectedIndexChanged += (s, e) => { if (!loadingDevices) SaveSettings(); };
+            cmbDefault.SelectedIndexChanged += (s, e) => { if (!loadingDevices) SaveSettings(); };
             volLeft.Scroll += (s, e) =>
             {
                 lblVolLeft.Text = volLeft.Value + "%";
@@ -277,6 +324,15 @@ namespace StereoSplitter
             LoadSettings();
             InitTray();
 
+            // 会话日志文件 (参照 screen-mirroring-capture: 每会话一个 session 文件, UI+文件双写)
+            try
+            {
+                string logDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log");
+                Directory.CreateDirectory(logDir);
+                sessionLogFile = Path.Combine(logDir, "session_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".log");
+            }
+            catch { sessionLogFile = null; }
+
             waterTimer = new System.Windows.Forms.Timer
             {
                 Interval = Math.Max(5, (int)nudWaterInterval.Value) * 1000
@@ -339,6 +395,9 @@ namespace StereoSplitter
             nudWaterInterval.Enabled = !busy;
             btnStart.Enabled = !busy;
 
+            // 数值标签: 仅分流运行中(双向绑定生效)为黑, 其余灰色表示无效
+            SetVolumeBindVisual(run);
+
             if (trayIcon != null) trayIcon.Text = "Stereo Splitter - " + txt;
         }
 
@@ -349,9 +408,9 @@ namespace StereoSplitter
                 enumerator = new MMDeviceEnumerator();
                 RefreshDevices();
                 RecordRestoreTarget();
-                BindDefaultVolumeSync("[初始化]");
-                BindChannelVolumeSync("[初始化]");
                 ApplyIniVolumeOverrides();
+                // 校准日志框高度, 此后由 Anchor 自动跟随分隔条拖动
+                txtLog.Height = splitContainer.Panel2.Height - txtLog.Top - 15;
                 SetAppState(AppState.Ready);
                 RegisterActivateHandler();
                 Log("[初始化] 就绪。在「捕获(虚拟)」选择虚拟设备(如 CABLE Input)，点「开始分流」时自动完成配置。");
@@ -421,11 +480,10 @@ namespace StereoSplitter
                         try { syncVol.Mute = captureMuteEntered; } catch { }
                     }
 
-                    // 退旧
+                    // 退旧 (不 Dispose: MMDevice.AudioEndpointVolume 是缓存实例, Dispose 会使后续绑定拿到已释放 RCW)
                     if (syncVol != null)
                     {
                         try { syncVol.OnVolumeNotification -= SyncVol_OnVolumeNotification; } catch { }
-                        try { syncVol.Dispose(); } catch { }
                         syncVol = null;
                         syncDev = null;
                     }
@@ -487,7 +545,7 @@ namespace StereoSplitter
             {
                 BeginInvoke(new Action(() =>
                 {
-                    if (volSyncing) return;
+                    if (volSyncing || syncVol == null) return;
                     volSyncing = true;
                     int v = Math.Max(0, Math.Min(100, (int)Math.Round(data.MasterVolume * 100)));
                     if (volMaster.Value != v)
@@ -568,10 +626,10 @@ namespace StereoSplitter
 
         void UnbindChannel(ref MMDevice dev, ref AudioEndpointVolume vol, AudioEndpointVolumeNotificationDelegate handler)
         {
+            // 不 Dispose: MMDevice.AudioEndpointVolume 是缓存实例, Dispose 会使后续绑定拿到已释放 RCW
             if (vol != null)
             {
                 try { vol.OnVolumeNotification -= handler; } catch { }
-                try { vol.Dispose(); } catch { }
                 vol = null;
             }
             dev = null;
@@ -583,7 +641,7 @@ namespace StereoSplitter
             {
                 BeginInvoke(new Action(() =>
                 {
-                    if (volSyncing) return;
+                    if (volSyncing || syncLeftVol == null) return;
                     volSyncing = true;
                     int v = Math.Max(0, Math.Min(100, (int)Math.Round(data.MasterVolume * 100)));
                     if (volLeft.Value != v)
@@ -605,7 +663,7 @@ namespace StereoSplitter
             {
                 BeginInvoke(new Action(() =>
                 {
-                    if (volSyncing) return;
+                    if (volSyncing || syncRightVol == null) return;
                     volSyncing = true;
                     int v = Math.Max(0, Math.Min(100, (int)Math.Round(data.MasterVolume * 100)));
                     if (volRight.Value != v)
@@ -1004,27 +1062,90 @@ namespace StereoSplitter
 
         void UnbindDefaultVolumeSync()
         {
+            // 不 Dispose: MMDevice.AudioEndpointVolume 是缓存实例, Dispose 会使后续绑定拿到已释放 RCW
             if (syncVol != null)
             {
                 try { syncVol.OnVolumeNotification -= SyncVol_OnVolumeNotification; } catch { }
-                try { syncVol.Dispose(); } catch { }
                 syncVol = null;
                 syncDev = null;
             }
+        }
+
+        // 解除全部音量双向绑定 (停止分流/启动失败/退出时统一调用)
+        void UnbindAllVolumeSync()
+        {
+            bool had = syncVol != null || syncLeftVol != null || syncRightVol != null;
+            if (!had) return;
+
+            // 恢复捕获设备进入时的原静音状态 (我们改过才恢复)
+            if (captureMuteApplied && syncVol != null)
+            {
+                try { syncVol.Mute = captureMuteEntered; } catch { }
+                captureMuteApplied = false;
+            }
+
+            UnbindDefaultVolumeSync();
+            UnbindChannel(ref syncLeftDev, ref syncLeftVol, LeftVol_OnVolumeNotification);
+            UnbindChannel(ref syncRightDev, ref syncRightVol, RightVol_OnVolumeNotification);
+            Log("[停止] 双向音量绑定已解除");
+        }
+
+        // 数值标签有效/无效视觉 (仅 Running 即绑定生效时为黑)
+        void SetVolumeBindVisual(bool bound)
+        {
+            Color c = bound ? SystemColors.ControlText : SystemColors.GrayText;
+            if (lblVolLeft != null) lblVolLeft.ForeColor = c;
+            if (lblVolRight != null) lblVolRight.ForeColor = c;
+            if (lblVolMaster != null) lblVolMaster.ForeColor = c;
+        }
+
+        // 启动失败: 解绑(含恢复捕获静音) + Failed 状态
+        void StartFailed()
+        {
+            UnbindAllVolumeSync();
+            SetAppState(AppState.Failed);
+        }
+
+        // 把 UI 当前音量值写入已绑定端点 (点开始分流时, UI 为唯一权威源)
+        void WriteUIValuesToDevice()
+        {
+            try
+            {
+                volSyncing = true;
+                if (syncVol != null)
+                {
+                    syncVol.MasterVolumeLevelScalar = volMaster.Value / 100f;
+                    if (syncVol.Mute != chkMuteCapture.Checked) syncVol.Mute = chkMuteCapture.Checked;
+                    captureMuteApplied = (syncVol.Mute != captureMuteEntered);
+                }
+                if (syncLeftVol != null)
+                {
+                    syncLeftVol.MasterVolumeLevelScalar = volLeft.Value / 100f;
+                    if (syncLeftVol.Mute != chkMuteL.Checked) syncLeftVol.Mute = chkMuteL.Checked;
+                }
+                if (syncRightVol != null)
+                {
+                    syncRightVol.MasterVolumeLevelScalar = volRight.Value / 100f;
+                    if (syncRightVol.Mute != chkMuteR.Checked) syncRightVol.Mute = chkMuteR.Checked;
+                }
+                Log("[启动] 按UI值写入端点: 主=" + volMaster.Value + "% 左=" + volLeft.Value +
+                    "% 右=" + volRight.Value + "% (捕获消音=" + (chkMuteCapture.Checked ? "是" : "否") + ")");
+            }
+            catch (Exception ex)
+            {
+                Log("[错误] 按UI值写入端点失败: " + ex.Message);
+            }
+            finally { volSyncing = false; }
         }
 
         void RefreshDevicesClick()
         {
             Log("[刷新] 重新枚举设备...");
 
-            // 释放旧 MMDevice/端点绑定, 刷新后按新对象重绑
-            UnbindDefaultVolumeSync();
-            UnbindChannel(ref syncLeftDev, ref syncLeftVol, LeftVol_OnVolumeNotification);
-            UnbindChannel(ref syncRightDev, ref syncRightVol, RightVol_OnVolumeNotification);
+            // 释放旧 MMDevice/端点绑定 (未分流时通常未绑定, 幂等 no-op)
+            UnbindAllVolumeSync();
 
             RefreshDevices();
-            BindDefaultVolumeSync("[音量]");
-            BindChannelVolumeSync("[音量]");
             SaveSettings();
             Log("[刷新] 完成, 共 " + devices.Count + " 个设备");
         }
@@ -1084,23 +1205,28 @@ namespace StereoSplitter
 
             SetAppState(AppState.Starting);
 
-            // 点击开始时自动配置: 设默认输出 + 重绑音量 + 自动选左右 + 回环检查
+            // 捕获 UI 当前值 (AutoConfigure 的 Bind 会用设备真值回填覆盖, 须提前存下)
+            int uiL = volLeft.Value, uiR = volRight.Value, uiM = volMaster.Value;
+            bool uiMl = chkMuteL.Checked, uiMr = chkMuteR.Checked,
+                 uiMm = chkMuteMaster.Checked, uiMc = chkMuteCapture.Checked;
+
+            // 点击开始时自动配置: 设默认输出 + 绑定音量 + 自动选左右 + 回环检查
             if (!AutoConfigure())
             {
-                SetAppState(AppState.Failed);
+                StartFailed();
                 MessageBox.Show("自动配置失败，已中止启动。\n详见日志。", "启动中止");
                 return;
             }
 
             if (cmbLeft.SelectedIndex < 0 || cmbRight.SelectedIndex < 0)
             {
-                SetAppState(AppState.Failed);
+                StartFailed();
                 MessageBox.Show("请选择左右设备。", "提示");
                 return;
             }
             if (cmbLeft.SelectedIndex == cmbRight.SelectedIndex)
             {
-                SetAppState(AppState.Failed);
+                StartFailed();
                 MessageBox.Show("左右设备不能相同。", "提示");
                 return;
             }
@@ -1113,7 +1239,7 @@ namespace StereoSplitter
                 for (int i = 0; i < devices.Count; i++)
                     if (i != cmbLeft.SelectedIndex && i != cmbRight.SelectedIndex)
                         others.Add("[" + i + "] " + devices[i].FriendlyName);
-                SetAppState(AppState.Failed);
+                StartFailed();
                 MessageBox.Show(
                     "捕获输出与左右目标相同，会造成声音回环！\n\n" +
                     "请把「捕获(虚拟)」改为虚拟设备(如 CABLE Input)。\n其它可选:\n" + string.Join("\n", others),
@@ -1123,6 +1249,21 @@ namespace StereoSplitter
 
             try
             {
+                // 恢复被 Bind 回填覆盖的 UI 值, 以 UI 为唯一权威源写入端点
+                volSyncing = true;
+                volLeft.Value = uiL;
+                volRight.Value = uiR;
+                volMaster.Value = uiM;
+                lblVolLeft.Text = uiL + "%";
+                lblVolRight.Text = uiR + "%";
+                lblVolMaster.Text = uiM + "%";
+                chkMuteL.Checked = uiMl;
+                chkMuteR.Checked = uiMr;
+                chkMuteMaster.Checked = uiMm;
+                chkMuteCapture.Checked = uiMc;
+                volSyncing = false;
+                WriteUIValuesToDevice();
+
                 engine = new AudioEngine(devices[cmbLeft.SelectedIndex], devices[rightIdxSafe()], Log);
                 int prof = cmbLatency.SelectedIndex < 0 ? 0 : cmbLatency.SelectedIndex;
                 engine.Start(pendingGain, CurrentMaster(), LatencyProfiles[prof][0], LatencyProfiles[prof][1],
@@ -1136,7 +1277,7 @@ namespace StereoSplitter
             {
                 Log("[错误] 启动失败: " + ex.Message);
                 if (engine != null) { engine.Dispose(); engine = null; }
-                SetAppState(AppState.Failed);
+                StartFailed();
                 MessageBox.Show("启动失败: " + ex.Message, "错误");
             }
         }
@@ -1155,6 +1296,7 @@ namespace StereoSplitter
                 SetAppState(AppState.Stopped);
                 Log("[停止] 分流已停止。");
             }
+            UnbindAllVolumeSync();
         }
 
         float CurrentMaster()
@@ -1181,13 +1323,6 @@ namespace StereoSplitter
 
             StopEngine();
 
-            // 恢复捕获设备进入时的原静音状态 (我们改过才恢复)
-            if (captureMuteApplied && syncVol != null)
-            {
-                try { syncVol.Mute = captureMuteEntered; }
-                catch { }
-            }
-
             // 恢复默认输出
             try
             {
@@ -1203,10 +1338,6 @@ namespace StereoSplitter
                 }
             }
             catch { }
-
-            UnbindDefaultVolumeSync();
-            UnbindChannel(ref syncLeftDev, ref syncLeftVol, LeftVol_OnVolumeNotification);
-            UnbindChannel(ref syncRightDev, ref syncRightVol, RightVol_OnVolumeNotification);
 
             SaveSettings();
             if (waterTimer != null)
@@ -1236,7 +1367,34 @@ namespace StereoSplitter
                 try { BeginInvoke(new LogDelegate(Log), msg); } catch { }
                 return;
             }
-            txtLog.AppendText(DateTime.Now.ToString("HH:mm:ss") + " " + msg + "\r\n");
+
+            // 格式: HH:mm:ss [LEVEL] [阶段] 内容 (参照 screen-mirroring-capture)
+            string level = "INFO";
+            if (msg.StartsWith("[错误]")) level = "ERROR";
+            else if (msg.StartsWith("[警告]")) level = "WARNING";
+            string line = DateTime.Now.ToString("HH:mm:ss") + " [" + level + "] " + msg;
+
+            // UI: 单条 8192 截断 + 条目间空行 + 自动滚底
+            string ui = line;
+            if (ui.Length > 8192) ui = ui.Substring(0, 8192) + "\n...(日志过长已截断)";
+            txtLog.AppendText(ui + "\r\n\r\n");
+            txtLog.SelectionStart = txtLog.TextLength;
+            txtLog.ScrollToCaret();
+
+            // 文件持久化 (写原文, 不截断)
+            try
+            {
+                if (sessionLogFile != null) File.AppendAllText(sessionLogFile, line + "\n");
+            }
+            catch { }
+        }
+    }
+
+    // 不接受焦点的 SplitContainer: 点击/拖动分隔条不产生焦点框
+    class NoFocusSplitContainer : SplitContainer
+    {
+        protected override void Select(bool directed, bool forward)
+        {
         }
     }
 
