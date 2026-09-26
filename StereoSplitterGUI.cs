@@ -153,22 +153,22 @@ namespace StereoSplitter
             var lblMsR = new Label { Text = "ms", Location = new Point(465, 75), AutoSize = true };
 
             var lblVL = new Label { Text = "左音量:", Location = new Point(15, 145), AutoSize = true };
-            volLeft = new TrackBar { Location = new Point(80, 140), Width = 300, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
+            volLeft = new TrackBar { Location = new Point(80, 140), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
             lblVolLeft = new Label { Text = "100%", Location = new Point(390, 145), AutoSize = true };
             chkMuteL = new CheckBox { Text = "静音", Location = new Point(435, 144), AutoSize = true };
 
             var lblVR = new Label { Text = "右音量:", Location = new Point(15, 180), AutoSize = true };
-            volRight = new TrackBar { Location = new Point(80, 175), Width = 300, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
+            volRight = new TrackBar { Location = new Point(80, 175), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
             lblVolRight = new Label { Text = "100%", Location = new Point(390, 180), AutoSize = true };
             chkMuteR = new CheckBox { Text = "静音", Location = new Point(435, 179), AutoSize = true };
 
             var lblVM = new Label { Text = "主音量:", Location = new Point(15, 215), AutoSize = true };
-            volMaster = new TrackBar { Location = new Point(80, 210), Width = 300, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
+            volMaster = new TrackBar { Location = new Point(80, 210), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
             lblVolMaster = new Label { Text = "100%", Location = new Point(390, 215), AutoSize = true };
             chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(435, 214), AutoSize = true };
 
             var lblG = new Label { Text = "增益:", Location = new Point(15, 250), AutoSize = true };
-            volGain = new TrackBar { Location = new Point(80, 245), Width = 300, Minimum = 0, Maximum = 200, Value = 100, TickFrequency = 10 };
+            volGain = new TrackBar { Location = new Point(80, 245), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 200, Value = 100, TickFrequency = 10 };
             lblVolGain = new Label { Text = "100%", Location = new Point(390, 250), AutoSize = true };
 
             btnStart = new Button { Text = "开始分流", Location = new Point(190, 285), Width = 130, Height = 35 };
