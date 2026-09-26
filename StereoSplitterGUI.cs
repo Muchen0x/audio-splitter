@@ -55,6 +55,9 @@ namespace StereoSplitter
     class MainForm : Form
     {
         NoWheelComboBox cmbLeft, cmbRight, cmbDefault, cmbLatency;
+        NumericUpDown nudDelayL, nudDelayR;
+        CheckBox chkWaterLog;
+        NumericUpDown nudWaterInterval;
         static readonly int[][] LatencyProfiles = new int[][] {
             new int[] { 100, 50 },
             new int[] { 50, 30 },
@@ -67,8 +70,9 @@ namespace StereoSplitter
         Label lblVolLeft, lblVolRight, lblVolMaster, lblVolGain;
         Label lblDot, lblStatus;
         Button btnStart;
+        Button btnRefresh;
         TextBox txtLog;
-        CheckBox chkMuteL, chkMuteR, chkMuteMaster;
+        CheckBox chkMuteL, chkMuteR, chkMuteMaster, chkMuteCapture;
         CheckBox chkMinimizeToTray;
         NotifyIcon trayIcon;
         EventWaitHandle activateEvent;
@@ -90,6 +94,9 @@ namespace StereoSplitter
         volatile bool volSyncing = false;
         bool loadingDevices = false;
         string restoreDefaultId = null;
+        // 捕获设备进入时的原静音状态, 退出/换绑时恢复
+        bool captureMuteEntered = false;
+        bool captureMuteApplied = false;
 
         List<MMDevice> devices = new List<MMDevice>();
         MMDeviceEnumerator enumerator;
@@ -100,54 +107,68 @@ namespace StereoSplitter
         public MainForm()
         {
             Text = "Stereo Splitter - 双声道分流";
-            Size = new Size(520, 690);
-            MinimumSize = new Size(520, 690);
+            Size = new Size(520, 760);
+            MinimumSize = new Size(520, 760);
             Font = new Font("Microsoft YaHei UI", 9F);
 
-            var lblL = new Label { Text = "左声道设备:", Location = new Point(15, 15), AutoSize = true };
-            cmbLeft = new NoWheelComboBox { Location = new Point(110, 12), Width = 375, DropDownStyle = ComboBoxStyle.DropDownList };
+            var lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
+            cmbDefault = new NoWheelComboBox { Location = new Point(110, 12), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
+            chkMuteCapture = new CheckBox { Text = "消音", Location = new Point(363, 14), AutoSize = true };
+            btnRefresh = new Button { Text = "刷新设备", Location = new Point(417, 11), Width = 72, Height = 23 };
 
-            var lblR = new Label { Text = "右声道设备:", Location = new Point(15, 45), AutoSize = true };
-            cmbRight = new NoWheelComboBox { Location = new Point(110, 42), Width = 375, DropDownStyle = ComboBoxStyle.DropDownList };
+            var lblL = new Label { Text = "左声道设备:", Location = new Point(15, 45), AutoSize = true };
+            cmbLeft = new NoWheelComboBox { Location = new Point(110, 42), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
+            var lblDL = new Label { Text = "延迟", Location = new Point(370, 45), AutoSize = true };
+            nudDelayL = new NumericUpDown { Location = new Point(402, 42), Width = 60, Minimum = 0, Maximum = 2000 };
+            var lblMsL = new Label { Text = "ms", Location = new Point(465, 45), AutoSize = true };
 
-            var lblD = new Label { Text = "默认输出:", Location = new Point(15, 75), AutoSize = true };
-            cmbDefault = new NoWheelComboBox { Location = new Point(110, 72), Width = 375, DropDownStyle = ComboBoxStyle.DropDownList };
+            var lblR = new Label { Text = "右声道设备:", Location = new Point(15, 75), AutoSize = true };
+            cmbRight = new NoWheelComboBox { Location = new Point(110, 72), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
+            var lblDR = new Label { Text = "延迟", Location = new Point(370, 75), AutoSize = true };
+            nudDelayR = new NumericUpDown { Location = new Point(402, 72), Width = 60, Minimum = 0, Maximum = 2000 };
+            var lblMsR = new Label { Text = "ms", Location = new Point(465, 75), AutoSize = true };
 
-            var lblVL = new Label { Text = "左音量:", Location = new Point(15, 115), AutoSize = true };
-            volLeft = new TrackBar { Location = new Point(80, 110), Width = 300, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
-            lblVolLeft = new Label { Text = "100%", Location = new Point(390, 115), AutoSize = true };
-            chkMuteL = new CheckBox { Text = "静音", Location = new Point(435, 114), AutoSize = true };
+            var lblVL = new Label { Text = "左音量:", Location = new Point(15, 145), AutoSize = true };
+            volLeft = new TrackBar { Location = new Point(80, 140), Width = 300, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
+            lblVolLeft = new Label { Text = "100%", Location = new Point(390, 145), AutoSize = true };
+            chkMuteL = new CheckBox { Text = "静音", Location = new Point(435, 144), AutoSize = true };
 
-            var lblVR = new Label { Text = "右音量:", Location = new Point(15, 150), AutoSize = true };
-            volRight = new TrackBar { Location = new Point(80, 145), Width = 300, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
-            lblVolRight = new Label { Text = "100%", Location = new Point(390, 150), AutoSize = true };
-            chkMuteR = new CheckBox { Text = "静音", Location = new Point(435, 149), AutoSize = true };
+            var lblVR = new Label { Text = "右音量:", Location = new Point(15, 180), AutoSize = true };
+            volRight = new TrackBar { Location = new Point(80, 175), Width = 300, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
+            lblVolRight = new Label { Text = "100%", Location = new Point(390, 180), AutoSize = true };
+            chkMuteR = new CheckBox { Text = "静音", Location = new Point(435, 179), AutoSize = true };
 
-            var lblVM = new Label { Text = "主音量:", Location = new Point(15, 185), AutoSize = true };
-            volMaster = new TrackBar { Location = new Point(80, 180), Width = 300, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
-            lblVolMaster = new Label { Text = "100%", Location = new Point(390, 185), AutoSize = true };
-            chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(435, 184), AutoSize = true };
+            var lblVM = new Label { Text = "主音量:", Location = new Point(15, 215), AutoSize = true };
+            volMaster = new TrackBar { Location = new Point(80, 210), Width = 300, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
+            lblVolMaster = new Label { Text = "100%", Location = new Point(390, 215), AutoSize = true };
+            chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(435, 214), AutoSize = true };
 
-            var lblG = new Label { Text = "增益:", Location = new Point(15, 220), AutoSize = true };
-            volGain = new TrackBar { Location = new Point(80, 215), Width = 300, Minimum = 0, Maximum = 200, Value = 100, TickFrequency = 10 };
-            lblVolGain = new Label { Text = "100%", Location = new Point(390, 220), AutoSize = true };
+            var lblG = new Label { Text = "增益:", Location = new Point(15, 250), AutoSize = true };
+            volGain = new TrackBar { Location = new Point(80, 245), Width = 300, Minimum = 0, Maximum = 200, Value = 100, TickFrequency = 10 };
+            lblVolGain = new Label { Text = "100%", Location = new Point(390, 250), AutoSize = true };
 
-            btnStart = new Button { Text = "开始分流", Location = new Point(190, 255), Width = 130, Height = 35 };
+            btnStart = new Button { Text = "开始分流", Location = new Point(190, 285), Width = 130, Height = 35 };
 
-            lblDot = new Label { Text = "●", Location = new Point(17, 260), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
-            lblStatus = new Label { Text = "状态: 就绪", Location = new Point(37, 265), AutoSize = true, ForeColor = Color.Gray };
+            lblDot = new Label { Text = "●", Location = new Point(17, 290), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
+            lblStatus = new Label { Text = "状态: 就绪", Location = new Point(37, 295), AutoSize = true, ForeColor = Color.Gray };
 
-            chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(335, 263), AutoSize = true };
-
-            var lblLatency = new Label { Text = "启动延迟:", Location = new Point(15, 298), AutoSize = true };
-            cmbLatency = new NoWheelComboBox { Location = new Point(110, 295), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
+            var lblLatency = new Label { Text = "启动延迟:", Location = new Point(15, 108), AutoSize = true };
+            cmbLatency = new NoWheelComboBox { Location = new Point(85, 105), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
             cmbLatency.Items.AddRange(new object[] { "标准 (预缓冲100ms)", "低延迟 (50ms)", "极低 (25ms, 可能断音)", "超低 (15ms, 断音增多)", "极限 (5ms, 频繁断音)" });
             cmbLatency.SelectedIndex = 0;
-            var lblLatencyHint = new Label { Text = "重启分流后生效", Location = new Point(320, 300), AutoSize = true, ForeColor = Color.Gray };
+
+            chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(290, 107), AutoSize = true };
+
+            var lblWater = new Label { Text = "水位监控:", Location = new Point(15, 358), AutoSize = true };
+            chkWaterLog = new CheckBox { Text = "启用", Location = new Point(78, 357), AutoSize = true };
+            var lblWaterIv = new Label { Text = "间隔", Location = new Point(130, 358), AutoSize = true };
+            nudWaterInterval = new NumericUpDown { Location = new Point(168, 355), Width = 60, Minimum = 5, Maximum = 3600, Value = 30 };
+            var lblWaterSec = new Label { Text = "秒", Location = new Point(232, 358), AutoSize = true };
+            var lblWaterHint = new Label { Text = "仅分流运行中记录", Location = new Point(270, 358), AutoSize = true, ForeColor = Color.Gray };
 
             txtLog = new TextBox
             {
-                Location = new Point(15, 335),
+                Location = new Point(15, 405),
                 Size = new Size(475, 265),
                 Multiline = true,
                 ReadOnly = true,
@@ -156,11 +177,20 @@ namespace StereoSplitter
                 Font = new Font("Consolas", 9F)
             };
 
-            Controls.AddRange(new Control[] { lblL, cmbLeft, lblR, cmbRight, lblD, cmbDefault, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, chkMinimizeToTray, lblLatency, cmbLatency, lblLatencyHint, btnStart, txtLog });
+            Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblL, cmbLeft, lblDL, nudDelayL, lblMsL, lblR, cmbRight, lblDR, nudDelayR, lblMsR, lblLatency, cmbLatency, chkMinimizeToTray, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, lblWater, chkWaterLog, lblWaterIv, nudWaterInterval, lblWaterSec, lblWaterHint, btnStart, txtLog });
 
             btnStart.Click += BtnStart_Click;
+            btnRefresh.Click += (s, e) => RefreshDevicesClick();
             chkMinimizeToTray.CheckedChanged += (s, e) => SaveSettings();
             cmbLatency.SelectedIndexChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
+            nudDelayL.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
+            nudDelayR.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
+            chkWaterLog.CheckedChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
+            nudWaterInterval.ValueChanged += (s, e) =>
+            {
+                if (waterTimer != null) waterTimer.Interval = Math.Max(5, (int)nudWaterInterval.Value) * 1000;
+                if (!loadingSettings) SaveSettings();
+            };
             cmbLeft.SelectedIndexChanged += (s, e) => { if (!loadingDevices) { BindChannelVolumeSync("[音量]"); SaveSettings(); } };
             cmbRight.SelectedIndexChanged += (s, e) => { if (!loadingDevices) { BindChannelVolumeSync("[音量]"); SaveSettings(); } };
             cmbDefault.SelectedIndexChanged += (s, e) => { if (!loadingDevices) { BindDefaultVolumeSync("[音量]"); SaveSettings(); } };
@@ -200,10 +230,20 @@ namespace StereoSplitter
             };
             chkMuteMaster.CheckedChanged += (s, e) =>
             {
+                // 主静音仅采样层(左右分流), 不写捕获设备端点 Mute
                 ApplyVolumes();
+                SaveSettings();
+            };
+            chkMuteCapture.CheckedChanged += (s, e) =>
+            {
+                // 捕获消音仅端点 Mute(直出), 不碰采样层与主音量绑定
                 if (!volSyncing && syncVol != null)
                 {
-                    try { syncVol.Mute = chkMuteMaster.Checked; }
+                    try
+                    {
+                        syncVol.Mute = chkMuteCapture.Checked;
+                        captureMuteApplied = (syncVol.Mute != captureMuteEntered);
+                    }
                     catch { }
                 }
                 SaveSettings();
@@ -237,10 +277,13 @@ namespace StereoSplitter
             LoadSettings();
             InitTray();
 
-            waterTimer = new System.Windows.Forms.Timer { Interval = 30000 };
+            waterTimer = new System.Windows.Forms.Timer
+            {
+                Interval = Math.Max(5, (int)nudWaterInterval.Value) * 1000
+            };
             waterTimer.Tick += (s, e) =>
             {
-                if (running && engine != null) Log("[状态] 缓冲水位 " + engine.BufferStatus());
+                if (chkWaterLog.Checked && running && engine != null) Log("[状态] 缓冲水位 " + engine.BufferStatus());
             };
             waterTimer.Start();
 
@@ -279,6 +322,7 @@ namespace StereoSplitter
             cmbLeft.Enabled = !busy && !run;
             cmbRight.Enabled = !busy && !run;
             cmbDefault.Enabled = !busy && !run;
+            btnRefresh.Enabled = !busy && !run;
             volLeft.Enabled = !busy;
             volRight.Enabled = !busy;
             volMaster.Enabled = !busy;
@@ -286,8 +330,13 @@ namespace StereoSplitter
             chkMuteL.Enabled = !busy;
             chkMuteR.Enabled = !busy;
             chkMuteMaster.Enabled = !busy;
+            chkMuteCapture.Enabled = !busy;
             chkMinimizeToTray.Enabled = !busy;
-            cmbLatency.Enabled = !busy;
+            cmbLatency.Enabled = !busy && !run;
+            nudDelayL.Enabled = !busy && !run;
+            nudDelayR.Enabled = !busy && !run;
+            chkWaterLog.Enabled = !busy;
+            nudWaterInterval.Enabled = !busy;
             btnStart.Enabled = !busy;
 
             if (trayIcon != null) trayIcon.Text = "Stereo Splitter - " + txt;
@@ -305,8 +354,8 @@ namespace StereoSplitter
                 ApplyIniVolumeOverrides();
                 SetAppState(AppState.Ready);
                 RegisterActivateHandler();
-                Log("[初始化] 就绪。在「默认输出」选择设备，点「开始分流」时自动完成配置。");
-                Log("[初始化] 提示: 默认输出设备不能与左右目标相同，否则会回环。");
+                Log("[初始化] 就绪。在「捕获(虚拟)」选择虚拟设备(如 CABLE Input)，点「开始分流」时自动完成配置。");
+                Log("[初始化] 提示: 捕获输出不能与左右目标相同，否则会回环。");
             }
             catch (Exception ex)
             {
@@ -366,6 +415,12 @@ namespace StereoSplitter
 
                 if (syncDev == null || syncDev.ID != def.ID || syncVol == null)
                 {
+                    // 退旧前恢复旧设备消音状态 (我们改过才恢复)
+                    if (captureMuteApplied && syncVol != null)
+                    {
+                        try { syncVol.Mute = captureMuteEntered; } catch { }
+                    }
+
                     // 退旧
                     if (syncVol != null)
                     {
@@ -379,16 +434,24 @@ namespace StereoSplitter
                     syncDev = def;
                     syncVol = def.AudioEndpointVolume;
                     syncVol.OnVolumeNotification += SyncVol_OnVolumeNotification;
+                    captureMuteEntered = syncVol.Mute;
+                    captureMuteApplied = false;
+                    // 勾选跟人走: 换绑后新设备立即消音 (旧设备已按 applied 恢复原状态)
+                    if (chkMuteCapture.Checked)
+                    {
+                        try { syncVol.Mute = true; } catch { }
+                    }
                 }
 
                 volSyncing = true;
                 int v = (int)Math.Round(syncVol.MasterVolumeLevelScalar * 100);
                 volMaster.Value = Math.Max(0, Math.Min(100, v));
                 lblVolMaster.Text = volMaster.Value + "%";
-                chkMuteMaster.Checked = syncVol.Mute;
+                chkMuteCapture.Checked = syncVol.Mute;
+                captureMuteApplied = (syncVol.Mute != captureMuteEntered);
                 volSyncing = false;
 
-                Log(stage + " 主音量同步 → [" + FindIdxById(def.ID) + "] " + def.FriendlyName + " (" + v + "%" + (syncVol.Mute ? ", 静音" : "") + ")");
+                Log(stage + " 主音量同步 → [" + FindIdxById(def.ID) + "] " + def.FriendlyName + " (" + v + "%" + (syncVol.Mute ? ", 消音" : "") + ")");
             }
             catch (Exception ex)
             {
@@ -434,10 +497,15 @@ namespace StereoSplitter
                         ApplyVolumes();
                         SaveSettings();
                     }
-                    if (chkMuteMaster.Checked != data.Muted)
+                    if (chkMuteCapture.Checked && !data.Muted)
                     {
-                        chkMuteMaster.Checked = data.Muted;
-                        ApplyVolumes();
+                        // 消音锁定: 任何外部(系统音量条/快捷键/驱动)取消静音 → 静默恢复, 直到用户取消勾选
+                        try { syncVol.Mute = true; }
+                        catch (Exception ex) { Log("[错误] 恢复捕获消音失败: " + ex.Message); }
+                    }
+                    else if (chkMuteCapture.Checked != data.Muted)
+                    {
+                        chkMuteCapture.Checked = data.Muted;
                     }
                     volSyncing = false;
                 }));
@@ -631,10 +699,10 @@ namespace StereoSplitter
                 // 回环检查
                 if (cmbLeft.SelectedIndex == defIdx || cmbRight.SelectedIndex == defIdx)
                 {
-                    Log("[错误] 回环检查未通过: 默认输出与左右目标相同。");
+                    Log("[错误] 回环检查未通过: 捕获输出与左右目标相同。");
                     return false;
                 }
-                Log("[配置] 回环检查通过 (默认输出与左右目标无冲突)");
+                Log("[配置] 回环检查通过 (捕获输出与左右目标无冲突)");
 
                 return true;
             }
@@ -672,6 +740,10 @@ namespace StereoSplitter
 
             chkMinimizeToTray.Checked = GetInt("MinimizeToTray", 0) != 0;
             cmbLatency.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("LatencyProfile", 0)));
+            nudDelayL.Value = Math.Max(0, Math.Min(2000, GetInt("DelayLeft", 0)));
+            nudDelayR.Value = Math.Max(0, Math.Min(2000, GetInt("DelayRight", 0)));
+            chkWaterLog.Checked = GetInt("WaterLogOn", 1) != 0;
+            nudWaterInterval.Value = Math.Max(5, Math.Min(3600, GetInt("WaterIntervalSec", 30)));
 
             int gain = Math.Max(0, Math.Min(200, GetInt("Gain", 100)));
             volGain.Value = gain;
@@ -708,6 +780,10 @@ namespace StereoSplitter
                 var sb = new System.Text.StringBuilder();
                 sb.AppendLine("MinimizeToTray=" + (chkMinimizeToTray.Checked ? 1 : 0));
                 sb.AppendLine("LatencyProfile=" + Math.Max(0, cmbLatency.SelectedIndex));
+                sb.AppendLine("DelayLeft=" + (int)nudDelayL.Value);
+                sb.AppendLine("DelayRight=" + (int)nudDelayR.Value);
+                sb.AppendLine("WaterLogOn=" + (chkWaterLog.Checked ? 1 : 0));
+                sb.AppendLine("WaterIntervalSec=" + (int)nudWaterInterval.Value);
                 sb.AppendLine("Gain=" + volGain.Value);
                 sb.AppendLine("DeviceLeft=" + DeviceIdAt(cmbLeft.SelectedIndex));
                 sb.AppendLine("DeviceRight=" + DeviceIdAt(cmbRight.SelectedIndex));
@@ -718,7 +794,26 @@ namespace StereoSplitter
                 sb.AppendLine("MuteLeft=" + (chkMuteL.Checked ? 1 : 0));
                 sb.AppendLine("MuteRight=" + (chkMuteR.Checked ? 1 : 0));
                 sb.AppendLine("MuteMaster=" + (chkMuteMaster.Checked ? 1 : 0));
+                sb.AppendLine("MuteCapture=" + (chkMuteCapture.Checked ? 1 : 0));
                 File.WriteAllText(IniPath, sb.ToString());
+                // 同步回内存字典: 刷新设备等场景按字典恢复选中, 不读过期文件值
+                settings["MinimizeToTray"] = chkMinimizeToTray.Checked ? "1" : "0";
+                settings["LatencyProfile"] = Math.Max(0, cmbLatency.SelectedIndex).ToString();
+                settings["DelayLeft"] = ((int)nudDelayL.Value).ToString();
+                settings["DelayRight"] = ((int)nudDelayR.Value).ToString();
+                settings["WaterLogOn"] = chkWaterLog.Checked ? "1" : "0";
+                settings["WaterIntervalSec"] = ((int)nudWaterInterval.Value).ToString();
+                settings["Gain"] = volGain.Value.ToString();
+                settings["DeviceLeft"] = DeviceIdAt(cmbLeft.SelectedIndex);
+                settings["DeviceRight"] = DeviceIdAt(cmbRight.SelectedIndex);
+                settings["DeviceDefault"] = DeviceIdAt(cmbDefault.SelectedIndex);
+                settings["VolumeLeft"] = volLeft.Value.ToString();
+                settings["VolumeRight"] = volRight.Value.ToString();
+                settings["VolumeMaster"] = volMaster.Value.ToString();
+                settings["MuteLeft"] = chkMuteL.Checked ? "1" : "0";
+                settings["MuteRight"] = chkMuteR.Checked ? "1" : "0";
+                settings["MuteMaster"] = chkMuteMaster.Checked ? "1" : "0";
+                settings["MuteCapture"] = chkMuteCapture.Checked ? "1" : "0";
             }
             catch { }
         }
@@ -771,13 +866,23 @@ namespace StereoSplitter
                 {
                     bool m = GetInt("MuteMaster", 0) != 0;
                     chkMuteMaster.Checked = m;
+                    any = true;
+                }
+                if (settings.ContainsKey("MuteCapture"))
+                {
+                    bool m = GetInt("MuteCapture", 0) != 0;
+                    chkMuteCapture.Checked = m;
                     if (syncVol != null)
                     {
-                        try { syncVol.Mute = m; }
+                        try
+                        {
+                            syncVol.Mute = m;
+                            captureMuteApplied = (m != captureMuteEntered);
+                        }
                         catch (Exception ex)
                         {
-                            Log("[错误] 恢复主静音失败: " + ex.Message);
-                            try { chkMuteMaster.Checked = syncVol.Mute; } catch { }
+                            Log("[错误] 恢复捕获消音失败: " + ex.Message);
+                            try { chkMuteCapture.Checked = syncVol.Mute; } catch { }
                         }
                     }
                     any = true;
@@ -838,7 +943,8 @@ namespace StereoSplitter
                 Log("[初始化] 设置已加载: 主=" + volMaster.Value + "%/" + (chkMuteMaster.Checked ? "静音" : "开") +
                     " 左=" + volLeft.Value + "%/" + (chkMuteL.Checked ? "静音" : "开") +
                     " 右=" + volRight.Value + "%/" + (chkMuteR.Checked ? "静音" : "开") +
-                    " 增益=" + volGain.Value + "%");
+                    " 增益=" + volGain.Value + "%" +
+                    (chkMuteCapture.Checked ? " 捕获消音=开" : ""));
         }
 
         // ==================== 托盘与单实例激活 ====================
@@ -896,6 +1002,33 @@ namespace StereoSplitter
             catch { }
         }
 
+        void UnbindDefaultVolumeSync()
+        {
+            if (syncVol != null)
+            {
+                try { syncVol.OnVolumeNotification -= SyncVol_OnVolumeNotification; } catch { }
+                try { syncVol.Dispose(); } catch { }
+                syncVol = null;
+                syncDev = null;
+            }
+        }
+
+        void RefreshDevicesClick()
+        {
+            Log("[刷新] 重新枚举设备...");
+
+            // 释放旧 MMDevice/端点绑定, 刷新后按新对象重绑
+            UnbindDefaultVolumeSync();
+            UnbindChannel(ref syncLeftDev, ref syncLeftVol, LeftVol_OnVolumeNotification);
+            UnbindChannel(ref syncRightDev, ref syncRightVol, RightVol_OnVolumeNotification);
+
+            RefreshDevices();
+            BindDefaultVolumeSync("[音量]");
+            BindChannelVolumeSync("[音量]");
+            SaveSettings();
+            Log("[刷新] 完成, 共 " + devices.Count + " 个设备");
+        }
+
         void RefreshDevices()
         {
             loadingDevices = true;
@@ -925,7 +1058,7 @@ namespace StereoSplitter
                 // 恢复 ini 保存的设备选择 (按设备 ID, 找不到则保留上面的默认)
                 RestoreDeviceSelection("DeviceLeft", cmbLeft, "左");
                 RestoreDeviceSelection("DeviceRight", cmbRight, "右");
-                RestoreDeviceSelection("DeviceDefault", cmbDefault, "默认输出");
+                RestoreDeviceSelection("DeviceDefault", cmbDefault, "捕获输出");
 
                 Log("[初始化] 发现 " + devices.Count + " 个输出设备，默认输出: [" + defIdx + "] " + def.FriendlyName);
             }
@@ -945,7 +1078,7 @@ namespace StereoSplitter
 
             if (cmbDefault.SelectedIndex < 0)
             {
-                MessageBox.Show("请选择默认输出设备。", "提示");
+                MessageBox.Show("请选择捕获输出设备。", "提示");
                 return;
             }
 
@@ -982,8 +1115,8 @@ namespace StereoSplitter
                         others.Add("[" + i + "] " + devices[i].FriendlyName);
                 SetAppState(AppState.Failed);
                 MessageBox.Show(
-                    "默认输出设备与目标设备相同，会造成声音回环！\n\n" +
-                    "请先在 Windows 声音设置中把默认输出改为:\n" + string.Join("\n", others),
+                    "捕获输出与左右目标相同，会造成声音回环！\n\n" +
+                    "请把「捕获(虚拟)」改为虚拟设备(如 CABLE Input)。\n其它可选:\n" + string.Join("\n", others),
                     "设备冲突");
                 return;
             }
@@ -992,7 +1125,8 @@ namespace StereoSplitter
             {
                 engine = new AudioEngine(devices[cmbLeft.SelectedIndex], devices[rightIdxSafe()], Log);
                 int prof = cmbLatency.SelectedIndex < 0 ? 0 : cmbLatency.SelectedIndex;
-                engine.Start(pendingGain, CurrentMaster(), LatencyProfiles[prof][0], LatencyProfiles[prof][1]);
+                engine.Start(pendingGain, CurrentMaster(), LatencyProfiles[prof][0], LatencyProfiles[prof][1],
+                    (int)nudDelayL.Value, (int)nudDelayR.Value);
                 SetAppState(AppState.Running);
                 ApplyVolumes();
                 Log("[启动] 端点绑定: 主=" + DevInfo(syncDev) + " / 左=" + DevInfo(syncLeftDev) + " / 右=" + DevInfo(syncRightDev));
@@ -1047,6 +1181,13 @@ namespace StereoSplitter
 
             StopEngine();
 
+            // 恢复捕获设备进入时的原静音状态 (我们改过才恢复)
+            if (captureMuteApplied && syncVol != null)
+            {
+                try { syncVol.Mute = captureMuteEntered; }
+                catch { }
+            }
+
             // 恢复默认输出
             try
             {
@@ -1063,13 +1204,7 @@ namespace StereoSplitter
             }
             catch { }
 
-            if (syncVol != null)
-            {
-                try { syncVol.OnVolumeNotification -= SyncVol_OnVolumeNotification; } catch { }
-                try { syncVol.Dispose(); } catch { }
-                syncVol = null;
-                syncDev = null;
-            }
+            UnbindDefaultVolumeSync();
             UnbindChannel(ref syncLeftDev, ref syncLeftVol, LeftVol_OnVolumeNotification);
             UnbindChannel(ref syncRightDev, ref syncRightVol, RightVol_OnVolumeNotification);
 
@@ -1105,6 +1240,55 @@ namespace StereoSplitter
         }
     }
 
+    // 捕获时钟域内的固定延迟线: 数据攒到目标水位后按到达顺序放出
+    // 稳态 FIFO 恒等于 target 字节 → 延迟精确恒定, 不引入新时钟漂移
+    class DelayLine
+    {
+        class Block
+        {
+            public byte[] Data;
+            public int Len;
+            public int Offset;
+        }
+
+        readonly Queue<Block> blocks = new Queue<Block>();
+        readonly int targetBytes;
+        readonly Action<byte[], int, int> emit;
+        long buffered;
+
+        public DelayLine(int targetBytes, Action<byte[], int, int> emit)
+        {
+            this.targetBytes = Math.Max(0, targetBytes);
+            this.emit = emit;
+        }
+
+        public void Write(byte[] data, int len)
+        {
+            if (len <= 0) return;
+            var copy = new byte[len];
+            Buffer.BlockCopy(data, 0, copy, 0, len);
+            blocks.Enqueue(new Block { Data = copy, Len = len });
+            buffered += len;
+
+            while (buffered > targetBytes && blocks.Count > 0)
+            {
+                var b = blocks.Peek();
+                int avail = b.Len - b.Offset;
+                int take = (int)Math.Min(avail, buffered - targetBytes);
+                emit(b.Data, b.Offset, take);
+                b.Offset += take;
+                buffered -= take;
+                if (b.Offset >= b.Len) blocks.Dequeue();
+            }
+        }
+
+        public void Clear()
+        {
+            blocks.Clear();
+            buffered = 0;
+        }
+    }
+
     class AudioEngine : IDisposable
     {
         WasapiLoopbackCapture loopback;
@@ -1114,6 +1298,7 @@ namespace StereoSplitter
         MMDevice leftDev, rightDev;
         Action<string> log;
         volatile int sampleRate;
+        DelayLine leftLine, rightLine;
 
         public AudioEngine(MMDevice leftDev, MMDevice rightDev, Action<string> log)
         {
@@ -1122,7 +1307,7 @@ namespace StereoSplitter
             this.log = log;
         }
 
-        public void Start(float gain, float master, int prebufferMs, int outLatencyMs)
+        public void Start(float gain, float master, int prebufferMs, int outLatencyMs, int leftDelayMs, int rightDelayMs)
         {
             var enumerator = new MMDeviceEnumerator();
             var captureDev = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
@@ -1149,19 +1334,37 @@ namespace StereoSplitter
             leftOut.Init(leftProvider);
             rightOut.Init(rightProvider);
 
+            // 左右独立延迟线 (mono float32 = 4字节/样本, 目标水位对齐到样本边界)
+            leftLine = new DelayLine((int)(((long)wf.SampleRate * leftDelayMs * 4 / 1000) & ~3L),
+                (buf, off, len) => Split(buf, off, len, 0, leftBuf));
+            rightLine = new DelayLine((int)(((long)wf.SampleRate * rightDelayMs * 4 / 1000) & ~3L),
+                (buf, off, len) => Split(buf, off, len, 1, rightBuf));
+
             loopback.DataAvailable += (s, e) =>
             {
-                Split(e.Buffer, e.BytesRecorded, 0, leftBuf);
-                Split(e.Buffer, e.BytesRecorded, 1, rightBuf);
+                leftLine.Write(e.Buffer, e.BytesRecorded);
+                rightLine.Write(e.Buffer, e.BytesRecorded);
             };
 
             loopback.StartRecording();
 
-            // 预缓冲字节数按采样率动态计算 (mono float32 = 4字节/样本)
-            int prebufferBytes = (int)((long)wf.SampleRate * prebufferMs * 4 / 1000);
+            // 预缓冲字节数按采样率动态计算 (mono float32 = 4字节/样本), 向下对齐到样本边界
+            int prebufferBytes = (int)(((long)wf.SampleRate * prebufferMs * 4 / 1000) & ~3L);
             int waits = 0;
-            while (leftBuf.BufferedBytes < prebufferBytes && waits < 100) { Thread.Sleep(20); waits++; }
-            log("[启动] 预缓冲完成 (" + leftBuf.BufferedBytes + " 字节, 档位 " + prebufferMs + "ms / 输出 " + outLatencyMs + "ms)");
+            // 等待上限随预缓冲与延迟补偿动态放宽 (延迟 2000ms 时固定 2s 会超时)
+            int maxWaits = (prebufferMs + Math.Max(leftDelayMs, rightDelayMs) + 1000) / 20 + 50;
+            while ((leftBuf.BufferedBytes < prebufferBytes || rightBuf.BufferedBytes < prebufferBytes) && waits < maxWaits)
+            { Thread.Sleep(20); waits++; }
+
+            // 修剪快路多攒的水位: 等待以慢路为终点时, 无延迟的快路会多攒数据, 抵消延迟线的时差
+            // 两 buf 统一修剪到预缓冲阈值 → 净声道差 = 延迟线的 (L - R)
+            TrimTo(leftBuf, prebufferBytes);
+            TrimTo(rightBuf, prebufferBytes);
+
+            log("[启动] 预缓冲完成 (L=" + leftBuf.BufferedBytes + " R=" + rightBuf.BufferedBytes +
+                " 字节, 档位 " + prebufferMs + "ms / 输出 " + outLatencyMs + "ms)");
+            if (leftDelayMs > 0 || rightDelayMs > 0)
+                log("[启动] 延迟补偿: 左=" + leftDelayMs + "ms 右=" + rightDelayMs + "ms");
 
             leftOut.Play();
             rightOut.Play();
@@ -1199,9 +1402,24 @@ namespace StereoSplitter
             if (loopback != null) { try { loopback.StopRecording(); } catch { } }
             if (leftOut != null) { try { leftOut.Stop(); } catch { } }
             if (rightOut != null) { try { rightOut.Stop(); } catch { } }
+            if (leftLine != null) leftLine.Clear();
+            if (rightLine != null) rightLine.Clear();
         }
 
-        void Split(byte[] data, int bytes, int channel, BufferedWaveProvider target)
+        static void TrimTo(BufferedWaveProvider buf, int targetBytes)
+        {
+            int excess = buf.BufferedBytes - targetBytes;
+            if (excess <= 0) return;
+            var tmp = new byte[excess];
+            while (excess > 0)
+            {
+                int got = buf.Read(tmp, 0, excess);
+                if (got <= 0) break;
+                excess -= got;
+            }
+        }
+
+        void Split(byte[] data, int offset, int bytes, int channel, BufferedWaveProvider target)
         {
             var f = loopback.WaveFormat;
             int bps = f.BitsPerSample / 8;
@@ -1212,7 +1430,7 @@ namespace StereoSplitter
 
             for (int i = 0; i < frames; i++)
             {
-                int off = i * frame + channel * bps;
+                int off = offset + i * frame + channel * bps;
                 float sample;
                 if (f.Encoding == WaveFormatEncoding.IeeeFloat)
                     sample = BitConverter.ToSingle(data, off);
