@@ -132,6 +132,8 @@ namespace StereoSplitter
         // 捕获设备进入时的原静音状态, 退出/换绑时恢复
         bool captureMuteEntered = false;
         bool captureMuteApplied = false;
+        // 应用已知的端点静音基线 (所有 syncVol.Mute 写点回写); 通知里与 data.Muted 不等=外部改动, 驱动主静音双向跟随
+        bool lastMuteWeWrote = false;
         // 左右声道进入时的原静音状态 (退出恢复用, 与捕获消音对称)
         bool leftMuteEntered = false, leftMuteApplied = false;
         bool rightMuteEntered = false, rightMuteApplied = false;
@@ -353,6 +355,7 @@ namespace StereoSplitter
                     try
                     {
                         syncVol.Mute = chkMuteCapture.Checked;
+                        lastMuteWeWrote = syncVol.Mute;
                         captureMuteApplied = (syncVol.Mute != captureMuteEntered);
                     }
                     catch { }
@@ -677,7 +680,7 @@ namespace StereoSplitter
                     // 退旧前恢复旧设备消音状态 (我们改过才恢复)
                     if (captureMuteApplied && syncVol != null)
                     {
-                        try { syncVol.Mute = captureMuteEntered; } catch { }
+                        try { syncVol.Mute = captureMuteEntered; lastMuteWeWrote = captureMuteEntered; } catch { }
                     }
 
                     // 退旧 (不 Dispose: MMDevice.AudioEndpointVolume 是缓存实例, Dispose 会使后续绑定拿到已释放 RCW)
@@ -693,12 +696,14 @@ namespace StereoSplitter
                     syncVol = def.AudioEndpointVolume;
                     syncVol.OnVolumeNotification += SyncVol_OnVolumeNotification;
                     captureMuteEntered = syncVol.Mute;
+                    lastMuteWeWrote = syncVol.Mute;
                     captureMuteApplied = false;
                     captureVolEntered = syncVol.MasterVolumeLevelScalar; // 原音量, 停止时还原
                     // 勾选跟人走: 换绑后新设备立即消音 (旧设备已按 applied 恢复原状态)
                     if (chkMuteCapture.Checked)
                     {
                         try { syncVol.Mute = true; } catch { }
+                        lastMuteWeWrote = true;
                         captureMuteApplied = (syncVol.Mute != captureMuteEntered);
                     }
                 }
@@ -750,14 +755,23 @@ namespace StereoSplitter
                     if (volSyncing || syncVol == null) return;
                     volSyncing = true;
                     int v = Math.Max(0, Math.Min(100, (int)Math.Round(data.MasterVolume * 100)));
-                    if (volMaster.Value != v)
+                    bool valueChanged = (volMaster.Value != v);
+                    if (valueChanged)
                     {
                         volMaster.Value = v;
                         lblVolMaster.Text = v + "%";
                         ApplyVolumes();
                         SaveSettings();
-                        // 维持"值0=静音"不变式: 外部(音量键/混音器)同步置0时同样自动勾选, 升离0自动取消
-                        bool want = (v == 0);
+                    }
+                    // 端点静音基线: 与 data.Muted 不等 = 外部(系统声音设置)对捕获设备点静音/解除
+                    bool muteExternal = (data.Muted != lastMuteWeWrote);
+                    lastMuteWeWrote = data.Muted;
+                    // 双向跟随仅运行中; 捕获消音锁开启时 mute 位归锁管, 主静音不跟
+                    bool follow = running && !chkMuteCapture.Checked;
+                    if (valueChanged || (follow && muteExternal))
+                    {
+                        // 不变式: 值0=静音; 外部静音→主静音跟勾, 外部解除→跟取消 (音量0时保持勾选)
+                        bool want = (v == 0) || (follow && data.Muted);
                         if (chkMuteMaster.Checked != want) chkMuteMaster.Checked = want;
                     }
                     if (chkMuteCapture.Checked && !data.Muted)
@@ -766,6 +780,7 @@ namespace StereoSplitter
                         try
                         {
                             syncVol.Mute = true;
+                            lastMuteWeWrote = true;
                             captureMuteApplied = (syncVol.Mute != captureMuteEntered);
                         }
                         catch (Exception ex) { Log("[错误] 恢复捕获消音失败: " + ex.Message); }
@@ -1185,12 +1200,13 @@ namespace StereoSplitter
                         try
                         {
                             syncVol.Mute = m;
+                            lastMuteWeWrote = m;
                             captureMuteApplied = (m != captureMuteEntered);
                         }
                         catch (Exception ex)
                         {
                             Log("[错误] 恢复捕获消音失败: " + ex.Message);
-                            try { chkMuteCapture.Checked = syncVol.Mute; } catch { }
+                            try { chkMuteCapture.Checked = syncVol.Mute; lastMuteWeWrote = syncVol.Mute; } catch { }
                         }
                     }
                     any = true;
@@ -1349,7 +1365,7 @@ namespace StereoSplitter
             // 恢复捕获设备进入时的原静音状态 (我们改过才恢复)
             if (captureMuteApplied && syncVol != null)
             {
-                try { syncVol.Mute = captureMuteEntered; } catch { }
+                try { syncVol.Mute = captureMuteEntered; lastMuteWeWrote = captureMuteEntered; } catch { }
                 captureMuteApplied = false;
             }
 
@@ -1420,6 +1436,7 @@ namespace StereoSplitter
                     {
                         syncVol.MasterVolumeLevelScalar = volMaster.Value / 100f;
                         if (syncVol.Mute != chkMuteCapture.Checked) syncVol.Mute = chkMuteCapture.Checked;
+                        lastMuteWeWrote = syncVol.Mute;
                         captureMuteApplied = (syncVol.Mute != captureMuteEntered);
                     }
                     catch (Exception ex) { Log("[错误] 按UI值写入主音量端点失败: " + ex.Message); }
