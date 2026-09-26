@@ -244,10 +244,16 @@ namespace StereoSplitter
             volLeft.Scroll += (s, e) =>
             {
                 lblVolLeft.Text = volLeft.Value + "%";
+                // 调音量即取消静音 (主动操作优先于勾选状态)
+                if (chkMuteL.Checked) chkMuteL.Checked = false;
                 // 双向同步: 写入左声道设备端点音量
                 if (!volSyncing && syncLeftVol != null)
                 {
-                    try { syncLeftVol.MasterVolumeLevelScalar = volLeft.Value / 100f; }
+                    try
+                    {
+                        syncLeftVol.MasterVolumeLevelScalar = volLeft.Value / 100f;
+                        if (syncLeftVol.Mute) syncLeftVol.Mute = false;
+                    }
                     catch (Exception ex) { Log("[错误] 同步左声道端点音量失败: " + ex.Message); }
                 }
                 SaveSettings();
@@ -255,10 +261,16 @@ namespace StereoSplitter
             volRight.Scroll += (s, e) =>
             {
                 lblVolRight.Text = volRight.Value + "%";
+                // 调音量即取消静音 (主动操作优先于勾选状态)
+                if (chkMuteR.Checked) chkMuteR.Checked = false;
                 // 双向同步: 写入右声道设备端点音量
                 if (!volSyncing && syncRightVol != null)
                 {
-                    try { syncRightVol.MasterVolumeLevelScalar = volRight.Value / 100f; }
+                    try
+                    {
+                        syncRightVol.MasterVolumeLevelScalar = volRight.Value / 100f;
+                        if (syncRightVol.Mute) syncRightVol.Mute = false;
+                    }
                     catch (Exception ex) { Log("[错误] 同步右声道端点音量失败: " + ex.Message); }
                 }
                 SaveSettings();
@@ -267,7 +279,9 @@ namespace StereoSplitter
             {
                 lblVolMaster.Text = volMaster.Value + "%";
                 ApplyVolumes();
-                // 双向同步: 写入当前默认输出设备的端点音量
+                // 调音量即取消采样层主静音 (捕获消音锁定不受拖动影响)
+                if (chkMuteMaster.Checked) chkMuteMaster.Checked = false;
+                // 双向同步: 写入当前默认输出设备的端点音量 (不改捕获消音状态)
                 if (!volSyncing && syncVol != null)
                 {
                     try { syncVol.MasterVolumeLevelScalar = volMaster.Value / 100f; }
