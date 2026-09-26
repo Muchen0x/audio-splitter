@@ -6,6 +6,7 @@ using System.Threading;
 using System.Windows.Forms;
 using NAudio.Wave;
 using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi.Interfaces;
 
 namespace StereoSplitter
 {
@@ -108,6 +109,9 @@ namespace StereoSplitter
         bool rightMuteEntered = false, rightMuteApplied = false;
         // 绑定(启动分流)时的原端点音量, 停止/失败/退出时还原 (UI不回滚)
         float captureVolEntered = 1f, leftVolEntered = 1f, rightVolEntered = 1f;
+        // 系统默认输出监听: 切走→解绑还原, 切回→自动重绑
+        DefaultChangeWatcher defaultWatcher;
+        string expectCaptureId = null;
 
         List<MMDevice> devices = new List<MMDevice>();
         MMDeviceEnumerator enumerator;
@@ -469,6 +473,10 @@ namespace StereoSplitter
             try
             {
                 enumerator = new MMDeviceEnumerator();
+                // 监听系统默认输出变化: 绑定期间被切走→解绑还原, 切回→自动重绑
+                defaultWatcher = new DefaultChangeWatcher(OnSystemDefaultChanged);
+                try { enumerator.RegisterEndpointNotificationCallback(defaultWatcher); }
+                catch (Exception ex) { Log("[警告] 注册默认输出监听失败: " + ex.Message); }
                 RefreshDevices();
                 RecordRestoreTarget();
                 ApplyIniVolumeOverrides();
@@ -490,12 +498,85 @@ namespace StereoSplitter
             }
         }
 
+        // 系统默认输出变化 (COM回调线程) → 回UI线程处理
+        void OnSystemDefaultChanged(DataFlow flow, Role role, string newId)
+        {
+            if (flow != DataFlow.Render) return; // 只关心输出设备
+            if (IsDisposed || !IsHandleCreated) return;
+            try { BeginInvoke(new Action(delegate { HandleDefaultChanged(newId); })); }
+            catch { }
+        }
+
+        void HandleDefaultChanged(string newId)
+        {
+            if (newId == null) return;
+
+            if (syncDev == null)
+            {
+                // 已解绑状态: 分流仍在跑 + 切回期望的捕获设备 → 自动重绑
+                if ((state == AppState.Starting || state == AppState.Running)
+                    && expectCaptureId != null && newId == expectCaptureId)
+                    RebindAfterDefaultRestored();
+                return; // 切到第三方设备 → 保持解绑, 不动作
+            }
+
+            if (newId == syncDev.ID) return; // 我们自己切的(启动配置/退出恢复) → 忽略
+
+            // 外部切走 → 先停双向绑定 + 还原原音量, 分流不停
+            Log("[恢复] 检测到默认输出被切换 → 解除双向音量绑定并还原原音量 (分流继续运行)");
+            expectCaptureId = syncDev.ID; // 记住期望捕获设备, 供"切回"识别
+            UnbindAllVolumeSync();        // 解绑通知 + 还原三端点原音量 + 还原已改静音
+            SetVolumeBindVisual(false);   // 数值标签变灰(绑定已失效)
+        }
+
+        // 默认输出切回捕获设备 → 自动重绑双向音量 (引擎未停, UI仍为权威源)
+        void RebindAfterDefaultRestored()
+        {
+            try
+            {
+                Log("[恢复] 默认输出已切回捕获设备 → 自动重新绑定音量");
+
+                // 捕获 UI 当前值 (Bind 回读会用设备值覆盖, 与启动流程同理)
+                int uiL = volLeft.Value, uiR = volRight.Value, uiM = volMaster.Value;
+                bool uiMl = chkMuteL.Checked, uiMr = chkMuteR.Checked,
+                     uiMm = chkMuteMaster.Checked, uiMc = chkMuteCapture.Checked;
+
+                BindDefaultVolumeSync("[恢复]");
+                bool ok = BindChannelVolumeSync("[恢复]");
+                RestoreUIValues(uiL, uiR, uiM, uiMl, uiMr, uiMm, uiMc); // UI 覆盖回来
+                SetVolumeBindVisual(syncVol != null && ok);
+                WriteUIValuesToDevice(); // 恢复后的 UI 值写回设备
+                Log("[恢复] 重绑完成: 主=" + DevInfo(syncDev) + " / 左=" + DevInfo(syncLeftDev) + " / 右=" + DevInfo(syncRightDev));
+            }
+            catch (Exception ex)
+            {
+                Log("[错误] 自动重绑失败: " + ex.Message);
+                SetVolumeBindVisual(false);
+            }
+        }
+
+        // Bind 回读会用设备值覆盖控件 → 恢复 UI 权威值 (volSyncing 包裹防写端点)
+        void RestoreUIValues(int uiL, int uiR, int uiM, bool uiMl, bool uiMr, bool uiMm, bool uiMc)
+        {
+            volSyncing = true;
+            volLeft.Value = uiL;
+            volRight.Value = uiR;
+            volMaster.Value = uiM;
+            lblVolLeft.Text = uiL + "%";
+            lblVolRight.Text = uiR + "%";
+            lblVolMaster.Text = uiM + "%";
+            chkMuteL.Checked = uiMl;
+            chkMuteR.Checked = uiMr;
+            chkMuteMaster.Checked = uiMm;
+            chkMuteCapture.Checked = uiMc;
+            volSyncing = false;
+        }
+
         void RecordRestoreTarget()
         {
             // 记录进入时的默认输出，退出时恢复
             try
-            {
-                var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            {                var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
                 restoreDefaultId = def.ID;
                 string defName = def.FriendlyName;
                 try { def.Dispose(); } catch { }
@@ -1463,18 +1544,7 @@ namespace StereoSplitter
             try
             {
                 // 恢复被 Bind 回填覆盖的 UI 值, 以 UI 为唯一权威源写入端点
-                volSyncing = true;
-                volLeft.Value = uiL;
-                volRight.Value = uiR;
-                volMaster.Value = uiM;
-                lblVolLeft.Text = uiL + "%";
-                lblVolRight.Text = uiR + "%";
-                lblVolMaster.Text = uiM + "%";
-                chkMuteL.Checked = uiMl;
-                chkMuteR.Checked = uiMr;
-                chkMuteMaster.Checked = uiMm;
-                chkMuteCapture.Checked = uiMc;
-                volSyncing = false;
+                RestoreUIValues(uiL, uiR, uiM, uiMl, uiMr, uiMm, uiMc);
                 WriteUIValuesToDevice();
 
                 engine = new AudioEngine(devices[cmbLeft.SelectedIndex], devices[cmbRight.SelectedIndex], Log);
@@ -1574,6 +1644,12 @@ namespace StereoSplitter
                 try { logWriter.Dispose(); } catch { }
                 logWriter = null;
             }
+            // 注销默认输出监听 (须在 enumerator 释放前)
+            if (defaultWatcher != null && enumerator != null)
+            {
+                try { enumerator.UnregisterEndpointNotificationCallback(defaultWatcher); } catch { }
+                defaultWatcher = null;
+            }
             // 释放 MMDevice/枚举器 (引擎已停, 设备不再被引用)
             foreach (var d in devices)
             {
@@ -1633,6 +1709,27 @@ namespace StereoSplitter
         protected override void OnMouseWheel(MouseEventArgs e)
         {
         }
+    }
+
+    // 系统默认输出变化监听 (COM回调线程 → 转发给主窗体处理)
+    class DefaultChangeWatcher : IMMNotificationClient
+    {
+        readonly Action<DataFlow, Role, string> onDefaultChanged;
+
+        public DefaultChangeWatcher(Action<DataFlow, Role, string> cb)
+        {
+            onDefaultChanged = cb;
+        }
+
+        public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
+        {
+            try { onDefaultChanged(flow, role, defaultDeviceId); } catch { }
+        }
+
+        public void OnDeviceStateChanged(string deviceId, DeviceState newState) { }
+        public void OnDeviceAdded(string pwstrDeviceId) { }
+        public void OnDeviceRemoved(string deviceId) { }
+        public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
     }
 
     // 不接受焦点的 SplitContainer: 点击/拖动分隔条不产生焦点虚线框
