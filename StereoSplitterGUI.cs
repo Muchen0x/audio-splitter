@@ -65,6 +65,7 @@ namespace StereoSplitter
             new int[] { 5, 5 },
         };
         System.Windows.Forms.Timer waterTimer;
+        System.Windows.Forms.Timer saveDebounce;
         TrackBar volLeft, volRight, volMaster, volGain;
         Label lblVolLeft, lblVolRight, lblVolMaster, lblVolGain;
         Label lblDot, lblStatus;
@@ -72,6 +73,7 @@ namespace StereoSplitter
         Button btnRefresh;
         Button btnClearLog;
         string sessionLogFile;
+        StreamWriter logWriter;
         SplitContainer splitContainer;
         TextBox txtLog;
         CheckBox chkMuteL, chkMuteR, chkMuteMaster, chkMuteCapture;
@@ -96,9 +98,14 @@ namespace StereoSplitter
         volatile bool volSyncing = false;
         bool loadingDevices = false;
         string restoreDefaultId = null;
+        // 点开始分流时的系统默认输出, 启动失败时回滚 (AutoConfigure 会改默认)
+        string preStartDefaultId = null;
         // 捕获设备进入时的原静音状态, 退出/换绑时恢复
         bool captureMuteEntered = false;
         bool captureMuteApplied = false;
+        // 左右声道进入时的原静音状态 (静音锁定 + 退出恢复, 与捕获消音对称)
+        bool leftMuteEntered = false, leftMuteApplied = false;
+        bool rightMuteEntered = false, rightMuteApplied = false;
 
         List<MMDevice> devices = new List<MMDevice>();
         MMDeviceEnumerator enumerator;
@@ -224,7 +231,13 @@ namespace StereoSplitter
             btnClearLog.Click += (s, e) =>
             {
                 txtLog.Clear();
-                try { if (sessionLogFile != null) File.WriteAllText(sessionLogFile, ""); } catch { }
+                try
+                {
+                    // writer 打开时不能用 WriteAllText (句柄冲突), 直接截断底层流
+                    if (logWriter != null) { logWriter.Flush(); logWriter.BaseStream.SetLength(0); }
+                    else if (sessionLogFile != null) File.WriteAllText(sessionLogFile, "");
+                }
+                catch { }
             };
             chkMinimizeToTray.CheckedChanged += (s, e) => SaveSettings();
             cmbLatency.SelectedIndexChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
@@ -232,15 +245,9 @@ namespace StereoSplitter
             nudDelayR.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudWaterInterval.ValueChanged += (s, e) =>
             {
-                if (waterTimer != null)
-                {
-                    if ((int)nudWaterInterval.Value == 0) waterTimer.Stop(); // 间隔0=关闭水位监控
-                    else
-                    {
-                        waterTimer.Interval = Math.Max(5, (int)nudWaterInterval.Value) * 1000;
-                        waterTimer.Start();
-                    }
-                }
+                int v = (int)nudWaterInterval.Value;
+                if (v >= 1 && v <= 4) { nudWaterInterval.Value = 5; return; } // 下限5秒: 显示与实际一致
+                SyncWaterTimer();
                 if (!loadingSettings) SaveSettings();
             };
             cmbLeft.SelectedIndexChanged += (s, e) => { if (!loadingDevices) SaveSettings(); };
@@ -325,7 +332,11 @@ namespace StereoSplitter
             {
                 if (!volSyncing && syncLeftVol != null)
                 {
-                    try { syncLeftVol.Mute = chkMuteL.Checked; }
+                    try
+                    {
+                        syncLeftVol.Mute = chkMuteL.Checked;
+                        leftMuteApplied = (syncLeftVol.Mute != leftMuteEntered);
+                    }
                     catch { }
                 }
                 SaveSettings();
@@ -334,7 +345,11 @@ namespace StereoSplitter
             {
                 if (!volSyncing && syncRightVol != null)
                 {
-                    try { syncRightVol.Mute = chkMuteR.Checked; }
+                    try
+                    {
+                        syncRightVol.Mute = chkMuteR.Checked;
+                        rightMuteApplied = (syncRightVol.Mute != rightMuteEntered);
+                    }
                     catch { }
                 }
                 SaveSettings();
@@ -349,8 +364,10 @@ namespace StereoSplitter
                 string logDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log");
                 Directory.CreateDirectory(logDir);
                 sessionLogFile = Path.Combine(logDir, "session_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".log");
+                logWriter = new StreamWriter(sessionLogFile, true);
+                logWriter.AutoFlush = true;
             }
-            catch { sessionLogFile = null; }
+            catch { logWriter = null; }
 
             waterTimer = new System.Windows.Forms.Timer
             {
@@ -360,7 +377,15 @@ namespace StereoSplitter
             {
                 if (running && engine != null && (int)nudWaterInterval.Value > 0) Log("[状态] 缓冲水位 " + engine.BufferStatus());
             };
-            if ((int)nudWaterInterval.Value > 0) waterTimer.Start();
+            // 初始不启动: Ready 状态下不跑, 由 SetAppState 按状态启停
+
+            // ini 写盘 debounce (SaveSettings 同步字典后排队, 300ms 无新变更才落盘)
+            saveDebounce = new System.Windows.Forms.Timer { Interval = 300 };
+            saveDebounce.Tick += (s, e) =>
+            {
+                saveDebounce.Stop();
+                FlushSettings();
+            };
 
             Load += MainForm_Load;
             FormClosing += MainForm_FormClosing;
@@ -417,6 +442,24 @@ namespace StereoSplitter
             SetVolumeBindVisual(run);
 
             if (trayIcon != null) trayIcon.Text = "Stereo Splitter - " + txt;
+
+            // 水位监控仅运行时按间隔跑, Ready/Stopped 或间隔0=不跑 (防空转)
+            SyncWaterTimer();
+        }
+
+        // 水位 timer 启停与间隔统一入口 (SetAppState / 间隔变更时调用)
+        void SyncWaterTimer()
+        {
+            if (waterTimer == null) return;
+            if (running && (int)nudWaterInterval.Value > 0)
+            {
+                waterTimer.Interval = Math.Max(5, (int)nudWaterInterval.Value) * 1000;
+                waterTimer.Start();
+            }
+            else
+            {
+                waterTimer.Stop();
+            }
         }
 
         void MainForm_Load(object sender, EventArgs e)
@@ -452,8 +495,10 @@ namespace StereoSplitter
             {
                 var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
                 restoreDefaultId = def.ID;
+                string defName = def.FriendlyName;
+                try { def.Dispose(); } catch { }
 
-                if (IsVirtualDevice(def))
+                if (IsVirtualDeviceName(defName))
                 {
                     // 默认是虚拟设备(如安装器切成 CABLE): 选真实扬声器作恢复目标
                     foreach (var d in devices)
@@ -475,7 +520,11 @@ namespace StereoSplitter
 
         bool IsVirtualDevice(MMDevice d)
         {
-            string n = d.FriendlyName;
+            return IsVirtualDeviceName(d.FriendlyName);
+        }
+
+        bool IsVirtualDeviceName(string n)
+        {
             return n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    n.IndexOf("虚拟", StringComparison.Ordinal) >= 0 ||
                    n.IndexOf("MIXLINE", StringComparison.OrdinalIgnoreCase) >= 0 ||
@@ -516,6 +565,7 @@ namespace StereoSplitter
                     if (chkMuteCapture.Checked)
                     {
                         try { syncVol.Mute = true; } catch { }
+                        captureMuteApplied = (syncVol.Mute != captureMuteEntered);
                     }
                 }
 
@@ -527,7 +577,8 @@ namespace StereoSplitter
                 captureMuteApplied = (syncVol.Mute != captureMuteEntered);
                 volSyncing = false;
 
-                Log(stage + " 主音量同步 → [" + FindIdxById(def.ID) + "] " + def.FriendlyName + " (" + v + "%" + (syncVol.Mute ? ", 消音" : "") + ")");
+                Log(stage + " 主音量绑定 → [" + FindIdxById(def.ID) + "] " + def.FriendlyName +
+                    " (设备值 " + v + "%" + (syncVol.Mute ? ", 消音" : "") + "，启动时按 UI 值写入)");
             }
             catch (Exception ex)
             {
@@ -576,7 +627,11 @@ namespace StereoSplitter
                     if (chkMuteCapture.Checked && !data.Muted)
                     {
                         // 消音锁定: 任何外部(系统音量条/快捷键/驱动)取消静音 → 静默恢复, 直到用户取消勾选
-                        try { syncVol.Mute = true; }
+                        try
+                        {
+                            syncVol.Mute = true;
+                            captureMuteApplied = (syncVol.Mute != captureMuteEntered);
+                        }
                         catch (Exception ex) { Log("[错误] 恢复捕获消音失败: " + ex.Message); }
                     }
                     else if (chkMuteCapture.Checked != data.Muted)
@@ -589,25 +644,36 @@ namespace StereoSplitter
             catch { }
         }
 
-        void BindChannelVolumeSync(string stage)
+        bool BindChannelVolumeSync(string stage)
         {
-            BindOneChannel(stage, "左", cmbLeft.SelectedIndex, ref syncLeftDev, ref syncLeftVol,
+            bool okL = BindOneChannel(stage, "左", cmbLeft.SelectedIndex, ref syncLeftDev, ref syncLeftVol,
                 LeftVol_OnVolumeNotification, volLeft, lblVolLeft, chkMuteL);
-            BindOneChannel(stage, "右", cmbRight.SelectedIndex, ref syncRightDev, ref syncRightVol,
+            bool okR = BindOneChannel(stage, "右", cmbRight.SelectedIndex, ref syncRightDev, ref syncRightVol,
                 RightVol_OnVolumeNotification, volRight, lblVolRight, chkMuteR);
+
+            // 记录进入时原静音状态 (未被我们改过 → 解绑时无需恢复)
+            if (syncLeftVol != null)
+            {
+                try { leftMuteEntered = syncLeftVol.Mute; leftMuteApplied = false; } catch { }
+            }
+            if (syncRightVol != null)
+            {
+                try { rightMuteEntered = syncRightVol.Mute; rightMuteApplied = false; } catch { }
+            }
 
             if (cmbLeft.SelectedIndex >= 0 && cmbLeft.SelectedIndex == cmbRight.SelectedIndex)
                 Log("[提示] 左右声道选择了同一设备 " + DevInfo(syncLeftDev) + "，两滑条联动同一端点");
+            return okL && okR;
         }
 
-        void BindOneChannel(string stage, string channel, int idx,
+        bool BindOneChannel(string stage, string channel, int idx,
             ref MMDevice dev, ref AudioEndpointVolume vol, AudioEndpointVolumeNotificationDelegate handler,
             TrackBar slider, Label lbl, CheckBox chkMute)
         {
             if (idx < 0 || idx >= devices.Count)
             {
                 UnbindChannel(ref dev, ref vol, handler);
-                return;
+                return true;
             }
 
             var d = devices[idx];
@@ -631,14 +697,16 @@ namespace StereoSplitter
                 chkMute.Checked = vol.Mute;
                 volSyncing = false;
 
-                Log(stage + " " + channel + "声道音量同步 → [" + idx + "] " + d.FriendlyName +
-                    " (" + v + "%" + (vol.Mute ? ", 静音" : "") + ")");
+                Log(stage + " " + channel + "声道音量绑定 → [" + idx + "] " + d.FriendlyName +
+                    " (设备值 " + v + "%" + (vol.Mute ? ", 静音" : "") + "，启动时按 UI 值写入)");
+                return true;
             }
             catch (Exception ex)
             {
                 volSyncing = false;
-                Log("[错误] " + stage + " " + channel + "声道音量同步失败: " + ex.Message);
+                Log("[错误] " + stage + " " + channel + "声道音量绑定失败: " + ex.Message);
                 UnbindChannel(ref dev, ref vol, handler);
+                return false;
             }
         }
 
@@ -668,7 +736,20 @@ namespace StereoSplitter
                         lblVolLeft.Text = v + "%";
                         SaveSettings();
                     }
-                    if (chkMuteL.Checked != data.Muted) chkMuteL.Checked = data.Muted;
+                    if (chkMuteL.Checked && !data.Muted)
+                    {
+                        // 静音锁定: 外部取消静音 → 静默恢复, 直到用户取消勾选 (与捕获消音对称)
+                        try
+                        {
+                            syncLeftVol.Mute = true;
+                            leftMuteApplied = (syncLeftVol.Mute != leftMuteEntered);
+                        }
+                        catch (Exception ex) { Log("[错误] 恢复左声道静音失败: " + ex.Message); }
+                    }
+                    else if (chkMuteL.Checked != data.Muted)
+                    {
+                        chkMuteL.Checked = data.Muted;
+                    }
                     volSyncing = false;
                 }));
             }
@@ -690,7 +771,20 @@ namespace StereoSplitter
                         lblVolRight.Text = v + "%";
                         SaveSettings();
                     }
-                    if (chkMuteR.Checked != data.Muted) chkMuteR.Checked = data.Muted;
+                    if (chkMuteR.Checked && !data.Muted)
+                    {
+                        // 静音锁定: 外部取消静音 → 静默恢复, 直到用户取消勾选 (与捕获消音对称)
+                        try
+                        {
+                            syncRightVol.Mute = true;
+                            rightMuteApplied = (syncRightVol.Mute != rightMuteEntered);
+                        }
+                        catch (Exception ex) { Log("[错误] 恢复右声道静音失败: " + ex.Message); }
+                    }
+                    else if (chkMuteR.Checked != data.Muted)
+                    {
+                        chkMuteR.Checked = data.Muted;
+                    }
                     volSyncing = false;
                 }));
             }
@@ -712,6 +806,7 @@ namespace StereoSplitter
                         dev.FriendlyName + " 失败 HRESULT=0x" + hr.ToString("X8"));
                     var def1 = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
                     int idx1 = devices.FindIndex(d => d.ID == def1.ID);
+                    try { def1.Dispose(); } catch { }
                     if (idx1 >= 0) cmbDefault.SelectedIndex = idx1;
                     return false;
                 }
@@ -770,7 +865,11 @@ namespace StereoSplitter
                 }
 
                 // 4. 重绑左右音量同步到左右目标设备
-                BindChannelVolumeSync("[配置] 4/4");
+                if (!BindChannelVolumeSync("[配置] 4/4"))
+                {
+                    Log("[错误] 配置 4/4 左右音量绑定失败，中止启动。");
+                    return false;
+                }
 
                 // 回环检查
                 if (cmbLeft.SelectedIndex == defIdx || cmbRight.SelectedIndex == defIdx)
@@ -852,6 +951,19 @@ namespace StereoSplitter
         {
             // 初始化阶段(读ini/Bind回读/覆盖回写)不落盘, 防止把ini冲成端点回读值
             if (loadingSettings) return;
+            // 字典立即同步: RefreshDevices 等按字典恢复选中, 不能等写盘
+            SyncSettingsDict();
+            // 文件写盘 debounce 300ms: 拖动滑条时避免每次移动都写盘
+            if (saveDebounce != null)
+            {
+                saveDebounce.Stop();
+                saveDebounce.Start();
+            }
+        }
+
+        void FlushSettings()
+        {
+            if (loadingSettings) return;
             try
             {
                 var sb = new System.Text.StringBuilder();
@@ -872,7 +984,14 @@ namespace StereoSplitter
                 sb.AppendLine("MuteMaster=" + (chkMuteMaster.Checked ? 1 : 0));
                 sb.AppendLine("MuteCapture=" + (chkMuteCapture.Checked ? 1 : 0));
                 File.WriteAllText(IniPath, sb.ToString());
-                // 同步回内存字典: 刷新设备等场景按字典恢复选中, 不读过期文件值
+            }
+            catch { }
+        }
+
+        void SyncSettingsDict()
+        {
+            try
+            {
                 settings["MinimizeToTray"] = chkMinimizeToTray.Checked ? "1" : "0";
                 settings["LatencyProfile"] = Math.Max(0, cmbLatency.SelectedIndex).ToString();
                 settings["DelayLeft"] = ((int)nudDelayL.Value).ToString();
@@ -1101,6 +1220,18 @@ namespace StereoSplitter
                 captureMuteApplied = false;
             }
 
+            // 恢复左右声道进入时的原静音状态 (静音锁定期间改过才恢复, 与捕获消音对称)
+            if (leftMuteApplied && syncLeftVol != null)
+            {
+                try { syncLeftVol.Mute = leftMuteEntered; } catch { }
+                leftMuteApplied = false;
+            }
+            if (rightMuteApplied && syncRightVol != null)
+            {
+                try { syncRightVol.Mute = rightMuteEntered; } catch { }
+                rightMuteApplied = false;
+            }
+
             UnbindDefaultVolumeSync();
             UnbindChannel(ref syncLeftDev, ref syncLeftVol, LeftVol_OnVolumeNotification);
             UnbindChannel(ref syncRightDev, ref syncRightVol, RightVol_OnVolumeNotification);
@@ -1116,41 +1247,71 @@ namespace StereoSplitter
             if (lblVolMaster != null) lblVolMaster.ForeColor = c;
         }
 
-        // 启动失败: 解绑(含恢复捕获静音) + Failed 状态
+        // 启动失败: 回滚系统默认输出 + 解绑(含恢复捕获静音) + Failed 状态
         void StartFailed()
         {
+            RollbackDefaultIfChanged();
             UnbindAllVolumeSync();
             SetAppState(AppState.Failed);
+        }
+
+        // 启动流程中默认输出被 AutoConfigure 改走 → 失败时恢复到点开始时的默认
+        void RollbackDefaultIfChanged()
+        {
+            if (preStartDefaultId == null || enumerator == null) return;
+            try
+            {
+                var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                string cur = def.ID;
+                try { def.Dispose(); } catch { }
+                if (cur != preStartDefaultId)
+                {
+                    int hr = PolicyConfigHelper.SetDefaultDevice(preStartDefaultId);
+                    if (hr == 0) Log("[回滚] 启动失败, 默认输出 → " + FindNameById(preStartDefaultId));
+                    else Log("[错误] 回滚默认输出失败 HRESULT=0x" + hr.ToString("X8"));
+                }
+            }
+            catch (Exception ex) { Log("[错误] 回滚默认输出异常: " + ex.Message); }
         }
 
         // 把 UI 当前音量值写入已绑定端点 (点开始分流时, UI 为唯一权威源)
         void WriteUIValuesToDevice()
         {
+            volSyncing = true;
             try
             {
-                volSyncing = true;
                 if (syncVol != null)
                 {
-                    syncVol.MasterVolumeLevelScalar = volMaster.Value / 100f;
-                    if (syncVol.Mute != chkMuteCapture.Checked) syncVol.Mute = chkMuteCapture.Checked;
-                    captureMuteApplied = (syncVol.Mute != captureMuteEntered);
+                    try
+                    {
+                        syncVol.MasterVolumeLevelScalar = volMaster.Value / 100f;
+                        if (syncVol.Mute != chkMuteCapture.Checked) syncVol.Mute = chkMuteCapture.Checked;
+                        captureMuteApplied = (syncVol.Mute != captureMuteEntered);
+                    }
+                    catch (Exception ex) { Log("[错误] 按UI值写入主音量端点失败: " + ex.Message); }
                 }
                 if (syncLeftVol != null)
                 {
-                    syncLeftVol.MasterVolumeLevelScalar = volLeft.Value / 100f;
-                    if (syncLeftVol.Mute != chkMuteL.Checked) syncLeftVol.Mute = chkMuteL.Checked;
+                    try
+                    {
+                        syncLeftVol.MasterVolumeLevelScalar = volLeft.Value / 100f;
+                        if (syncLeftVol.Mute != chkMuteL.Checked) syncLeftVol.Mute = chkMuteL.Checked;
+                        leftMuteApplied = (syncLeftVol.Mute != leftMuteEntered);
+                    }
+                    catch (Exception ex) { Log("[错误] 按UI值写入左声道端点失败: " + ex.Message); }
                 }
                 if (syncRightVol != null)
                 {
-                    syncRightVol.MasterVolumeLevelScalar = volRight.Value / 100f;
-                    if (syncRightVol.Mute != chkMuteR.Checked) syncRightVol.Mute = chkMuteR.Checked;
+                    try
+                    {
+                        syncRightVol.MasterVolumeLevelScalar = volRight.Value / 100f;
+                        if (syncRightVol.Mute != chkMuteR.Checked) syncRightVol.Mute = chkMuteR.Checked;
+                        rightMuteApplied = (syncRightVol.Mute != rightMuteEntered);
+                    }
+                    catch (Exception ex) { Log("[错误] 按UI值写入右声道端点失败: " + ex.Message); }
                 }
                 Log("[启动] 按UI值写入端点: 主=" + volMaster.Value + "% 左=" + volLeft.Value +
                     "% 右=" + volRight.Value + "% (捕获消音=" + (chkMuteCapture.Checked ? "是" : "否") + ")");
-            }
-            catch (Exception ex)
-            {
-                Log("[错误] 按UI值写入端点失败: " + ex.Message);
             }
             finally { volSyncing = false; }
         }
@@ -1172,6 +1333,11 @@ namespace StereoSplitter
             loadingDevices = true;
             try
             {
+                // 释放旧 MMDevice (调用前必已 UnbindAllVolumeSync 且引擎必停, 安全)
+                foreach (var old in devices)
+                {
+                    try { old.Dispose(); } catch { }
+                }
                 devices.Clear();
                 cmbLeft.Items.Clear();
                 cmbRight.Items.Clear();
@@ -1189,6 +1355,8 @@ namespace StereoSplitter
 
                 var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
                 int defIdx = devices.FindIndex(d => d.ID == def.ID);
+                string defName = def.FriendlyName;
+                try { def.Dispose(); } catch { }
                 if (cmbLeft.Items.Count > 0) cmbLeft.SelectedIndex = 0;
                 if (cmbRight.Items.Count > 1) cmbRight.SelectedIndex = 1;
                 if (cmbDefault.Items.Count > 0) cmbDefault.SelectedIndex = defIdx >= 0 ? defIdx : 0;
@@ -1198,7 +1366,7 @@ namespace StereoSplitter
                 RestoreDeviceSelection("DeviceRight", cmbRight, "右");
                 RestoreDeviceSelection("DeviceDefault", cmbDefault, "捕获输出");
 
-                Log("[初始化] 发现 " + devices.Count + " 个输出设备，默认输出: [" + defIdx + "] " + def.FriendlyName);
+                Log("[初始化] 发现 " + devices.Count + " 个输出设备，默认输出: [" + defIdx + "] " + defName);
             }
             finally
             {
@@ -1219,6 +1387,16 @@ namespace StereoSplitter
                 MessageBox.Show("请选择捕获输出设备。", "提示");
                 return;
             }
+
+            // 记录点开始时的系统默认输出 (启动失败时回滚 AutoConfigure 的修改)
+            preStartDefaultId = null;
+            try
+            {
+                var curDef = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                preStartDefaultId = curDef.ID;
+                try { curDef.Dispose(); } catch { }
+            }
+            catch { }
 
             SetAppState(AppState.Starting);
 
@@ -1250,6 +1428,7 @@ namespace StereoSplitter
 
             var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
             int defIdx = devices.FindIndex(d => d.ID == def.ID);
+            try { def.Dispose(); } catch { }
             if (defIdx == cmbLeft.SelectedIndex || defIdx == cmbRight.SelectedIndex)
             {
                 var others = new List<string>();
@@ -1281,7 +1460,7 @@ namespace StereoSplitter
                 volSyncing = false;
                 WriteUIValuesToDevice();
 
-                engine = new AudioEngine(devices[cmbLeft.SelectedIndex], devices[rightIdxSafe()], Log);
+                engine = new AudioEngine(devices[cmbLeft.SelectedIndex], devices[cmbRight.SelectedIndex], Log);
                 int prof = cmbLatency.SelectedIndex < 0 ? 0 : cmbLatency.SelectedIndex;
                 engine.Start(pendingGain, CurrentMaster(), LatencyProfiles[prof][0], LatencyProfiles[prof][1],
                     (int)nudDelayL.Value, (int)nudDelayR.Value);
@@ -1298,8 +1477,6 @@ namespace StereoSplitter
                 MessageBox.Show("启动失败: " + ex.Message, "错误");
             }
         }
-
-        int rightIdxSafe() { return cmbRight.SelectedIndex; }
 
         void StopEngine()
         {
@@ -1357,16 +1534,39 @@ namespace StereoSplitter
             catch { }
 
             SaveSettings();
+            FlushSettings(); // 退出前立即落最后一次 (debounce 不再等)
             if (waterTimer != null)
             {
                 waterTimer.Stop();
                 waterTimer.Dispose();
                 waterTimer = null;
             }
+            if (saveDebounce != null)
+            {
+                saveDebounce.Stop();
+                saveDebounce.Dispose();
+                saveDebounce = null;
+            }
             if (activateEvent != null)
             {
                 try { activateEvent.Close(); } catch { }
                 activateEvent = null;
+            }
+            if (logWriter != null)
+            {
+                try { logWriter.Dispose(); } catch { }
+                logWriter = null;
+            }
+            // 释放 MMDevice/枚举器 (引擎已停, 设备不再被引用)
+            foreach (var d in devices)
+            {
+                try { d.Dispose(); } catch { }
+            }
+            devices.Clear();
+            if (enumerator != null)
+            {
+                try { enumerator.Dispose(); } catch { }
+                enumerator = null;
             }
             if (trayIcon != null)
             {
@@ -1395,13 +1595,16 @@ namespace StereoSplitter
             string ui = line;
             if (ui.Length > 8192) ui = ui.Substring(0, 8192) + "\n...(日志过长已截断)";
             txtLog.AppendText(ui + "\r\n\r\n");
+            // 总量上限: 超 30 万字符截到 15 万, 防长时间运行文本无限增长 (文件不截断)
+            if (txtLog.TextLength > 300000) txtLog.Text = txtLog.Text.Substring(txtLog.TextLength - 150000);
             txtLog.SelectionStart = txtLog.TextLength;
             txtLog.ScrollToCaret();
 
             // 文件持久化 (写原文, 不截断)
             try
             {
-                if (sessionLogFile != null) File.AppendAllText(sessionLogFile, line + "\n");
+                if (logWriter != null) logWriter.WriteLine(line);
+                else if (sessionLogFile != null) File.AppendAllText(sessionLogFile, line + "\n");
             }
             catch { }
         }
@@ -1482,6 +1685,7 @@ namespace StereoSplitter
         readonly Queue<Block> blocks = new Queue<Block>();
         readonly int targetBytes;
         readonly Action<byte[], int, int> emit;
+        readonly object sync = new object(); // Write(采集线程) 与 Clear(UI线程) 并发保护
         long buffered;
 
         public DelayLine(int targetBytes, Action<byte[], int, int> emit)
@@ -1493,27 +1697,33 @@ namespace StereoSplitter
         public void Write(byte[] data, int len)
         {
             if (len <= 0) return;
-            var copy = new byte[len];
-            Buffer.BlockCopy(data, 0, copy, 0, len);
-            blocks.Enqueue(new Block { Data = copy, Len = len });
-            buffered += len;
-
-            while (buffered > targetBytes && blocks.Count > 0)
+            lock (sync)
             {
-                var b = blocks.Peek();
-                int avail = b.Len - b.Offset;
-                int take = (int)Math.Min(avail, buffered - targetBytes);
-                emit(b.Data, b.Offset, take);
-                b.Offset += take;
-                buffered -= take;
-                if (b.Offset >= b.Len) blocks.Dequeue();
+                var copy = new byte[len];
+                Buffer.BlockCopy(data, 0, copy, 0, len);
+                blocks.Enqueue(new Block { Data = copy, Len = len });
+                buffered += len;
+
+                while (buffered > targetBytes && blocks.Count > 0)
+                {
+                    var b = blocks.Peek();
+                    int avail = b.Len - b.Offset;
+                    int take = (int)Math.Min(avail, buffered - targetBytes);
+                    emit(b.Data, b.Offset, take);
+                    b.Offset += take;
+                    buffered -= take;
+                    if (b.Offset >= b.Len) blocks.Dequeue();
+                }
             }
         }
 
         public void Clear()
         {
-            blocks.Clear();
-            buffered = 0;
+            lock (sync)
+            {
+                blocks.Clear();
+                buffered = 0;
+            }
         }
     }
 
@@ -1523,7 +1733,7 @@ namespace StereoSplitter
         WasapiOut leftOut, rightOut;
         BufferedWaveProvider leftBuf, rightBuf;
         AlwaysFullProvider leftProvider, rightProvider;
-        MMDevice leftDev, rightDev;
+        MMDevice leftDev, rightDev, captureDev;
         Action<string> log;
         volatile int sampleRate;
         DelayLine leftLine, rightLine;
@@ -1538,7 +1748,8 @@ namespace StereoSplitter
         public void Start(float gain, float master, int prebufferMs, int outLatencyMs, int leftDelayMs, int rightDelayMs)
         {
             var enumerator = new MMDeviceEnumerator();
-            var captureDev = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            captureDev = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            try { enumerator.Dispose(); } catch { }
             log("[启动] 捕获源: " + captureDev.FriendlyName);
 
             loopback = new WasapiLoopbackCapture(captureDev);
@@ -1677,6 +1888,11 @@ namespace StereoSplitter
             if (loopback != null) loopback.Dispose();
             if (leftOut != null) leftOut.Dispose();
             if (rightOut != null) rightOut.Dispose();
+            if (captureDev != null)
+            {
+                try { captureDev.Dispose(); } catch { }
+                captureDev = null;
+            }
         }
     }
 
