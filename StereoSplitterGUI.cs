@@ -966,8 +966,7 @@ namespace StereoSplitter
             try
             {
                 engine = new AudioEngine(devices[cmbLeft.SelectedIndex], devices[rightIdxSafe()], Log);
-                engine.Start();
-                engine.SetGain(pendingGain);
+                engine.Start(pendingGain, CurrentMaster());
                 SetAppState(AppState.Running);
                 ApplyVolumes();
                 Log("[启动] 端点绑定: 主=" + DevInfo(syncDev) + " / 左=" + DevInfo(syncLeftDev) + " / 右=" + DevInfo(syncRightDev));
@@ -998,13 +997,16 @@ namespace StereoSplitter
             }
         }
 
+        float CurrentMaster()
+        {
+            return chkMuteMaster.Checked ? 0f : volMaster.Value / 100f;
+        }
+
         void ApplyVolumes()
         {
             if (engine == null) return;
             // 左右音量/静音走设备端点(已双向绑定)，主音量走采样层
-            float master = volMaster.Value / 100f;
-            if (chkMuteMaster.Checked) master = 0f;
-            engine.SetMaster(master);
+            engine.SetMaster(CurrentMaster());
         }
 
         void MainForm_FormClosing(object sender, FormClosingEventArgs e)
@@ -1087,7 +1089,7 @@ namespace StereoSplitter
             this.log = log;
         }
 
-        public void Start()
+        public void Start(float gain, float master)
         {
             var enumerator = new MMDeviceEnumerator();
             var captureDev = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
@@ -1105,6 +1107,11 @@ namespace StereoSplitter
             rightOut = new WasapiOut(rightDev, AudioClientShareMode.Shared, true, 50);
             leftProvider = new AlwaysFullProvider(leftBuf);
             rightProvider = new AlwaysFullProvider(rightBuf);
+            // Play 之前设好增益/主音量, 否则首帧以满音量(1.0)出声造成跳变
+            leftProvider.Gain = gain;
+            rightProvider.Gain = gain;
+            leftProvider.Master = master;
+            rightProvider.Master = master;
             leftOut.Init(leftProvider);
             rightOut.Init(rightProvider);
 
