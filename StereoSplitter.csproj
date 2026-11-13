@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>SplitterGUI</AssemblyName>
+    <RootNamespace>StereoSplitter</RootNamespace>
+    <LangVersion>7.3</LangVersion>
+    <Deterministic>true</Deterministic>
+    <Platforms>AnyCPU</Platforms>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Product>Stereo Splitter</Product>
+    <Company>Stereo Splitter</Company>
+    <Copyright>Copyright © 2026</Copyright>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="NAudio.Core" Version="2.2.1" GeneratePathProperty="true" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <!-- 单文件兜底：同目录缺少 NAudio dll 时由 Program.AssemblyResolve 从内嵌资源加载。
+       资源名必须与 AssemblyResolve 里的 name + ".dll" 完全一致。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="$(PkgNAudio_Core)\lib\netstandard2.0\NAudio.Core.dll"
+                      LogicalName="NAudio.Core.dll"
+                      Condition="Exists('$(PkgNAudio_Core)\lib\netstandard2.0\NAudio.Core.dll')" />
+    <EmbeddedResource Include="$(PkgNAudio_Wasapi)\lib\netstandard2.0\NAudio.Wasapi.dll"
+                      LogicalName="NAudio.Wasapi.dll"
+                      Condition="Exists('$(PkgNAudio_Wasapi)\lib\netstandard2.0\NAudio.Wasapi.dll')" />
+  </ItemGroup>
+
+  <Target Name="CheckEmbeddedAudioResources" AfterTargets="Build">
+    <Warning Condition="'$(PkgNAudio_Core)' == ''"
+             Text="NAudio 包路径未解析，内嵌资源将缺失（单文件分发会失效）" />
+  </Target>
+
+</Project>
