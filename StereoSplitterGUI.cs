@@ -104,6 +104,7 @@ namespace StereoSplitter
         TextBox txtLog;
         CheckBox chkMuteL, chkMuteR, chkMuteMaster, chkMuteCapture;
         CheckBox chkMinimizeToTray;
+        CheckBox chkDrift;
         NotifyIcon trayIcon;
         EventWaitHandle activateEvent;
         volatile bool exiting = false; // 后台启动线程读 → 需 volatile
@@ -113,6 +114,8 @@ namespace StereoSplitter
         bool trayTipShown = false;
         bool loadingSettings = true;
         float pendingGain = 1.0f;
+        int driftMode = 1;      // 1=自适应 0=关闭 2=固定比例
+        int fixedPpm = 600;
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -232,6 +235,8 @@ namespace StereoSplitter
             cmbLatency.SelectedIndex = 0;
 
             chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(290, 107), AutoSize = true };
+            chkDrift = new CheckBox { Text = "校正", AutoSize = true, Checked = true };
+            chkDrift.Location = new Point(chkMinimizeToTray.Right + 8, chkMinimizeToTray.Top);
 
             // 水位监控组: 日志面板标题行右侧, 清除日志按钮左边 (间隔0=关闭监控)
             var lblWater = new Label { Text = "水位监控:", Location = new Point(209, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
@@ -267,7 +272,7 @@ namespace StereoSplitter
             cmsLog.Items.Add("全选", null, (s, e) => txtLog.SelectAll());
             txtLog.ContextMenuStrip = cmsLog;
 
-            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblL, cmbLeft, lblDL, nudDelayL, lblMsL, lblR, cmbRight, lblDR, nudDelayR, lblMsR, lblLatency, cmbLatency, chkMinimizeToTray, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblL, cmbLeft, lblDL, nudDelayL, lblMsL, lblR, cmbRight, lblDR, nudDelayR, lblMsR, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
 
             btnStart.Click += BtnStart_Click;
@@ -284,6 +289,21 @@ namespace StereoSplitter
                 catch { }
             };
             chkMinimizeToTray.CheckedChanged += (s, e) => SaveSettings();
+            chkDrift.CheckedChanged += (s, e) =>
+            {
+                driftMode = chkDrift.Checked ? 1 : 0;
+                if (loadingSettings) return;
+                SaveSettings();
+                if (running && engine != null)
+                {
+                    try
+                    {
+                        engine.SetDriftMode(driftMode, fixedPpm);
+                        Log("[设置] 时钟校正: " + (driftMode == 1 ? "开" : "关"));
+                    }
+                    catch (Exception ex) { Log("[错误] 切换时钟校正失败: " + ex.Message); }
+                }
+            };
             cmbLatency.SelectedIndexChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudDelayL.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudDelayR.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
@@ -297,40 +317,8 @@ namespace StereoSplitter
             cmbLeft.SelectedIndexChanged += (s, e) => { if (!loadingDevices) SaveSettings(); };
             cmbRight.SelectedIndexChanged += (s, e) => { if (!loadingDevices) SaveSettings(); };
             cmbDefault.SelectedIndexChanged += (s, e) => { if (!loadingDevices) SaveSettings(); };
-            volLeft.Scroll += (s, e) =>
-            {
-                lblVolLeft.Text = volLeft.Value + "%";
-                // 音量到0自动勾选静音; 拖离0自动取消 (主动操作优先于勾选状态)
-                if (chkMuteL.Checked != (volLeft.Value == 0)) chkMuteL.Checked = volLeft.Value == 0;
-                // 双向同步: 写入左声道设备端点音量
-                if (!volSyncing && syncLeftVol != null)
-                {
-                    try
-                    {
-                        syncLeftVol.MasterVolumeLevelScalar = volLeft.Value / 100f;
-                        if (volLeft.Value > 0 && syncLeftVol.Mute) syncLeftVol.Mute = false;
-                    }
-                    catch (Exception ex) { Log("[错误] 同步左声道端点音量失败: " + ex.Message); }
-                }
-                SaveSettings();
-            };
-            volRight.Scroll += (s, e) =>
-            {
-                lblVolRight.Text = volRight.Value + "%";
-                // 音量到0自动勾选静音; 拖离0自动取消 (主动操作优先于勾选状态)
-                if (chkMuteR.Checked != (volRight.Value == 0)) chkMuteR.Checked = volRight.Value == 0;
-                // 双向同步: 写入右声道设备端点音量
-                if (!volSyncing && syncRightVol != null)
-                {
-                    try
-                    {
-                        syncRightVol.MasterVolumeLevelScalar = volRight.Value / 100f;
-                        if (volRight.Value > 0 && syncRightVol.Mute) syncRightVol.Mute = false;
-                    }
-                    catch (Exception ex) { Log("[错误] 同步右声道端点音量失败: " + ex.Message); }
-                }
-                SaveSettings();
-            };
+            volLeft.Scroll += (s, e) => OnChannelScroll(volLeft, lblVolLeft, chkMuteL, syncLeftVol, "左声道");
+            volRight.Scroll += (s, e) => OnChannelScroll(volRight, lblVolRight, chkMuteR, syncRightVol, "右声道");
             volMaster.Scroll += (s, e) =>
             {
                 lblVolMaster.Text = volMaster.Value + "%";
@@ -478,6 +466,7 @@ namespace StereoSplitter
             chkMuteMaster.Enabled = !busy;
             chkMuteCapture.Enabled = !busy;
             chkMinimizeToTray.Enabled = !busy;
+            chkDrift.Enabled = !busy;
             cmbLatency.Enabled = !busy && !run;
             nudDelayL.Enabled = !busy && !run;
             nudDelayR.Enabled = !busy && !run;
@@ -520,6 +509,8 @@ namespace StereoSplitter
                 RefreshDevices();
                 RecordRestoreTarget();
                 ApplyIniVolumeOverrides();
+                // 高DPI下 AutoSize 宽度在构造后才最终确定，Load 时再贴到托盘选项右侧
+                chkDrift.Location = new Point(chkMinimizeToTray.Right + 8, chkMinimizeToTray.Top);
                 // 校准日志框高度, 此后由 Anchor 自动跟随分隔条拖动
                 txtLog.Height = splitContainer.Panel2.Height - txtLog.Top - 15;
                 SetAppState(AppState.Ready);
@@ -629,6 +620,25 @@ namespace StereoSplitter
             chkMuteMaster.Checked = uiMm;
             chkMuteCapture.Checked = uiMc;
             volSyncing = false;
+        }
+
+        // 左右声道滑条共用: UI 标签/自动静音 + 写入端点音量 (逐行等价于原两份重复实现)
+        void OnChannelScroll(TrackBar slider, Label lbl, CheckBox chkMute, AudioEndpointVolume vol, string channel)
+        {
+            lbl.Text = slider.Value + "%";
+            // 音量到0自动勾选静音; 拖离0自动取消 (主动操作优先于勾选状态)
+            if (chkMute.Checked != (slider.Value == 0)) chkMute.Checked = slider.Value == 0;
+            // 双向同步: 写入设备端点音量
+            if (!volSyncing && vol != null)
+            {
+                try
+                {
+                    vol.MasterVolumeLevelScalar = slider.Value / 100f;
+                    if (slider.Value > 0 && vol.Mute) vol.Mute = false;
+                }
+                catch (Exception ex) { Log("[错误] 同步" + channel + "端点音量失败: " + ex.Message); }
+            }
+            SaveSettings();
         }
 
         void RecordRestoreTarget()
@@ -774,38 +784,41 @@ namespace StereoSplitter
                 {
                     if (volSyncing || syncVol == null) return;
                     volSyncing = true;
-                    int v = Math.Max(0, Math.Min(100, (int)Math.Round(data.MasterVolume * 100)));
-                    bool valueChanged = (volMaster.Value != v);
-                    if (valueChanged)
+                    try
                     {
-                        volMaster.Value = v;
-                        lblVolMaster.Text = v + "%";
-                        ApplyVolumes();
-                        SaveSettings();
-                    }
-                    // 端点静音基线: 与 data.Muted 不等 = 外部(系统声音设置)对捕获设备点静音/解除
-                    bool muteExternal = (data.Muted != lastMuteWeWrote);
-                    lastMuteWeWrote = data.Muted;
-                    // 双向跟随仅运行中; 捕获消音锁开启时 mute 位归锁管, 主静音不跟
-                    bool follow = running && !chkMuteCapture.Checked;
-                    if (valueChanged || (follow && muteExternal))
-                    {
-                        // 不变式: 值0=静音; 外部静音→主静音跟勾, 外部解除→跟取消 (音量0时保持勾选)
-                        bool want = (v == 0) || (follow && data.Muted);
-                        if (chkMuteMaster.Checked != want) chkMuteMaster.Checked = want;
-                    }
-                    if (chkMuteCapture.Checked && !data.Muted)
-                    {
-                        // 消音锁定: 任何外部(系统音量条/快捷键/驱动)取消静音 → 静默恢复, 直到用户取消勾选
-                        try
+                        int v = Math.Max(0, Math.Min(100, (int)Math.Round(data.MasterVolume * 100)));
+                        bool valueChanged = (volMaster.Value != v);
+                        if (valueChanged)
                         {
-                            syncVol.Mute = true;
-                            lastMuteWeWrote = true;
-                            captureMuteApplied = (syncVol.Mute != captureMuteEntered);
+                            volMaster.Value = v;
+                            lblVolMaster.Text = v + "%";
+                            ApplyVolumes();
+                            SaveSettings();
                         }
-                        catch (Exception ex) { Log("[错误] 恢复捕获消音失败: " + ex.Message); }
+                        // 端点静音基线: 与 data.Muted 不等 = 外部(系统声音设置)对捕获设备点静音/解除
+                        bool muteExternal = (data.Muted != lastMuteWeWrote);
+                        lastMuteWeWrote = data.Muted;
+                        // 双向跟随仅运行中; 捕获消音锁开启时 mute 位归锁管, 主静音不跟
+                        bool follow = running && !chkMuteCapture.Checked;
+                        if (valueChanged || (follow && muteExternal))
+                        {
+                            // 不变式: 值0=静音; 外部静音→主静音跟勾, 外部解除→跟取消 (音量0时保持勾选)
+                            bool want = (v == 0) || (follow && data.Muted);
+                            if (chkMuteMaster.Checked != want) chkMuteMaster.Checked = want;
+                        }
+                        if (chkMuteCapture.Checked && !data.Muted)
+                        {
+                            // 消音锁定: 任何外部(系统音量条/快捷键/驱动)取消静音 → 静默恢复, 直到用户取消勾选
+                            try
+                            {
+                                syncVol.Mute = true;
+                                lastMuteWeWrote = true;
+                                captureMuteApplied = (syncVol.Mute != captureMuteEntered);
+                            }
+                            catch (Exception ex) { Log("[错误] 恢复捕获消音失败: " + ex.Message); }
+                        }
                     }
-                    volSyncing = false;
+                    finally { volSyncing = false; }
                 }));
             }
             catch { }
@@ -890,50 +903,36 @@ namespace StereoSplitter
 
         void LeftVol_OnVolumeNotification(AudioVolumeNotificationData data)
         {
-            try
-            {
-                BeginInvoke(new Action(() =>
-                {
-                    if (volSyncing || syncLeftVol == null) return;
-                    volSyncing = true;
-                    int v = Math.Max(0, Math.Min(100, (int)Math.Round(data.MasterVolume * 100)));
-                    if (volLeft.Value != v)
-                    {
-                        volLeft.Value = v;
-                        lblVolLeft.Text = v + "%";
-                        SaveSettings();
-                    }
-                    // 与主音量同构: 音量0=静音不变式 + 外部静音跟随 (仅 UI, volSyncing 内不写端点)
-                    bool wantL = (v == 0) || data.Muted;
-                    if (chkMuteL.Checked != wantL) chkMuteL.Checked = wantL;
-                    volSyncing = false;
-                }));
-            }
+            try { BeginInvoke(new Action(() => HandleChannelVolumeNotification(data, syncLeftVol, volLeft, lblVolLeft, chkMuteL))); }
             catch { }
         }
 
         void RightVol_OnVolumeNotification(AudioVolumeNotificationData data)
         {
+            try { BeginInvoke(new Action(() => HandleChannelVolumeNotification(data, syncRightVol, volRight, lblVolRight, chkMuteR))); }
+            catch { }
+        }
+
+        // 左右声道通知共用: 设备值 → UI (仅 UI, volSyncing 内不写端点)
+        void HandleChannelVolumeNotification(AudioVolumeNotificationData data, AudioEndpointVolume vol,
+            TrackBar slider, Label lbl, CheckBox chkMute)
+        {
+            if (volSyncing || vol == null) return;
+            volSyncing = true;
             try
             {
-                BeginInvoke(new Action(() =>
+                int v = Math.Max(0, Math.Min(100, (int)Math.Round(data.MasterVolume * 100)));
+                if (slider.Value != v)
                 {
-                    if (volSyncing || syncRightVol == null) return;
-                    volSyncing = true;
-                    int v = Math.Max(0, Math.Min(100, (int)Math.Round(data.MasterVolume * 100)));
-                    if (volRight.Value != v)
-                    {
-                        volRight.Value = v;
-                        lblVolRight.Text = v + "%";
-                        SaveSettings();
-                    }
-                    // 与主音量同构: 音量0=静音不变式 + 外部静音跟随 (仅 UI, volSyncing 内不写端点)
-                    bool wantR = (v == 0) || data.Muted;
-                    if (chkMuteR.Checked != wantR) chkMuteR.Checked = wantR;
-                    volSyncing = false;
-                }));
+                    slider.Value = v;
+                    lbl.Text = v + "%";
+                    SaveSettings();
+                }
+                // 与主音量同构: 音量0=静音不变式 + 外部静音跟随 (仅 UI, volSyncing 内不写端点)
+                bool want = (v == 0) || data.Muted;
+                if (chkMute.Checked != want) chkMute.Checked = want;
             }
-            catch { }
+            finally { volSyncing = false; }
         }
 
         bool AutoConfigure()
@@ -1066,6 +1065,11 @@ namespace StereoSplitter
             if (wi != 0) wi = Math.Max(5, Math.Min(3600, wi)); // 0=关闭, 1-4 按 5 秒
             nudWaterInterval.Value = wi;
 
+            int mode = Math.Max(0, Math.Min(2, GetInt("DriftMode", 1)));
+            chkDrift.Checked = mode != 0;
+            driftMode = mode;
+            fixedPpm = Math.Max(-5000, Math.Min(5000, GetInt("FixedRatioPpm", 600)));
+
             int gain = Math.Max(0, Math.Min(300, GetInt("Gain", 100)));
             volGain.Value = gain;
             lblVolGain.Text = gain + "%";
@@ -1128,6 +1132,8 @@ namespace StereoSplitter
                 sb.AppendLine("MuteRight=" + (chkMuteR.Checked ? 1 : 0));
                 sb.AppendLine("MuteMaster=" + (chkMuteMaster.Checked ? 1 : 0));
                 sb.AppendLine("MuteCapture=" + (chkMuteCapture.Checked ? 1 : 0));
+                sb.AppendLine("DriftMode=" + driftMode);
+                sb.AppendLine("FixedRatioPpm=" + fixedPpm);
                 // 原子写: 先写 .tmp 再替换, 崩溃时不会留下半截 ini
                 string tmp = IniPath + ".tmp";
                 File.WriteAllText(tmp, sb.ToString());
@@ -1157,6 +1163,8 @@ namespace StereoSplitter
                 settings["MuteRight"] = chkMuteR.Checked ? "1" : "0";
                 settings["MuteMaster"] = chkMuteMaster.Checked ? "1" : "0";
                 settings["MuteCapture"] = chkMuteCapture.Checked ? "1" : "0";
+                settings["DriftMode"] = driftMode.ToString();
+                settings["FixedRatioPpm"] = fixedPpm.ToString();
             }
             catch { }
         }
@@ -1617,6 +1625,7 @@ namespace StereoSplitter
                 int dlyL = (int)nudDelayL.Value, dlyR = (int)nudDelayR.Value;
                 float gain = pendingGain, master = CurrentMaster();
                 int gainPct = (int)Math.Round(gain * 100);
+                int mode = driftMode, fixedVal = fixedPpm;
                 string leftId = DeviceIdAt(cmbLeft.SelectedIndex);
                 string rightId = DeviceIdAt(cmbRight.SelectedIndex);
 
@@ -1634,7 +1643,7 @@ namespace StereoSplitter
                     try
                     {
                         if (startAbort) throw new OperationCanceledException("启动已取消");
-                        eng = new AudioEngine(leftId, rightId, Log);
+                        eng = new AudioEngine(leftId, rightId, Log, mode, fixedVal);
                         eng.Start(gain, master, preMs, outMs, dlyL, dlyR, delegate { return startAbort; });
 
                         if (exiting || IsDisposed || !IsHandleCreated)
@@ -1840,7 +1849,13 @@ namespace StereoSplitter
             if (ui.Length > 8192) ui = ui.Substring(0, 8192) + "\n...(日志过长已截断)";
             txtLog.AppendText(ui + "\r\n\r\n");
             // 总量上限: 超 30 万字符截到 15 万, 防长时间运行文本无限增长 (文件不截断)
-            if (txtLog.TextLength > 300000) txtLog.Text = txtLog.Text.Substring(txtLog.TextLength - 150000);
+            int total = txtLog.TextLength;
+            if (total > 300000)
+            {
+                // 直接删除头部超量字符, 避免 txtLog.Text 整串复制+Substring 的两次大分配
+                txtLog.Select(0, total - 150000);
+                txtLog.SelectedText = "";
+            }
             txtLog.SelectionStart = txtLog.TextLength;
             txtLog.ScrollToCaret();
 
@@ -1959,6 +1974,10 @@ namespace StereoSplitter
         }
 
         readonly Queue<Block> blocks = new Queue<Block>();
+        // 块缓冲复用: 延迟开启时每块原本都要 new byte[len], 稳态后可从池中取回
+        readonly Stack<byte[]> pool = new Stack<byte[]>();
+        int pooledBytes;
+        const int PoolMaxBytes = 1 << 20; // 池上限 1MB, 防止大块数据长期驻留
         readonly int targetBytes;
         readonly Action<byte[], int, int> emit;
         readonly object sync = new object(); // Write(采集线程) 与 Clear(UI线程) 并发保护
@@ -1983,7 +2002,14 @@ namespace StereoSplitter
                     return;
                 }
 
-                var copy = new byte[len];
+                byte[] copy = null;
+                while (pool.Count > 0)
+                {
+                    byte[] candidate = pool.Pop();
+                    pooledBytes -= candidate.Length;
+                    if (candidate.Length >= len) { copy = candidate; break; }
+                }
+                if (copy == null) copy = new byte[len];
                 Buffer.BlockCopy(data, 0, copy, 0, len);
                 blocks.Enqueue(new Block { Data = copy, Len = len });
                 buffered += len;
@@ -1996,7 +2022,15 @@ namespace StereoSplitter
                     emit(b.Data, b.Offset, take);
                     b.Offset += take;
                     buffered -= take;
-                    if (b.Offset >= b.Len) blocks.Dequeue();
+                    if (b.Offset >= b.Len)
+                    {
+                        blocks.Dequeue();
+                        if (pooledBytes + b.Data.Length <= PoolMaxBytes)
+                        {
+                            pool.Push(b.Data);
+                            pooledBytes += b.Data.Length;
+                        }
+                    }
                 }
             }
         }
@@ -2005,7 +2039,15 @@ namespace StereoSplitter
         {
             lock (sync)
             {
-                blocks.Clear();
+                while (blocks.Count > 0)
+                {
+                    var b = blocks.Dequeue();
+                    if (pooledBytes + b.Data.Length <= PoolMaxBytes)
+                    {
+                        pool.Push(b.Data);
+                        pooledBytes += b.Data.Length;
+                    }
+                }
                 buffered = 0;
             }
         }
@@ -2016,20 +2058,27 @@ namespace StereoSplitter
         WasapiLoopbackCapture loopback;
         WasapiOut leftOut, rightOut;
         BufferedWaveProvider leftBuf, rightBuf;
-        AlwaysFullProvider leftProvider, rightProvider;
+        DriftCorrectingProvider leftProvider, rightProvider;
         MMDevice leftDev, rightDev, captureDev;
         // 设备 ID: MMDevice 在 Start 所在线程(后台)自建, 不跨线程传递 (NAudio #214)
         readonly string leftDevId, rightDevId;
+        readonly int driftMode, fixedPpm;
         Action<string> log;
         volatile int sampleRate;
         DelayLine leftLine, rightLine;
         bool splitErrLogged = false;
 
         public AudioEngine(string leftDevId, string rightDevId, Action<string> log)
+            : this(leftDevId, rightDevId, log, 1, 0)
+        { }
+
+        public AudioEngine(string leftDevId, string rightDevId, Action<string> log, int driftMode, int fixedPpm)
         {
             this.leftDevId = leftDevId;
             this.rightDevId = rightDevId;
             this.log = log;
+            this.driftMode = driftMode;
+            this.fixedPpm = fixedPpm;
         }
 
         // Start 实际捕获的设备 ID (取启动时的系统默认输出, 可能与点开始时的选择不同)
@@ -2060,13 +2109,15 @@ namespace StereoSplitter
             log("[启动] 格式: " + wf.SampleRate + "Hz / " + wf.Encoding + " / " + wf.BitsPerSample + "bit / " + wf.Channels + "ch");
 
             var outFormat = WaveFormat.CreateIeeeFloatWaveFormat(wf.SampleRate, 1);
-            leftBuf = new BufferedWaveProvider(outFormat) { BufferDuration = TimeSpan.FromMilliseconds(500), DiscardOnBufferOverflow = true };
-            rightBuf = new BufferedWaveProvider(outFormat) { BufferDuration = TimeSpan.FromMilliseconds(500), DiscardOnBufferOverflow = true };
+            int driftTargetMs = Math.Min(150, Math.Max(prebufferMs, outLatencyMs) + 80);
+            int driftTargetSamples = (int)((long)wf.SampleRate * driftTargetMs / 1000);
+            leftBuf = new BufferedWaveProvider(outFormat) { BufferDuration = TimeSpan.FromMilliseconds(1000), DiscardOnBufferOverflow = true };
+            rightBuf = new BufferedWaveProvider(outFormat) { BufferDuration = TimeSpan.FromMilliseconds(1000), DiscardOnBufferOverflow = true };
 
             leftOut = new WasapiOut(leftDev, AudioClientShareMode.Shared, true, outLatencyMs);
             rightOut = new WasapiOut(rightDev, AudioClientShareMode.Shared, true, outLatencyMs);
-            leftProvider = new AlwaysFullProvider(leftBuf);
-            rightProvider = new AlwaysFullProvider(rightBuf);
+            leftProvider = new DriftCorrectingProvider(leftBuf, driftTargetSamples, driftMode, fixedPpm);
+            rightProvider = new DriftCorrectingProvider(rightBuf, driftTargetSamples, driftMode, fixedPpm);
             // Play 之前设好增益/主音量, 否则首帧以满音量(1.0)出声造成跳变
             leftProvider.Gain = gain;
             rightProvider.Gain = gain;
@@ -2103,12 +2154,12 @@ namespace StereoSplitter
 
             loopback.StartRecording();
 
-            // 预缓冲字节数按采样率动态计算 (mono float32 = 4字节/样本), 向下对齐到样本边界
-            int prebufferBytes = (int)(((long)wf.SampleRate * prebufferMs * 4 / 1000) & ~3L);
+            int targetBytes = driftTargetSamples * 4;
+            int targetMs = driftTargetSamples * 1000 / wf.SampleRate;
             int waits = 0;
             // 等待上限随预缓冲与延迟补偿动态放宽 (延迟 2000ms 时固定 2s 会超时)
-            int maxWaits = (prebufferMs + Math.Max(leftDelayMs, rightDelayMs) + 1000) / 20 + 50;
-            while ((leftBuf.BufferedBytes < prebufferBytes || rightBuf.BufferedBytes < prebufferBytes) && waits < maxWaits)
+            int maxWaits = (targetMs + Math.Max(leftDelayMs, rightDelayMs) + 1000) / 20 + 50;
+            while ((leftBuf.BufferedBytes < targetBytes || rightBuf.BufferedBytes < targetBytes) && waits < maxWaits)
             {
                 // 关窗中止检查 (每20ms一次): FormClosing 置 startAbort 后快速退出, 不让关闭流程干等
                 if (aborted != null && aborted()) throw new OperationCanceledException("启动已取消");
@@ -2116,12 +2167,13 @@ namespace StereoSplitter
             }
 
             // 修剪快路多攒的水位: 等待以慢路为终点时, 无延迟的快路会多攒数据, 抵消延迟线的时差
-            // 两 buf 统一修剪到预缓冲阈值 → 净声道差 = 延迟线的 (L - R)
-            TrimTo(leftBuf, prebufferBytes);
-            TrimTo(rightBuf, prebufferBytes);
+            // 两 buf 统一修剪到目标阈值 → 净声道差 = 延迟线的 (L - R)
+            TrimTo(leftBuf, targetBytes);
+            TrimTo(rightBuf, targetBytes);
 
             log("[启动] 预缓冲完成 (L=" + leftBuf.BufferedBytes + " R=" + rightBuf.BufferedBytes +
-                " 字节, 档位 " + prebufferMs + "ms / 输出 " + outLatencyMs + "ms)");
+                " 字节, 档位 " + prebufferMs + "ms / 输出 " + outLatencyMs + "ms / 时钟目标 " + targetMs + "ms)");
+            log("[启动] 时钟漂移补偿: " + (driftMode == 0 ? "关闭" : driftMode == 2 ? "固定 " + fixedPpm + "ppm" : "自适应") + ", 比例上限 ±0.50%");
             if (leftDelayMs > 0 || rightDelayMs > 0)
                 log("[启动] 延迟补偿: 左=" + leftDelayMs + "ms 右=" + rightDelayMs + "ms");
 
@@ -2146,16 +2198,32 @@ namespace StereoSplitter
             if (rightProvider != null) rightProvider.Gain = gain;
         }
 
+        public void SetDriftMode(int mode, int fixedPpm)
+        {
+            if (leftProvider != null) leftProvider.SetMode(mode, fixedPpm);
+            if (rightProvider != null) rightProvider.SetMode(mode, fixedPpm);
+        }
+
         public string BufferStatus()
         {
             try
             {
-                if (leftBuf == null || rightBuf == null || sampleRate <= 0) return "-";
-                int msL = leftBuf.BufferedBytes * 1000 / (sampleRate * 4);
-                int msR = rightBuf.BufferedBytes * 1000 / (sampleRate * 4);
-                return "L=" + msL + "ms R=" + msR + "ms";
+                if (leftProvider == null || rightProvider == null || sampleRate <= 0) return "-";
+                int minL = leftProvider.TakeMinBufferedMs();
+                int minR = rightProvider.TakeMinBufferedMs();
+                string s = "L=" + leftProvider.BufferedMs + "ms R=" + rightProvider.BufferedMs + "ms" +
+                    " 校正 L=" + Ppm(leftProvider.RatioPpm) + " R=" + Ppm(rightProvider.RatioPpm) +
+                    " 最低 L=" + minL + "ms R=" + minR + "ms";
+                int ul = leftProvider.UnderrunSamples, ur = rightProvider.UnderrunSamples;
+                if (ul > 0 || ur > 0) s += " 欠载 L=" + ul + " R=" + ur;
+                return s;
             }
             catch { return "-"; }
+        }
+
+        static string Ppm(double v)
+        {
+            return v.ToString("+0;-0;0") + "ppm";
         }
 
         public void Stop()
@@ -2183,6 +2251,7 @@ namespace StereoSplitter
         // Split 输出缓冲复用: 只在采样线程(DataAvailable→emit)访问, 无并发
         byte[] splitOut;
         float[] splitF;
+        float[] splitSrcF;
 
         void Split(byte[] data, int offset, int bytes, int channel, BufferedWaveProvider target)
         {
@@ -2201,17 +2270,30 @@ namespace StereoSplitter
 
             bool isFloat = f.Encoding == WaveFormatEncoding.IeeeFloat;
             bool is16 = f.BitsPerSample == 16;
-            for (int i = 0; i < frames; i++)
+            if (isFloat && f.BitsPerSample == 32)
             {
-                int off = offset + i * frame + channel * bps;
-                float sample;
-                if (isFloat)
-                    sample = BitConverter.ToSingle(data, off);
-                else if (is16)
-                    sample = BitConverter.ToInt16(data, off) / 32768f;
-                else
-                    sample = 0f;
-                splitF[i] = sample;
+                // 常用路径 (WASAPI 混音格式): 整块复制到 float[] 后按帧取声道,
+                // 避免逐样本 BitConverter.ToSingle (与逐样本读取结果完全一致)
+                int total = frames * ch;
+                if (splitSrcF == null || splitSrcF.Length < total) splitSrcF = new float[total];
+                Buffer.BlockCopy(data, offset, splitSrcF, 0, total * 4);
+                for (int i = 0; i < frames; i++)
+                    splitF[i] = splitSrcF[i * ch + channel];
+            }
+            else if (is16)
+            {
+                for (int i = 0; i < frames; i++)
+                    splitF[i] = BitConverter.ToInt16(data, offset + i * frame + channel * bps) / 32768f;
+            }
+            else if (isFloat)
+            {
+                // 非 32bit 浮点: 保持原逐样本逻辑
+                for (int i = 0; i < frames; i++)
+                    splitF[i] = BitConverter.ToSingle(data, offset + i * frame + channel * bps);
+            }
+            else
+            {
+                for (int i = 0; i < frames; i++) splitF[i] = 0f;
             }
             Buffer.BlockCopy(splitF, 0, splitOut, 0, frames * 4);
             target.AddSamples(splitOut, 0, frames * 4);
@@ -2304,6 +2386,7 @@ namespace StereoSplitter
     {
         readonly BufferedWaveProvider src;
         readonly byte[] tmp = new byte[65536];
+        readonly float[] tmpF = new float[65536 / 4];
         volatile float gain = 1.0f;
         volatile float master = 1.0f;
 
@@ -2321,17 +2404,196 @@ namespace StereoSplitter
             want = Math.Min(want, src.BufferedBytes);
             int got = want > 0 ? src.Read(tmp, 0, want) : 0;
             int n = got / 4;
+            // 整块转 float: 避免逐样本 BitConverter.ToSingle (位模式复制, 数值完全一致)
+            if (n > 0) Buffer.BlockCopy(tmp, 0, tmpF, 0, n * 4);
             float g = gain;
             float m = master;
             for (int i = 0; i < n; i++)
             {
-                float v = BitConverter.ToSingle(tmp, i * 4) * g * m;
+                float v = tmpF[i] * g * m;
                 if (v > 1f) v = 1f;
                 else if (v < -1f) v = -1f;
                 samples[offset + i] = v;
             }
             for (int i = n; i < count; i++) samples[offset + i] = 0f;
             return count;
+        }
+    }
+
+    class DriftCorrectingProvider : ISampleProvider
+    {
+        const int RingSize = 64;
+        const int UpdateSamples = 1024;
+        const double Kp = 0.004;
+        const double MaxRatio = 0.005;
+
+        readonly BufferedWaveProvider src;
+        readonly int targetSamples;
+        volatile int mode;          // 1=自适应 0=关闭 2=固定比例
+        double fixedRatio;
+        readonly byte[] tmp = new byte[RingSize * 4];
+        readonly float[] tmpF = new float[RingSize];
+        readonly float[] ring = new float[RingSize];
+        int head;
+        volatile int count;
+        float prev;
+        double phase;
+        double smoothedTotal;
+        int updateCounter;
+        int minTotalSinceStatus = int.MaxValue;
+        volatile int underrunSamples;
+        volatile float gain = 1.0f;
+        volatile float master = 1.0f;
+        volatile float ratio = 1.0f;
+
+        public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples)
+            : this(src, targetSamples, 1, 0)
+        { }
+
+        public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples, int mode, int fixedPpm)
+        {
+            this.src = src;
+            this.targetSamples = Math.Max(1, targetSamples);
+            this.mode = mode;
+            this.smoothedTotal = this.targetSamples;
+            if (mode == 0) fixedRatio = 1.0;
+            else if (mode == 2)
+            {
+                int ppm = Math.Max(-5000, Math.Min(5000, fixedPpm));
+                fixedRatio = 1.0 + ppm / 1000000.0;
+            }
+            else fixedRatio = 1.0;
+            ratio = (float)fixedRatio;
+        }
+
+        public void SetMode(int newMode, int fixedPpm)
+        {
+            if (newMode == 2)
+            {
+                int ppm = Math.Max(-5000, Math.Min(5000, fixedPpm));
+                fixedRatio = 1.0 + ppm / 1000000.0;
+                ratio = (float)fixedRatio;
+            }
+            else if (newMode == 0)
+            {
+                fixedRatio = 1.0;
+                ratio = 1f;
+            }
+            else
+            {
+                smoothedTotal = targetSamples;
+            }
+            mode = newMode;
+        }
+
+        public float Gain { get { return gain; } set { gain = value; } }
+
+        public float Master { get { return master; } set { master = value; } }
+
+        public WaveFormat WaveFormat { get { return src.WaveFormat; } }
+
+        public int BufferedMs
+        {
+            get
+            {
+                int sr = src.WaveFormat.SampleRate;
+                return sr > 0 ? (int)((long)(src.BufferedBytes / 4 + count) * 1000 / sr) : 0;
+            }
+        }
+
+        public double RatioPpm { get { return ((double)ratio - 1.0) * 1e6; } }
+
+        public int UnderrunSamples { get { return underrunSamples; } }
+
+        public int TakeMinBufferedMs()
+        {
+            int v = Interlocked.Exchange(ref minTotalSinceStatus, int.MaxValue);
+            if (v == int.MaxValue) return BufferedMs;
+            int sr = src.WaveFormat.SampleRate;
+            return sr > 0 ? (int)((long)v * 1000 / sr) : 0;
+        }
+
+        public int Read(float[] samples, int offset, int countRequested)
+        {
+            float g = gain;
+            float m = master;
+            for (int i = 0; i < countRequested; i++)
+            {
+                if (count < 3)
+                {
+                    Fill();
+                    if (count < 3)
+                    {
+                        Interlocked.Increment(ref underrunSamples);
+                        samples[offset + i] = 0f;
+                        if (++updateCounter >= UpdateSamples) { updateCounter = 0; UpdateRatio(); }
+                        continue;
+                    }
+                }
+
+                int i1 = head;
+                int i2 = i1 + 1; if (i2 >= RingSize) i2 -= RingSize;
+                int i3 = i1 + 2; if (i3 >= RingSize) i3 -= RingSize;
+                float v = Cubic(prev, ring[i1], ring[i2], ring[i3], (float)phase) * g * m;
+                if (v > 1f) v = 1f;
+                else if (v < -1f) v = -1f;
+                samples[offset + i] = v;
+
+                phase += ratio;
+                while (phase >= 1.0)
+                {
+                    prev = ring[head];
+                    head++;
+                    if (head >= RingSize) head = 0;
+                    count--;
+                    phase -= 1.0;
+                }
+
+                if (++updateCounter >= UpdateSamples) { updateCounter = 0; UpdateRatio(); }
+            }
+            return countRequested;
+        }
+
+        void Fill()
+        {
+            int want = RingSize - count;
+            if (want <= 0) return;
+            int got = src.Read(tmp, 0, want * 4);
+            int n = got / 4;
+            if (n <= 0) return;
+            Buffer.BlockCopy(tmp, 0, tmpF, 0, n * 4);
+            int idx = head + count;
+            for (int i = 0; i < n; i++)
+            {
+                if (idx >= RingSize) idx -= RingSize;
+                ring[idx] = tmpF[i];
+                idx++;
+            }
+            count += n;
+        }
+
+        void UpdateRatio()
+        {
+            double total = src.BufferedBytes / 4 + count;
+            if (total < minTotalSinceStatus) minTotalSinceStatus = (int)total;
+            if (mode != 1) return;
+
+            smoothedTotal += 0.01 * (total - smoothedTotal);
+            double err = (smoothedTotal - targetSamples) / targetSamples;
+            double r = 1.0 + Kp * err;
+            double lo = 1.0 - MaxRatio;
+            double hi = 1.0 + MaxRatio;
+            if (r < lo) r = lo;
+            else if (r > hi) r = hi;
+            ratio = (float)r;
+        }
+
+        static float Cubic(float p0, float p1, float p2, float p3, float t)
+        {
+            float a = -0.5f * p0 + 1.5f * p1 - 1.5f * p2 + 0.5f * p3;
+            float b = p0 - 2.5f * p1 + 2f * p2 - 0.5f * p3;
+            float c = -0.5f * p0 + 0.5f * p2;
+            return ((a * t + b) * t + c) * t + p1;
         }
     }
 }
