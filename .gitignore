@@ -6,3 +6,5 @@ bin/
 obj/
 dist/
 *.pdb
+/*.exe
+/*.dll
