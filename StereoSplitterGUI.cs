@@ -170,8 +170,8 @@ namespace StereoSplitter
         // ---- 长期运行看门狗状态 ----
         // 输出线程停摆判定: RenderedSamples 连续 10 秒不涨 → WasapiOut 已不再拉数据
         const int WatchdogFreezeMs = 10000;
-        long watchRendered = -1;
-        int watchRenderedTick;
+        long watchRenderedL = -1, watchRenderedR = -1;
+        int watchRenderedTickL, watchRenderedTickR;
         bool captureIdleLogged;      // "捕获源无数据"只提示一次
         int captureIdleSince;
         int lastCaptureCheckTick;    // 空闲期确认捕获设备是否还在 (1 分钟一次)
@@ -1250,6 +1250,13 @@ namespace StereoSplitter
         // 启动流程中默认输出被 AutoConfigure 改走 → 失败时恢复到点开始时的默认
         void RollbackDefaultIfChanged()
         {
+            RestoreDefaultOutput("启动失败");
+        }
+
+        /// <summary>把系统默认输出还原为本次启动前的设备 (停止/失败/启动失败共用)。
+        /// 不还原的话默认仍挂在虚拟声卡上 → 应用声音全部无声, 直到下次启动才被纠正。</summary>
+        void RestoreDefaultOutput(string reason)
+        {
             if (preStartDefaultId == null || catalog == null) return;
             try
             {
@@ -1257,12 +1264,12 @@ namespace StereoSplitter
                 {
                     string err;
                     if (SystemDefaultPolicy.TrySetDefault(preStartDefaultId, out err))
-                        Log("[回滚] 启动失败, 默认输出 → " + FindNameById(preStartDefaultId));
+                        Log("[恢复] " + reason + "，默认输出 → " + FindNameById(preStartDefaultId));
                     else
-                        Log("[错误] 回滚默认输出失败: " + err);
+                        Log("[错误] 恢复默认输出失败(" + reason + "): " + err);
                 }
             }
-            catch (Exception ex) { Log("[错误] 回滚默认输出异常: " + AudioErrors.Describe(ex)); }
+            catch (Exception ex) { Log("[错误] 恢复默认输出异常(" + reason + "): " + AudioErrors.Describe(ex)); }
         }
 
         // 把 UI 当前音量值写入已绑定端点 (点开始分流时, UI 为唯一权威源)
@@ -1527,6 +1534,9 @@ namespace StereoSplitter
             warnedLostIds.Clear();
             autoRestartCount = 0;
             restarting = false;
+            // 停止后还原系统默认输出: 不还原的话默认还挂在虚拟声卡上, 全系统无声
+            // (退出路径有自己的 restoreDefaultId 还原, 这里跳过避免二次切换)
+            if (!exiting) RestoreDefaultOutput("停止分流");
         }
 
         // 只拆引擎, 不动状态/绑定/设备ID (自动重建要沿用这些)
@@ -1550,14 +1560,18 @@ namespace StereoSplitter
             warnedLostIds.Clear();
             autoRestartCount = 0;
             restarting = false;
+            // 与 StopEngine 同理: 链路已死, 系统默认必须还给真实设备, 否则全系统无声
+            if (!exiting) RestoreDefaultOutput("分流已中断");
         }
 
         // ---------------- 长期运行看门狗 ----------------
 
         void ResetWatchdog()
         {
-            watchRendered = -1;
-            watchRenderedTick = Environment.TickCount;
+            watchRenderedL = -1;
+            watchRenderedR = -1;
+            watchRenderedTickL = Environment.TickCount;
+            watchRenderedTickR = Environment.TickCount;
             captureIdleLogged = false;
             captureIdleSince = 0;
             lastCaptureCheckTick = 0;
@@ -1566,6 +1580,7 @@ namespace StereoSplitter
         /// <summary>
         /// 每 2 秒判定一次链路活性。核心判据是"输出线程有没有被调用"(RenderedSamples 是否增长),
         /// 而不是水位高低 —— 源静音时水位本来就该是 0, 用水位判会天天误报。
+        /// 左右分开判定: 总和会把单侧停摆掩盖掉 (另一侧照常增长)。
         /// </summary>
         void WatchdogTick()
         {
@@ -1577,35 +1592,46 @@ namespace StereoSplitter
             if (autoRestartCount > 0 && runSinceTick != 0 && unchecked(now - runSinceTick) >= 300000)
                 autoRestartCount = 0;
 
-            long rendered = eng.RenderedSamples;
-            if (rendered != watchRendered)
+            // 10 秒不被调用 → 该侧输出端已停摆 (设备休眠/被独占/驱动挂起且没抛事件)
+            long rl = eng.LeftRenderedSamples;
+            if (rl != watchRenderedL) { watchRenderedL = rl; watchRenderedTickL = now; }
+            else if (watchRenderedTickL != 0 && unchecked(now - watchRenderedTickL) >= WatchdogFreezeMs)
             {
-                watchRendered = rendered;
-                watchRenderedTick = now;
+                OnEngineStalled("输出左声道线程已 " + (WatchdogFreezeMs / 1000) +
+                    " 秒未取数据（水位 " + eng.LeftBufferMs + "ms）—— 单只音箱休眠/被独占的典型表现");
+                return;
             }
-            else if (watchRenderedTick != 0 && unchecked(now - watchRenderedTick) >= WatchdogFreezeMs)
+            long rr = eng.RightRenderedSamples;
+            if (rr != watchRenderedR) { watchRenderedR = rr; watchRenderedTickR = now; }
+            else if (watchRenderedTickR != 0 && unchecked(now - watchRenderedTickR) >= WatchdogFreezeMs)
             {
-                // 10 秒一次 Read 都没被调用 → 输出端已停摆 (设备休眠/被独占/驱动挂起且没抛事件)
-                OnEngineStalled("输出线程已 " + (WatchdogFreezeMs / 1000) + " 秒未取数据（水位 " + eng.OutputBufferMs + "ms）");
+                OnEngineStalled("输出右声道线程已 " + (WatchdogFreezeMs / 1000) +
+                    " 秒未取数据（水位 " + eng.RightBufferMs + "ms）—— 单只音箱休眠/被独占的典型表现");
                 return;
             }
 
             int capTick = eng.LastCaptureTick;
-            bool captureActive = capTick != 0 && unchecked(now - capTick) < 3000;
+            // 1.5s 阈值: 播放时回调约每 10ms 一次, 1.5s 无回调必为停流; 原 3s 会漏掉 2~3 秒的暂停
+            bool captureActive = capTick != 0 && unchecked(now - capTick) < 1500;
             if (captureActive)
             {
+                // 恢复补记: 此前若静默超过 2 秒, 记一条恢复事件 (检测粒度 2s, 时长为近似值)
+                // —— 没有这条, "应用暂停→恢复"在日志里完全隐形, 会被误判成无故欠载
+                if (captureIdleSince != 0 && unchecked(now - captureIdleSince) >= 2000)
+                    Log("[状态] 捕获源恢复数据（此前静默约 " + (unchecked(now - captureIdleSince) / 1000) + " 秒）");
                 captureIdleLogged = false;
                 captureIdleSince = 0;
                 lastCaptureCheckTick = 0;
                 return;
             }
 
-            // 捕获端没数据: 多数情况只是系统静音, 只提示一次, 不重建
+            // 捕获端没数据: 多数情况只是应用暂停/静音 (此时欠载计数会增长, 属预期而非故障), 只记一次
+            // capTick==0 (从未收到数据) 只置位不打提示: 启动路径有自己的"等待音频数据"日志
             if (captureIdleSince == 0) captureIdleSince = now;
-            if (!captureIdleLogged && unchecked(now - captureIdleSince) >= 30000)
+            if (!captureIdleLogged && unchecked(now - captureIdleSince) >= 2000)
             {
                 captureIdleLogged = true;
-                Log("[状态] 捕获源已 30 秒无音频数据（系统静音或源未播放），分流保持待命");
+                if (capTick != 0) Log("[状态] 捕获源暂无数据（应用暂停或静音），输出待命");
             }
             // 空闲期顺带确认捕获设备是否还在 (1 分钟一次): 设备被移除时引擎不会自杀, 只有这里能发现
             if (captureIdleLogged && (lastCaptureCheckTick == 0 || unchecked(now - lastCaptureCheckTick) >= 60000))
@@ -1684,9 +1710,12 @@ namespace StereoSplitter
                 using (var enumerator = new MMDeviceEnumerator())
                 {
                     var coll = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+                    // MMDeviceCollection 本身无 Dispose; 索引器取出的 MMDevice 是新 RCW, 须逐个释放
                     for (int i = 0; i < coll.Count; i++)
                     {
-                        try { if (coll[i].ID == id) return true; } catch { }
+                        var d = coll[i];
+                        try { if (d.ID == id) return true; }
+                        finally { try { d.Dispose(); } catch { } }
                     }
                 }
                 return false;
@@ -2114,27 +2143,28 @@ namespace StereoSplitter
         }
 
         /// <summary>输出线程累计渲染样本数。看门狗用它判断输出线程是否还在被调用:
-        /// 比看水位可靠 —— 水位在连通时也可能短暂不动, 而渲染计数冻结必然是停摆。</summary>
-        public long RenderedSamples
+        /// 比看水位可靠 —— 水位在连通时也可能短暂不动, 而渲染计数冻结必然是停摆。
+        /// 必须左右分开看: 只看总和的话, 一侧停摆另一侧照常涨, 总和仍在增长 → 单只音箱
+        /// 休眠/被独占这种"无声但界面正常"的故障永远检不出来。</summary>
+        public long LeftRenderedSamples
         {
-            get
-            {
-                long l = leftProvider == null ? 0 : leftProvider.RenderedSamples;
-                long r = rightProvider == null ? 0 : rightProvider.RenderedSamples;
-                return l + r;
-            }
+            get { return leftProvider == null ? 0 : leftProvider.RenderedSamples; }
         }
 
-        /// <summary>当前瞬时水位 (ms, 取左右较大值), 仅供看门狗日志描述现场。</summary>
-        public int OutputBufferMs
+        public long RightRenderedSamples
         {
-            get
-            {
-                int l = leftProvider == null ? -1 : leftProvider.BufferedMs;
-                int r = rightProvider == null ? -1 : rightProvider.BufferedMs;
-                int v = Math.Max(l, r);
-                return v < 0 ? 0 : v;
-            }
+            get { return rightProvider == null ? 0 : rightProvider.RenderedSamples; }
+        }
+
+        /// <summary>单侧当前瞬时水位 (ms), 仅供看门狗日志描述现场。</summary>
+        public int LeftBufferMs
+        {
+            get { return leftProvider == null ? 0 : leftProvider.BufferedMs; }
+        }
+
+        public int RightBufferMs
+        {
+            get { return rightProvider == null ? 0 : rightProvider.BufferedMs; }
         }
 
         /// <summary>启动结果: 预缓冲是否真的拿到了数据 (旧实现超时也当成功, 导致空缓冲起播)。</summary>
@@ -2202,8 +2232,8 @@ namespace StereoSplitter
 
             leftOut = new WasapiOut(leftDev, AudioClientShareMode.Shared, true, outLatencyMs);
             rightOut = new WasapiOut(rightDev, AudioClientShareMode.Shared, true, outLatencyMs);
-            leftProvider = new DriftCorrectingProvider(leftBuf, driftTargetSamples, driftMode, fixedPpm, log);
-            rightProvider = new DriftCorrectingProvider(rightBuf, driftTargetSamples, driftMode, fixedPpm, log);
+            leftProvider = new DriftCorrectingProvider(leftBuf, driftTargetSamples, driftMode, fixedPpm, log, "左");
+            rightProvider = new DriftCorrectingProvider(rightBuf, driftTargetSamples, driftMode, fixedPpm, log, "右");
             // Play 之前设好增益/主音量, 否则首帧以满音量(1.0)出声造成跳变
             leftProvider.Gain = gain;
             rightProvider.Gain = gain;
@@ -2564,6 +2594,7 @@ namespace StereoSplitter
         readonly BufferedWaveProvider src;
         readonly int targetSamples;
         readonly Action<string> log;
+        readonly string tag;   // 声道标识: 左右两路会报出内容相同的告警, 不带标识分不清是哪路
         volatile int mode;          // 1=自适应 0=关闭 2=固定比例
         double fixedRatio;
         readonly byte[] tmp = new byte[RingSize * 4];
@@ -2624,9 +2655,14 @@ namespace StereoSplitter
         { }
 
         public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples, int mode, int fixedPpm, Action<string> log)
+            : this(src, targetSamples, mode, fixedPpm, log, null)
+        { }
+
+        public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples, int mode, int fixedPpm, Action<string> log, string tag)
         {
             this.src = src;
             this.log = log;
+            this.tag = tag;
             this.targetSamples = Math.Max(1, targetSamples);
             this.mode = mode;
             this.smoothedTotal = this.targetSamples;
@@ -2926,7 +2962,7 @@ namespace StereoSplitter
         void Report(string msg)
         {
             if (log == null) return;
-            try { log(msg); } catch { }
+            try { log(tag == null ? msg : "[" + tag + "] " + msg); } catch { }
         }
 
         static float Cubic(float p0, float p1, float p2, float p3, float t)
