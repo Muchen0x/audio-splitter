@@ -2021,7 +2021,10 @@ namespace StereoSplitter
                 if (leftProvider == null || rightProvider == null || sampleRate <= 0) return "-";
                 int minL = leftProvider.TakeMinBufferedMs();
                 int minR = rightProvider.TakeMinBufferedMs();
-                string s = "L=" + leftProvider.BufferedMs + "ms R=" + rightProvider.BufferedMs + "ms" +
+                // 调节水位在前: 它是校正环真正稳定的量, 也是判断是否需要扩缓冲的依据。
+                // 瞬时值紧随其后: 含块粒度锯齿, 只用于看单次回调的抖动幅度。
+                string s = "调节 L=" + leftProvider.RegulatedMs + "ms R=" + rightProvider.RegulatedMs + "ms" +
+                    " 瞬时 L=" + leftProvider.BufferedMs + "ms R=" + rightProvider.BufferedMs + "ms" +
                     " 校正 L=" + Ppm(leftProvider.RatioPpm) + " R=" + Ppm(rightProvider.RatioPpm) +
                     " 最低 L=" + minL + "ms R=" + minR + "ms";
                 long ul = leftProvider.UnderrunSamples, ur = rightProvider.UnderrunSamples;
@@ -2158,7 +2161,20 @@ namespace StereoSplitter
     {
         const int RingSize = 64;
         const int UpdateSamples = 1024;
-        const double Kp = 0.004;
+        // 增益调度: 本环是"积分型对象 + 速率扰动", 时间常数 τ = T/(Cin*Kp)。
+        // Kp=0.004 时 τ=23.75s、穿越频率 0.0067Hz, 而蓝牙设备时钟漂移的时间尺度是 40–60s,
+        // 环与扰动同速 → 压不掉 (实测稳态摆动 std 8.1ms、均值偏差 +3.9ms)。
+        // 原参数相位裕度尚有 85°, 提到 0.02 后 τ=4.7s、穿越 0.031Hz, PM 仍有 67°。
+        // 排空段 (起播 195→95ms, 误差 >100%) 必须留在原增益, 否则会顶到 ±0.5% 限幅、
+        // 音高滑移变陡; 故按误差分两段, 切换带滞回 + 约 400ms 斜坡, 避免校正值跳变。
+        const double KpSteady = 0.02;
+        const double KpFill = 0.004;
+        const double GainEnterErr = 0.20;   // 误差降到 20% 以下 → 切稳态增益
+        const double GainExitErr = 0.50;    // 误差回升到 50% 以上 → 退回填充增益
+        // 兜底切换: 只用"误差<20%"判会死锁 —— 低增益下的稳态误差 = 速率差/KpFill,
+        // 速率差 1500ppm 时稳态误差就是 37%, 永远够不到阈值, 环卡在低增益上, 偏移一直是 37ms。
+        // 排空段最长约 100s (0.2% 速率下降 100ms), 128s 后必然结束, 故加一个时间兜底。
+        const int SwitchAfterUpdates = 6000;   // 6000 × 1024 / 48k ≈ 128s
         const double MaxRatio = 0.005;
         // 同类异常事件限流: 采样线程上每 1024 样本就评估一次, 不限流会刷屏
         const int WarnIntervalMs = 60000;
@@ -2176,6 +2192,12 @@ namespace StereoSplitter
         float prev;
         double phase;
         double smoothedTotal;
+        // 供状态日志读的"调节水位": smoothedTotal 是 double 不能 volatile, 单独存毫秒整数
+        volatile int smoothedMs;
+        // 增益调度当前状态 + 斜坡后的实际 Kp (避免切换瞬间 ratio 阶跃 → 音高跳变)
+        bool fastGain;
+        double kpNow = KpFill;
+        int updates;                // UpdateRatio 累计次数 (兜底切换用)
         int updateCounter;
         int minTotalSinceStatus = int.MaxValue;
         // 长整型: 静音整夜(48000/s)约 12.4 小时就会把 int 顶成负数, 欠载统计从此静默失效
@@ -2183,6 +2205,12 @@ namespace StereoSplitter
         volatile float gain = 1.0f;
         volatile float master = 1.0f;
         volatile float ratio = 1.0f;
+        // 欠载软收尾: 直接输出 0 是从任意电平硬切, 听感就是一声"咔";
+        // 改为把最后一次输出按 3ms 指数衰减到 0, 恢复时再 3ms 淡入
+        float lastOut;
+        float fadeIn = 1f;
+        float fadeStep;
+        float decayCoef;
         // 事件型诊断: 水位过低 / 校正触顶 (限流 + 恢复补记)
         bool lowWarned;
         int lastLowWarnTick;
@@ -2204,6 +2232,11 @@ namespace StereoSplitter
             this.targetSamples = Math.Max(1, targetSamples);
             this.mode = mode;
             this.smoothedTotal = this.targetSamples;
+            this.smoothedMs = targetSamples * 1000 / Math.Max(1, src.WaveFormat.SampleRate);
+            // 3ms 收尾/淡入: 48kHz 下约 144 样本
+            float fadeSamples = Math.Max(1f, 0.003f * src.WaveFormat.SampleRate);
+            fadeStep = 1f / fadeSamples;
+            decayCoef = (float)Math.Exp(-1.0 / fadeSamples);
             if (mode == 0) fixedRatio = 1.0;
             else if (mode == 2)
             {
@@ -2230,6 +2263,9 @@ namespace StereoSplitter
             else
             {
                 smoothedTotal = targetSamples;
+                // 切回自适应时复位调度状态, 否则沿用上一次的 Kp 会产生一次阶跃
+                fastGain = false;
+                kpNow = KpFill;
             }
             mode = newMode;
         }
@@ -2250,6 +2286,11 @@ namespace StereoSplitter
         }
 
         public double RatioPpm { get { return ((double)ratio - 1.0) * 1e6; } }
+
+        /// <summary>调节水位: 校正环实际调节的那个量 (2.1s 低通后的水位)。
+        /// 与 BufferedMs 的区别: 后者是瞬时值, 含 WASAPI 回调块粒度造成的 ±18ms 锯齿,
+        /// 日志里只看瞬时值会把块噪声误判成真实延迟抖动。</summary>
+        public int RegulatedMs { get { return smoothedMs; } }
 
         public long UnderrunSamples { get { return Interlocked.Read(ref underrunSamples); } }
 
@@ -2273,7 +2314,11 @@ namespace StereoSplitter
                     if (count < 3)
                     {
                         Interlocked.Increment(ref underrunSamples);
-                        samples[offset + i] = 0f;
+                        // 软收尾: 把最后一次输出按 3ms 指数衰减到 0, 代替从任意电平硬切
+                        fadeIn = 0f;
+                        lastOut *= decayCoef;
+                        if (lastOut > -1e-5f && lastOut < 1e-5f) lastOut = 0f;
+                        samples[offset + i] = lastOut;
                         if (++updateCounter >= UpdateSamples) { updateCounter = 0; UpdateRatio(); }
                         continue;
                     }
@@ -2285,6 +2330,14 @@ namespace StereoSplitter
                 float v = Cubic(prev, ring[i1], ring[i2], ring[i3], (float)phase) * g * m;
                 if (v > 1f) v = 1f;
                 else if (v < -1f) v = -1f;
+                if (fadeIn < 1f)
+                {
+                    // 欠载恢复淡入: 与 lastOut 的衰减对称, 避免电平从 0 直接跳到满幅
+                    fadeIn += fadeStep;
+                    if (fadeIn > 1f) fadeIn = 1f;
+                    v *= fadeIn;
+                }
+                lastOut = v;
                 samples[offset + i] = v;
 
                 phase += ratio;
@@ -2327,27 +2380,40 @@ namespace StereoSplitter
 
             int sr = src.WaveFormat.SampleRate;
 
+            // 平滑值所有模式都更新: 日志与告警统一用"调节水位"这个量
+            smoothedTotal += 0.01 * (total - smoothedTotal);
+            smoothedMs = MsOf(smoothedTotal, sr);
+
             // 事件型诊断①: 水位掉到目标 30% 以下 (与校正模式无关, 断流/设备卡顿都能看到)
-            if (total < targetSamples * 0.3)
+            // 判据用平滑值: 瞬时值含 ±18ms 块粒度锯齿, 直接比阈值会误报
+            if (smoothedTotal < targetSamples * 0.3)
             {
                 if (!lowWarned && WarnAllowed(ref lastLowWarnTick))
                 {
                     lowWarned = true;
-                    Report("[警告] 缓冲水位偏低: 实测 " + MsOf(total, sr) + "ms / 目标 " + MsOf(targetSamples, sr) +
+                    Report("[警告] 缓冲水位偏低: 调节水位 " + smoothedMs + "ms / 目标 " + MsOf(targetSamples, sr) +
                         "ms (低于 30%)，可能出现欠载断音");
                 }
             }
-            else if (lowWarned && total >= targetSamples * 0.6)
+            else if (lowWarned && smoothedTotal >= targetSamples * 0.6)
             {
                 lowWarned = false;
-                Report("[状态] 缓冲水位已恢复: " + MsOf(total, sr) + "ms / 目标 " + MsOf(targetSamples, sr) + "ms");
+                Report("[状态] 缓冲水位已恢复: " + smoothedMs + "ms / 目标 " + MsOf(targetSamples, sr) + "ms");
             }
 
             if (mode != 1) return;
 
-            smoothedTotal += 0.01 * (total - smoothedTotal);
             double err = (smoothedTotal - targetSamples) / targetSamples;
-            double r = 1.0 + Kp * err;
+
+            // 增益调度: 排空段(大误差)保持填充增益, 进入稳态段后换高增益
+            // 时间兜底防止"低增益稳态误差恰好高于切换阈值"时永远切不过去
+            updates++;
+            if (!fastGain && (Math.Abs(err) < GainEnterErr || updates > SwitchAfterUpdates)) fastGain = true;
+            else if (fastGain && Math.Abs(err) > GainExitErr) fastGain = false;
+            double kpTarget = fastGain ? KpSteady : KpFill;
+            kpNow += (kpTarget - kpNow) * 0.02;   // 约 1 秒过渡, 避免 ratio 阶跃导致音高跳变
+
+            double r = 1.0 + kpNow * err;
             double lo = 1.0 - MaxRatio;
             double hi = 1.0 + MaxRatio;
             bool clamped = (r < lo) || (r > hi);
@@ -2356,12 +2422,14 @@ namespace StereoSplitter
             ratio = (float)r;
 
             // 事件型诊断②: 连续触顶 (约 1 秒 = 50 次更新) 说明速率差已超出 ±0.5% 修正范围
-            if (clamped)
+            // 只报"负向触顶": 正向触顶说明水位高于目标、正以最快速度排空, 属自愈状态;
+            // 负向触顶才是补不上来、有欠载风险。起播排空段因此不会误报。
+            if (clamped && fastGain && err < 0)
             {
                 if (++clampStreak >= 50 && WarnAllowed(ref lastClampWarnTick))
                 {
                     clampStreak = 0;
-                    Report("[警告] 时钟校正已触顶 " + PpmOf(r) + " (水位 " + MsOf(total, sr) + "ms / 目标 " +
+                    Report("[警告] 时钟校正已触顶 " + PpmOf(r) + " (调节水位 " + smoothedMs + "ms / 目标 " +
                         MsOf(targetSamples, sr) + "ms)，两设备速率差超出可修正范围");
                 }
             }
