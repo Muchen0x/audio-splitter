@@ -33,14 +33,20 @@ namespace StereoSplitter.Infrastructure
             writer.AutoFlush = true;
         }
 
-        public void Write(LogLevel level, string message)
+        /// <summary>按调用方给的时间戳写一行 (UI 与文件共用同一个时间戳, 不各取一次 Now)。</summary>
+        public void Write(string timestamp, LogLevel level, string message)
         {
             if (writer == null) return;
             try
             {
-                writer.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff") + " [" + Tag(level) + "] " + message);
+                writer.WriteLine(timestamp + " [" + Tag(level) + "] " + message);
             }
             catch { }
+        }
+
+        public void Write(LogLevel level, string message)
+        {
+            Write(DateTime.Now.ToString("HH:mm:ss.fff"), level, message);
         }
 
         /// <summary>清空当前会话日志 (UI 上点"清除日志"时同步)。</summary>

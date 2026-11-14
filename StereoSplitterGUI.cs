@@ -120,7 +120,8 @@ namespace StereoSplitter
         volatile bool exiting = false; // 后台启动线程读 → 需 volatile
         // 后台启动状态 (引擎 Start 含预缓冲等待, 移出UI线程防卡顿)
         volatile bool startAbort = false;
-        volatile bool startDone = true;
+        // 启动完成信号: 替代关闭流程里的 Sleep(20)×100 忙等 (Set = 已结束/空闲)
+        readonly ManualResetEventSlim startFinished = new ManualResetEventSlim(true);
         bool trayTipShown = false;
         bool loadingSettings = true;
         float pendingGain = 1.0f;
@@ -831,17 +832,24 @@ namespace StereoSplitter
             var dev = Devices[cmbDefault.SelectedIndex];
             try
             {
-                // 1. 设为系统默认输出
-                string setErr;
-                if (!SystemDefaultPolicy.TrySetDefault(dev.ID, out setErr))
+                // 1. 设为系统默认输出 (已经是默认就跳过: 每次重设都会让系统音频重新协商一次)
+                if (catalog.DefaultRenderId() == dev.ID)
                 {
-                    Log("[错误] 配置 1/4 设置系统默认输出 → [" + cmbDefault.SelectedIndex + "] " +
-                        dev.FriendlyName + " 失败: " + setErr);
-                    int idx1 = catalog.IndexOf(catalog.DefaultRenderId());
-                    if (idx1 >= 0) cmbDefault.SelectedIndex = idx1;
-                    return false;
+                    Log("[配置] 1/4 已是系统默认输出，跳过切换 → [" + cmbDefault.SelectedIndex + "] " + dev.FriendlyName);
                 }
-                Log("[配置] 1/4 设置系统默认输出 → [" + cmbDefault.SelectedIndex + "] " + dev.FriendlyName + " 成功");
+                else
+                {
+                    string setErr;
+                    if (!SystemDefaultPolicy.TrySetDefault(dev.ID, out setErr))
+                    {
+                        Log("[错误] 配置 1/4 设置系统默认输出 → [" + cmbDefault.SelectedIndex + "] " +
+                            dev.FriendlyName + " 失败: " + setErr);
+                        int idx1 = catalog.IndexOf(catalog.DefaultRenderId());
+                        if (idx1 >= 0) cmbDefault.SelectedIndex = idx1;
+                        return false;
+                    }
+                    Log("[配置] 1/4 设置系统默认输出 → [" + cmbDefault.SelectedIndex + "] " + dev.FriendlyName + " 成功");
+                }
 
                 int defIdx = cmbDefault.SelectedIndex;
 
@@ -1354,7 +1362,7 @@ namespace StereoSplitter
                 string expectCap = runCaptureId;
 
                 startAbort = false;
-                startDone = false;
+                startFinished.Reset();
                 ThreadPool.QueueUserWorkItem(delegate
                 {
                     AudioEngine eng = null;
@@ -1402,7 +1410,7 @@ namespace StereoSplitter
                         }
                         catch { }
                     }
-                    finally { startDone = true; }
+                    finally { startFinished.Set(); }
                 });
             }
             catch (Exception ex)
@@ -1457,10 +1465,10 @@ namespace StereoSplitter
             exiting = true; // 真正关闭: 阻止后台启动完成回调再碰UI
 
             // 后台启动进行中 → 请求中止并等它退出 (引擎等待循环每20ms检查一次中止位)
-            if (!startDone)
+            if (!startFinished.IsSet)
             {
                 startAbort = true;
-                for (int i = 0; i < 100 && !startDone; i++) Thread.Sleep(20);
+                startFinished.Wait(2000); // 超时也不继续等: 后台回调自带 IsDisposed/exiting 保护
             }
 
             StopEngine();
@@ -1542,7 +1550,9 @@ namespace StereoSplitter
 
             // 格式: HH:mm:ss.fff [LEVEL] [阶段] 内容 (毫秒便于排查启动时序)
             Infrastructure.LogLevel level = Infrastructure.SessionLog.Classify(msg);
-            string line = DateTime.Now.ToString("HH:mm:ss.fff") + " [" + Infrastructure.SessionLog.Tag(level) + "] " + msg;
+            // 单次取时: UI 与文件同源, 否则同一行两处时间戳会差几毫秒, 排查时序时容易误判
+            string stamp = DateTime.Now.ToString("HH:mm:ss.fff");
+            string line = stamp + " [" + Infrastructure.SessionLog.Tag(level) + "] " + msg;
 
             // UI: 单条 8192 截断 + 条目间空行 + 自动滚底
             string ui = line;
@@ -1560,7 +1570,7 @@ namespace StereoSplitter
             txtLog.ScrollToCaret();
 
             // 文件持久化 (写原文, 不截断)
-            if (sessionLog != null) sessionLog.Write(level, msg);
+            if (sessionLog != null) sessionLog.Write(stamp, level, msg);
         }
     }
 
@@ -1765,6 +1775,15 @@ namespace StereoSplitter
         // 起播时捕获源无数据 → 首帧到达时补一条"就绪"日志 (NoAudioYet 场景)
         volatile bool silentStartup = false;
         int firstDataLogged = 0;
+        // 采集回调置位, 预缓冲等待用它替代 20ms 忙等轮询
+        AutoResetEvent dataReady;
+        // 输出缓冲溢出告警限流 (DiscardOnBufferOverflow 会静默丢块, 不记就等于丢音无迹可查)
+        int lastOverflowWarnTick;
+
+        // 起播余量: 覆盖输出端起播时对缓冲的预拉取。
+        // 实测(蓝牙音箱) 95ms 目标起播后 5 秒内掉到 14ms, 峰值抽走约 80ms → 取 100ms 留裕度。
+        // 多填的这部分由起播瞬态消耗, 稳态由时钟环回落到 driftTargetMs, 不增加稳态延迟。
+        const int PrePullGuardMs = 100;
 
         public AudioEngine(string leftDevId, string rightDevId, Action<string> log)
             : this(leftDevId, rightDevId, log, 1, 0)
@@ -1813,10 +1832,10 @@ namespace StereoSplitter
             try
             {
                 // 启动前校验: 设备可能在这几秒内被拔出, 用陈旧 ID 建 WasapiOut 只会抛 "尚未实现" 这类鬼话
-                if (!IsRenderDeviceActive(enumerator, leftDevId))
-                    throw new AudioDeviceException("左声道设备不可用（可能已拔出或被禁用），请刷新设备后重试");
-                if (!IsRenderDeviceActive(enumerator, rightDevId))
-                    throw new AudioDeviceException("右声道设备不可用（可能已拔出或被禁用），请刷新设备后重试");
+                // 一次枚举同时校验左右 (原实现对左/右各枚举了一遍全量设备)
+                string missing = FindMissingChannel(enumerator, leftDevId, rightDevId);
+                if (missing != null)
+                    throw new AudioDeviceException(missing + "不可用（可能已拔出或被禁用），请刷新设备后重试");
 
                 leftDev = enumerator.GetDevice(leftDevId);
                 rightDev = enumerator.GetDevice(rightDevId);
@@ -1835,15 +1854,19 @@ namespace StereoSplitter
             log("[启动] 格式: " + wf.SampleRate + "Hz / " + wf.Encoding + " / " + wf.BitsPerSample + "bit / " + wf.Channels + "ch");
 
             var outFormat = WaveFormat.CreateIeeeFloatWaveFormat(wf.SampleRate, 1);
+            // 时钟环稳态目标: 档位越小目标越低, 上限 150ms
             int driftTargetMs = Math.Min(150, Math.Max(prebufferMs, outLatencyMs) + 80);
             int driftTargetSamples = (int)((long)wf.SampleRate * driftTargetMs / 1000);
+            // 起播填充目标 = 稳态目标 + 余量 (见 PrePullGuardMs 注释)
+            int fillTargetMs = driftTargetMs + PrePullGuardMs;
+            int fillTargetSamples = (int)((long)wf.SampleRate * fillTargetMs / 1000);
             leftBuf = new BufferedWaveProvider(outFormat) { BufferDuration = TimeSpan.FromMilliseconds(1000), DiscardOnBufferOverflow = true };
             rightBuf = new BufferedWaveProvider(outFormat) { BufferDuration = TimeSpan.FromMilliseconds(1000), DiscardOnBufferOverflow = true };
 
             leftOut = new WasapiOut(leftDev, AudioClientShareMode.Shared, true, outLatencyMs);
             rightOut = new WasapiOut(rightDev, AudioClientShareMode.Shared, true, outLatencyMs);
-            leftProvider = new DriftCorrectingProvider(leftBuf, driftTargetSamples, driftMode, fixedPpm);
-            rightProvider = new DriftCorrectingProvider(rightBuf, driftTargetSamples, driftMode, fixedPpm);
+            leftProvider = new DriftCorrectingProvider(leftBuf, driftTargetSamples, driftMode, fixedPpm, log);
+            rightProvider = new DriftCorrectingProvider(rightBuf, driftTargetSamples, driftMode, fixedPpm, log);
             // Play 之前设好增益/主音量, 否则首帧以满音量(1.0)出声造成跳变
             leftProvider.Gain = gain;
             rightProvider.Gain = gain;
@@ -1860,6 +1883,7 @@ namespace StereoSplitter
             rightLine = new DelayLine((int)Math.Min(int.MaxValue, (long)wf.SampleRate * rightDelayMs / 1000) * blockAlign,
                 (buf, off, len) => Split(buf, off, len, 1, rightBuf));
 
+            dataReady = new AutoResetEvent(false);
             loopback.DataAvailable += (s, e) =>
             {
                 // 采样线程裸异常会直接杀进程 → 捕获并去重记一条
@@ -1878,20 +1902,30 @@ namespace StereoSplitter
                         log("[错误] 采样数据处理异常: " + ex.Message);
                     }
                 }
+                // 唤醒预缓冲等待 (事件在 Dispose 里等采集线程退出后才释放, 此处无释放竞态)
+                try
+                {
+                    var ev = dataReady;
+                    if (ev != null) ev.Set();
+                }
+                catch (ObjectDisposedException) { }
+                catch { }
             };
 
             loopback.StartRecording();
 
-            int targetBytes = driftTargetSamples * 4;
+            int fillBytes = fillTargetSamples * 4;
             int targetMs = driftTargetSamples * 1000 / wf.SampleRate;
-            int waits = 0;
-            // 等待上限随预缓冲与延迟补偿动态放宽 (延迟 2000ms 时固定 2s 会超时)
-            int maxWaits = (targetMs + Math.Max(leftDelayMs, rightDelayMs) + 1000) / 20 + 50;
-            while ((leftBuf.BufferedBytes < targetBytes || rightBuf.BufferedBytes < targetBytes) && waits < maxWaits)
+            // 等待上限随填充目标与延迟补偿动态放宽 (延迟 2000ms 时固定 2s 会超时)
+            int maxWaitMs = fillTargetMs + Math.Max(leftDelayMs, rightDelayMs) + 1000;
+            int waitStart = Environment.TickCount;
+            while (leftBuf.BufferedBytes < fillBytes || rightBuf.BufferedBytes < fillBytes)
             {
-                // 关窗中止检查 (每20ms一次): FormClosing 置 startAbort 后快速退出, 不让关闭流程干等
+                // 关窗中止检查: FormClosing 置 startAbort 后最多 20ms 即退出
                 if (aborted != null && aborted()) throw new OperationCanceledException("启动已取消");
-                Thread.Sleep(20); waits++;
+                if (Environment.TickCount - waitStart >= maxWaitMs) break;
+                var ev = dataReady;
+                if (ev != null) ev.WaitOne(20); else Thread.Sleep(20);
             }
 
             // 先取水位再修剪: 修剪会把快路压回目标值, 之后再判断就永远"达标"
@@ -1899,32 +1933,33 @@ namespace StereoSplitter
             int gotR = rightBuf.BufferedBytes;
 
             // 修剪快路多攒的水位: 等待以慢路为终点时, 无延迟的快路会多攒数据, 抵消延迟线的时差
-            // 两 buf 统一修剪到目标阈值 → 净声道差 = 延迟线的 (L - R)
-            TrimTo(leftBuf, targetBytes);
-            TrimTo(rightBuf, targetBytes);
+            // 两 buf 统一修剪到填充阈值 → 净声道差 = 延迟线的 (L - R)
+            TrimTo(leftBuf, fillBytes);
+            TrimTo(rightBuf, fillBytes);
 
             StartOutcome outcome;
-            if (gotL >= targetBytes && gotR >= targetBytes)
+            if (gotL >= fillBytes && gotR >= fillBytes)
             {
                 outcome = StartOutcome.Ready;
-                log("[启动] 预缓冲完成 (L=" + gotL + " R=" + gotR +
-                    " 字节, 档位 " + prebufferMs + "ms / 输出 " + outLatencyMs + "ms / 时钟目标 " + targetMs + "ms)");
+                log("[启动] 预缓冲完成 (L=" + gotL + " R=" + gotR + " 字节, 填充目标 " + fillTargetMs +
+                    "ms / 时钟目标 " + targetMs + "ms / 档位 " + prebufferMs + "ms / 输出 " + outLatencyMs + "ms)");
             }
             else if (gotL == 0 || gotR == 0)
             {
                 outcome = StartOutcome.NoAudioYet;
-                log("[警告] 捕获源 " + captureName + " 在 " + (maxWaits * 20 / 1000.0).ToString("0.0") +
+                log("[警告] 捕获源 " + captureName + " 在 " + (maxWaitMs / 1000.0).ToString("0.0") +
                     " 秒内没有音频数据 (L=" + gotL + " R=" + gotR + " 字节)，已按静音启动，播放声音后会自动补齐");
             }
             else
             {
                 outcome = StartOutcome.Insufficient;
-                log("[警告] 预缓冲不足 (L=" + gotL + " R=" + gotR + " / 目标 " + targetBytes +
+                log("[警告] 预缓冲不足 (L=" + gotL + " R=" + gotR + " / 目标 " + fillBytes +
                     " 字节)，开头可能出现欠载");
             }
 
             silentStartup = (outcome == StartOutcome.NoAudioYet);
-            log("[启动] 时钟漂移补偿: " + (driftMode == 0 ? "关闭" : driftMode == 2 ? "固定 " + fixedPpm + "ppm" : "自适应") + ", 比例上限 ±0.50%");            if (leftDelayMs > 0 || rightDelayMs > 0)
+            log("[启动] 时钟漂移补偿: " + (driftMode == 0 ? "关闭" : driftMode == 2 ? "固定 " + fixedPpm + "ppm" : "自适应") + ", 比例上限 ±0.50%");
+            if (leftDelayMs > 0 || rightDelayMs > 0)
                 log("[启动] 延迟补偿: 左=" + leftDelayMs + "ms 右=" + rightDelayMs + "ms");
 
             if (aborted != null && aborted()) throw new OperationCanceledException("启动已取消");
@@ -1936,10 +1971,12 @@ namespace StereoSplitter
             return outcome;
         }
 
-        // 设备是否仍在活动输出列表中 (启动前校验, 避免用已拔除的陈 ID 建流)
-        static bool IsRenderDeviceActive(MMDeviceEnumerator enumerator, string deviceId)
+        // 一次枚举同时校验左右声道设备是否仍在活动输出列表中; 返回缺失的声道名, 都正常返回 null
+        static string FindMissingChannel(MMDeviceEnumerator enumerator, string leftId, string rightId)
         {
-            if (string.IsNullOrEmpty(deviceId)) return false;
+            if (string.IsNullOrEmpty(leftId)) return "左声道设备";
+            if (string.IsNullOrEmpty(rightId)) return "右声道设备";
+            bool leftOk = false, rightOk = false;
             try
             {
                 var coll = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
@@ -1947,11 +1984,15 @@ namespace StereoSplitter
                 {
                     string id = null;
                     try { id = coll[i].ID; } catch { }
-                    if (id == deviceId) return true;
+                    if (id == leftId) leftOk = true;
+                    if (id == rightId) rightOk = true;
+                    if (leftOk && rightOk) break;
                 }
             }
             catch { }
-            return false;
+            if (!leftOk) return "左声道设备";
+            if (!rightOk) return "右声道设备";
+            return null;
         }
 
         public void SetMaster(float m)
@@ -1983,7 +2024,7 @@ namespace StereoSplitter
                 string s = "L=" + leftProvider.BufferedMs + "ms R=" + rightProvider.BufferedMs + "ms" +
                     " 校正 L=" + Ppm(leftProvider.RatioPpm) + " R=" + Ppm(rightProvider.RatioPpm) +
                     " 最低 L=" + minL + "ms R=" + minR + "ms";
-                int ul = leftProvider.UnderrunSamples, ur = rightProvider.UnderrunSamples;
+                long ul = leftProvider.UnderrunSamples, ur = rightProvider.UnderrunSamples;
                 if (ul > 0 || ur > 0) s += " 欠载 L=" + ul + " R=" + ur;
                 return s;
             }
@@ -2065,13 +2106,33 @@ namespace StereoSplitter
                 for (int i = 0; i < frames; i++) splitF[i] = 0f;
             }
             Buffer.BlockCopy(splitF, 0, splitOut, 0, frames * 4);
-            target.AddSamples(splitOut, 0, frames * 4);
+            // 输出缓冲已满 → DiscardOnBufferOverflow 会整块静默丢弃 (听起来是断音), 限流记一条
+            int need = frames * 4;
+            if (target.BufferedBytes + need > target.BufferLength && WarnOverflow())
+                log("[警告] 输出缓冲已满 (" + (target == leftBuf ? "左" : "右") + "声道 " + target.BufferedBytes + "/" +
+                    target.BufferLength + " 字节)，本块已丢弃；输出设备可能卡顿或时钟校正跟不上");
+            target.AddSamples(splitOut, 0, need);
+        }
+
+        // 溢出告警限流: 同一类事件 60 秒最多一条, 避免采样线程刷屏
+        bool WarnOverflow()
+        {
+            int now = Environment.TickCount;
+            if (lastOverflowWarnTick != 0 && now - lastOverflowWarnTick < 60000) return false;
+            lastOverflowWarnTick = now;
+            return true;
         }
 
         public void Dispose()
         {
             Stop();
             if (loopback != null) loopback.Dispose();
+            // 采集线程已退出 (StopRecording 等待其结束) → 此时释放等待句柄无竞态
+            if (dataReady != null)
+            {
+                try { dataReady.Close(); } catch { }
+                dataReady = null;
+            }
             if (leftOut != null) leftOut.Dispose();
             if (rightOut != null) rightOut.Dispose();
             if (captureDev != null)
@@ -2099,9 +2160,12 @@ namespace StereoSplitter
         const int UpdateSamples = 1024;
         const double Kp = 0.004;
         const double MaxRatio = 0.005;
+        // 同类异常事件限流: 采样线程上每 1024 样本就评估一次, 不限流会刷屏
+        const int WarnIntervalMs = 60000;
 
         readonly BufferedWaveProvider src;
         readonly int targetSamples;
+        readonly Action<string> log;
         volatile int mode;          // 1=自适应 0=关闭 2=固定比例
         double fixedRatio;
         readonly byte[] tmp = new byte[RingSize * 4];
@@ -2114,18 +2178,29 @@ namespace StereoSplitter
         double smoothedTotal;
         int updateCounter;
         int minTotalSinceStatus = int.MaxValue;
-        volatile int underrunSamples;
+        // 长整型: 静音整夜(48000/s)约 12.4 小时就会把 int 顶成负数, 欠载统计从此静默失效
+        long underrunSamples;
         volatile float gain = 1.0f;
         volatile float master = 1.0f;
         volatile float ratio = 1.0f;
+        // 事件型诊断: 水位过低 / 校正触顶 (限流 + 恢复补记)
+        bool lowWarned;
+        int lastLowWarnTick;
+        int clampStreak;
+        int lastClampWarnTick;
 
         public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples)
-            : this(src, targetSamples, 1, 0)
+            : this(src, targetSamples, 1, 0, null)
         { }
 
         public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples, int mode, int fixedPpm)
+            : this(src, targetSamples, mode, fixedPpm, null)
+        { }
+
+        public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples, int mode, int fixedPpm, Action<string> log)
         {
             this.src = src;
+            this.log = log;
             this.targetSamples = Math.Max(1, targetSamples);
             this.mode = mode;
             this.smoothedTotal = this.targetSamples;
@@ -2176,7 +2251,7 @@ namespace StereoSplitter
 
         public double RatioPpm { get { return ((double)ratio - 1.0) * 1e6; } }
 
-        public int UnderrunSamples { get { return underrunSamples; } }
+        public long UnderrunSamples { get { return Interlocked.Read(ref underrunSamples); } }
 
         public int TakeMinBufferedMs()
         {
@@ -2249,6 +2324,25 @@ namespace StereoSplitter
         {
             double total = src.BufferedBytes / 4 + count;
             if (total < minTotalSinceStatus) minTotalSinceStatus = (int)total;
+
+            int sr = src.WaveFormat.SampleRate;
+
+            // 事件型诊断①: 水位掉到目标 30% 以下 (与校正模式无关, 断流/设备卡顿都能看到)
+            if (total < targetSamples * 0.3)
+            {
+                if (!lowWarned && WarnAllowed(ref lastLowWarnTick))
+                {
+                    lowWarned = true;
+                    Report("[警告] 缓冲水位偏低: 实测 " + MsOf(total, sr) + "ms / 目标 " + MsOf(targetSamples, sr) +
+                        "ms (低于 30%)，可能出现欠载断音");
+                }
+            }
+            else if (lowWarned && total >= targetSamples * 0.6)
+            {
+                lowWarned = false;
+                Report("[状态] 缓冲水位已恢复: " + MsOf(total, sr) + "ms / 目标 " + MsOf(targetSamples, sr) + "ms");
+            }
+
             if (mode != 1) return;
 
             smoothedTotal += 0.01 * (total - smoothedTotal);
@@ -2256,9 +2350,46 @@ namespace StereoSplitter
             double r = 1.0 + Kp * err;
             double lo = 1.0 - MaxRatio;
             double hi = 1.0 + MaxRatio;
+            bool clamped = (r < lo) || (r > hi);
             if (r < lo) r = lo;
             else if (r > hi) r = hi;
             ratio = (float)r;
+
+            // 事件型诊断②: 连续触顶 (约 1 秒 = 50 次更新) 说明速率差已超出 ±0.5% 修正范围
+            if (clamped)
+            {
+                if (++clampStreak >= 50 && WarnAllowed(ref lastClampWarnTick))
+                {
+                    clampStreak = 0;
+                    Report("[警告] 时钟校正已触顶 " + PpmOf(r) + " (水位 " + MsOf(total, sr) + "ms / 目标 " +
+                        MsOf(targetSamples, sr) + "ms)，两设备速率差超出可修正范围");
+                }
+            }
+            else clampStreak = 0;
+        }
+
+        static int MsOf(double samples, int sr)
+        {
+            return sr > 0 ? (int)(samples * 1000 / sr) : 0;
+        }
+
+        static string PpmOf(double r)
+        {
+            return ((r - 1.0) * 1e6).ToString("+0;-0;0") + "ppm";
+        }
+
+        bool WarnAllowed(ref int lastTick)
+        {
+            int now = Environment.TickCount;
+            if (lastTick != 0 && now - lastTick < WarnIntervalMs) return false;
+            lastTick = now;
+            return true;
+        }
+
+        void Report(string msg)
+        {
+            if (log == null) return;
+            try { log(msg); } catch { }
         }
 
         static float Cubic(float p0, float p1, float p2, float p3, float t)
