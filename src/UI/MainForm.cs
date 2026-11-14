@@ -1823,5 +1823,4 @@ namespace StereoSplitter
             if (sessionLog != null) sessionLog.Write(stamp, level, msg);
         }
     }
-
 }
