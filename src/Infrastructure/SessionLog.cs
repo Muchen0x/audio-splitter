@@ -85,18 +85,19 @@ namespace StereoSplitter.Infrastructure
             }
         }
 
-        /// <summary>删 7 天前的, 再把总数压到 100 以内 (防 log/ 无限累积)。</summary>
+        /// <summary>删 7 天前的, 再把总数压到 100 以内 (防 log/ 无限累积)。
+        /// 覆盖 session_*.log 与 crash_*.log: 崩溃日志同样会无限累积。</summary>
         static void PruneOldLogs(string logDir)
         {
             try
             {
                 var dir = new DirectoryInfo(logDir);
-                var files = dir.GetFiles("session_*.log");
+                var files = dir.GetFiles("*.log");
                 DateTime cutoff = DateTime.Now.AddDays(-7);
                 foreach (var fi in files)
                     if (fi.LastWriteTime < cutoff) { try { fi.Delete(); } catch { } }
 
-                files = dir.GetFiles("session_*.log");
+                files = dir.GetFiles("*.log");
                 if (files.Length > 100)
                 {
                     Array.Sort(files, delegate(FileInfo a, FileInfo b) { return a.LastWriteTime.CompareTo(b.LastWriteTime); });
