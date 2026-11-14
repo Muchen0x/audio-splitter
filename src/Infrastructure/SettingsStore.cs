@@ -78,9 +78,10 @@ namespace StereoSplitter.Infrastructure
             return def;
         }
 
-        /// <summary>按插入顺序原子写盘。</summary>
-        public bool WriteAll()
+        /// <summary>按插入顺序原子写盘。失败时通过 error 返回原因 (由调用方决定如何告知用户)。</summary>
+        public bool WriteAll(out string error)
         {
+            error = null;
             try
             {
                 var sb = new StringBuilder();
@@ -99,7 +100,17 @@ namespace StereoSplitter.Infrastructure
                 else File.Move(tmp, path);
                 return true;
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                error = ex.GetType().Name + ": " + ex.Message;
+                return false;
+            }
+        }
+
+        public bool WriteAll()
+        {
+            string ignored;
+            return WriteAll(out ignored);
         }
     }
 }

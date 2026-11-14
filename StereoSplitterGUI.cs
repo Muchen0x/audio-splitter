@@ -127,6 +127,8 @@ namespace StereoSplitter
         readonly ManualResetEventSlim startFinished = new ManualResetEventSlim(true);
         bool trayTipShown = false;
         bool loadingSettings = true;
+        // ini 写盘失败告警限流: 拖动滑条会连续触发 FlushSettings, 不限流会刷屏
+        int lastSaveWarnTick;
         float pendingGain = 1.0f;
         int driftMode = 1;      // 1=自适应 0=关闭 2=固定比例
         int fixedPpm = 600;
@@ -1046,7 +1048,19 @@ namespace StereoSplitter
         {
             if (loadingSettings) return;
             SyncSettingsDict();
-            settings.WriteAll();
+
+            string err;
+            if (settings.WriteAll(out err))
+            {
+                lastSaveWarnTick = 0;      // 恢复正常后允许下次重新告警
+                return;
+            }
+
+            // 失败限流: 60 秒最多一条, 避免拖动滑条时刷屏
+            int now = Environment.TickCount;
+            if (lastSaveWarnTick != 0 && unchecked(now - lastSaveWarnTick) < 60000) return;
+            lastSaveWarnTick = now;
+            Log("[警告] 设置写入失败: " + err + "；本次运行的改动可能不会保留 (" + IniPath + ")");
         }
 
         void SyncSettingsDict()
@@ -2101,9 +2115,47 @@ namespace StereoSplitter
         // 输出缓冲溢出告警限流 (DiscardOnBufferOverflow 会静默丢块, 不记就等于丢音无迹可查)
         int lastOverflowWarnTick;
 
+        // ---- 告警去重: 左右两路 provider 各自限流, 同一现象必然打两条 ----
+        readonly object logGate = new object();
+        readonly Dictionary<string, int> logCategoryTick = new Dictionary<string, int>();
+
+        /// <summary>按告警类别 1.5s 去重: 左右两路同时触发同一类告警时只留第一条。
+        /// 只用于 provider, 启动/停止等一次性日志仍走原 log, 避免被吞。</summary>
+        void LogThrottled(string msg)
+        {
+            if (msg == null || log == null) return;
+            string key = CategoryKey(msg);
+            int now = Environment.TickCount;
+            lock (logGate)
+            {
+                int last;
+                if (logCategoryTick.TryGetValue(key, out last) && unchecked(now - last) < 1500) return;
+                logCategoryTick[key] = now;
+                if (logCategoryTick.Count > 64) logCategoryTick.Clear();   // 防无界增长
+            }
+            try { log(msg); } catch { }
+        }
+
+        /// <summary>"[左] [警告] 缓冲水位偏低: 调节水位 28ms …" → "[警告] 缓冲水位偏低"。
+        /// 开头的声道标记必须跳过 —— 左右标签不同, 计入类别键会让去重完全失效。</summary>
+        static string CategoryKey(string msg)
+        {
+            int start = 0;
+            if (msg.Length > 3 && msg[0] == '[' && msg[2] == ']') start = 3;   // "[左]" / "[右]"
+            int n = start;
+            while (n < msg.Length && n < start + 40)
+            {
+                char c = msg[n];
+                if (c == ':' || c == '(' || c == '+' || c == '-' || (c >= '0' && c <= '9')) break;
+                n++;
+            }
+            return msg.Substring(start, n - start).TrimEnd();
+        }
+
         // 长期运行看门狗: 输出/捕获线程会因设备休眠、被独占、拔插而"悄悄停止",
         // 不订阅这些事件时界面会一直显示"运行中"却早已无声 (实测有过 71 分钟)
         volatile bool stopping;             // 主动 Stop 期间这些事件也会触发 → 屏蔽
+        bool disposed;                      // Dispose 幂等守卫
         int stallNotified;                  // Stalled 只上报一次 (左右常同时停)
         int lastCaptureTick;                // 最近一次收到捕获数据的 TickCount (0 = 尚未收到)
         /// <summary>链路意外中断 (参数为人话原因)。在音频线程触发, 订阅方须自行回 UI 线程。</summary>
@@ -2232,8 +2284,8 @@ namespace StereoSplitter
 
             leftOut = new WasapiOut(leftDev, AudioClientShareMode.Shared, true, outLatencyMs);
             rightOut = new WasapiOut(rightDev, AudioClientShareMode.Shared, true, outLatencyMs);
-            leftProvider = new DriftCorrectingProvider(leftBuf, driftTargetSamples, driftMode, fixedPpm, log, "左");
-            rightProvider = new DriftCorrectingProvider(rightBuf, driftTargetSamples, driftMode, fixedPpm, log, "右");
+            leftProvider = new DriftCorrectingProvider(leftBuf, driftTargetSamples, driftMode, fixedPpm, LogThrottled, "左");
+            rightProvider = new DriftCorrectingProvider(rightBuf, driftTargetSamples, driftMode, fixedPpm, LogThrottled, "右");
             // Play 之前设好增益/主音量, 否则首帧以满音量(1.0)出声造成跳变
             leftProvider.Gain = gain;
             rightProvider.Gain = gain;
@@ -2535,16 +2587,22 @@ namespace StereoSplitter
 
         public void Dispose()
         {
-            Stop();
-            if (loopback != null) loopback.Dispose();
+            // 幂等: GiveUp / StopEngine / FormClosing 三条路径都会走到, 重复释放会抛
+            // ObjectDisposedException, 而调用方多为 catch{} 兜底 → 真实故障被掩盖
+            if (disposed) return;
+            disposed = true;
+
+            try { Stop(); } catch { }
+
+            if (loopback != null) { try { loopback.Dispose(); } catch { } loopback = null; }
             // 采集线程已退出 (StopRecording 等待其结束) → 此时释放等待句柄无竞态
             if (dataReady != null)
             {
                 try { dataReady.Close(); } catch { }
                 dataReady = null;
             }
-            if (leftOut != null) leftOut.Dispose();
-            if (rightOut != null) rightOut.Dispose();
+            if (leftOut != null) { try { leftOut.Dispose(); } catch { } leftOut = null; }
+            if (rightOut != null) { try { rightOut.Dispose(); } catch { } rightOut = null; }
             if (captureDev != null)
             {
                 try { captureDev.Dispose(); } catch { }
