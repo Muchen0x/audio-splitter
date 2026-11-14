@@ -1191,17 +1191,21 @@ namespace StereoSplitter
         }
 
         /// <summary>把系统默认输出还原为本次启动前的设备 (停止/失败/启动失败共用)。
-        /// 不还原的话默认仍挂在虚拟声卡上 → 应用声音全部无声, 直到下次启动才被纠正。</summary>
+        /// 不还原的话默认仍挂在虚拟声卡上 → 应用声音全部无声, 直到下次启动才被纠正。
+        /// 优先还原到 restoreDefaultId (程序初始化时检测到的"真正原始默认"):
+        ///   启动时若默认已是虚拟设备(CABLE), preStartDefaultId=CABLE, 用它判"当前==preStart"会
+        ///   误判为"无需还原" → 系统卡在 CABLE 无声。restoreDefaultId 才是真正该还原到的物理设备。</summary>
         void RestoreDefaultOutput(string reason)
         {
-            if (preStartDefaultId == null || catalog == null) return;
+            string target = restoreDefaultId ?? preStartDefaultId;
+            if (target == null || catalog == null) return;
             try
             {
-                if (catalog.DefaultRenderId() != preStartDefaultId)
+                if (catalog.DefaultRenderId() != target)
                 {
                     string err;
-                    if (SystemDefaultPolicy.TrySetDefault(preStartDefaultId, out err))
-                        Log("[恢复] " + reason + "，默认输出 → " + FindNameById(preStartDefaultId));
+                    if (SystemDefaultPolicy.TrySetDefault(target, out err))
+                        Log("[恢复] " + reason + "，默认输出 → " + FindNameById(target));
                     else
                         Log("[错误] 恢复默认输出失败(" + reason + "): " + err);
                 }

@@ -133,8 +133,10 @@ namespace StereoSplitter
             }
             else
             {
-                smoothedTotal = targetSamples;
-                // 切回自适应时复位调度状态, 否则沿用上一次的 Kp 会产生一次阶跃
+                // 切回自适应时只复位调度状态(fastGain/kpNow), 不重置 smoothedTotal:
+                // 关闭期间 UpdateRatio 仍在跟踪实际水位, smoothedTotal 是准的;
+                // 重置成 targetSamples 会让控制器"假装水位正常"约 1.5 秒不排水,
+                // 在水位已堆积(如 240ms)时会导致继续涨到 400ms 才开始排。
                 fastGain = false;
                 kpNow = KpFill;
             }
