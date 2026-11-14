@@ -149,9 +149,13 @@ namespace StereoSplitter.Devices
             if (d == null) return "";
             try
             {
+                // PKEY_Device_EnumeratorName (a45c254e-...,24) → "BTHENUM" / "USB" / "HDAUDIO"
+                // 注意: NAudio 的 PropertyStore 索引器返回 PropertyStoreProperty, 必须取 .Value,
+                // 直接 ToString() 只会得到类型名 (曾打出 "NAudio.CoreAudioApi.PropertyStoreProperty")
                 var key = new PropertyKey(new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), 24);
                 var v = d.Properties[key];
-                string s = v == null ? null : v.ToString();
+                object o = v == null ? null : v.Value;
+                string s = o == null ? null : o.ToString();
                 return s == null ? "" : s.Trim();
             }
             catch { return ""; }
