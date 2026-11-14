@@ -103,6 +103,8 @@ namespace StereoSplitter
         };
         System.Windows.Forms.Timer waterTimer;
         System.Windows.Forms.Timer saveDebounce;
+        System.Windows.Forms.Timer watchTimer;   // 看门狗: 2 秒一看输出线程活性
+        System.Windows.Forms.Timer powerTimer;   // 唤醒后延迟重建 (端点恢复要几百毫秒)
         TrackBar volLeft, volRight, volMaster, volGain;
         Label lblVolLeft, lblVolRight, lblVolMaster, lblVolGain;
         Label lblDot, lblStatus;
@@ -163,6 +165,20 @@ namespace StereoSplitter
 
         AudioEngine engine;
         bool running = false;
+
+        // ---- 长期运行看门狗状态 ----
+        // 输出线程停摆判定: RenderedSamples 连续 10 秒不涨 → WasapiOut 已不再拉数据
+        const int WatchdogFreezeMs = 10000;
+        long watchRendered = -1;
+        int watchRenderedTick;
+        bool captureIdleLogged;      // "捕获源无数据"只提示一次
+        int captureIdleSince;
+        int lastCaptureCheckTick;    // 空闲期确认捕获设备是否还在 (1 分钟一次)
+        int runSinceTick;            // 本次运行起点, 连续健康 5 分钟后清零重建计数
+        // 自动重建: 设备真的没了时不能无限重启
+        const int MaxAutoRestart = 3;
+        int autoRestartCount;
+        bool restarting;             // 重建进行中
 
         public MainForm()
         {
@@ -387,6 +403,20 @@ namespace StereoSplitter
                 FlushSettings();
             };
 
+            // 看门狗: 只在运行时判定 (引擎为空/未运行直接返回, 不空转)
+            watchTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+            watchTimer.Tick += (s, e) => WatchdogTick();
+
+            // 休眠唤醒: 等端点恢复再重建, 太早重建大概率失败
+            powerTimer = new System.Windows.Forms.Timer { Interval = 2500 };
+            powerTimer.Tick += (s, e) =>
+            {
+                powerTimer.Stop();
+                if (!running || exiting) return;
+                Log("[恢复] 系统已从休眠唤醒 → 重建音频流");
+                RestartEngine();
+            };
+
             Load += MainForm_Load;
             FormClosing += MainForm_FormClosing;
         }
@@ -461,6 +491,12 @@ namespace StereoSplitter
             {
                 waterTimer.Stop();
             }
+            // 看门狗独立于水位日志间隔: 只要在跑就 2 秒一看 (间隔设 0 也不能停看门狗)
+            if (watchTimer != null)
+            {
+                if (running) watchTimer.Start();
+                else watchTimer.Stop();
+            }
         }
 
         void MainForm_Load(object sender, EventArgs e)
@@ -482,6 +518,8 @@ namespace StereoSplitter
                 txtLog.Height = splitContainer.Panel2.Height - txtLog.Top - 15;
                 SetAppState(AppState.Ready);
                 RegisterActivateHandler();
+                // 休眠唤醒后 WASAPI 端点已失效且不会自己回来 → 主动重建 (SystemEvents 需消息泵, 放 Load 里注册)
+                Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
                 Log("[初始化] 就绪。在「捕获(虚拟)」选择虚拟设备(如 CABLE Input)，点「开始分流」时自动完成配置。");
                 Log("[初始化] 提示: 捕获输出不能与左右目标相同，否则会回环。");
             }
@@ -520,7 +558,8 @@ namespace StereoSplitter
             if (id != runCaptureId && id != runLeftId && id != runRightId) return;
             if (!warnedLostIds.Add(id)) return;
             string role = id == runCaptureId ? "捕获" : (id == runLeftId ? "左声道" : "右声道");
-            Log("[警告] " + role + "设备已断开: " + FindNameById(id) + " → 分流仍在运行，请手动停止并刷新设备");
+            Log("[警告] " + role + "设备已断开: " + FindNameById(id) +
+                " → 看门狗会在检测到断流后尝试自动重建；若设备已彻底移除则自动停止分流");
         }
 
         void HandleDefaultChanged(string newId)
@@ -1344,74 +1383,14 @@ namespace StereoSplitter
                 RestoreUIValues(uiL, uiR, uiM, uiMl, uiMr, uiMm, uiMc);
                 WriteUIValuesToDevice();
 
-                // 引擎 Start 含预缓冲等待(极限档最长数秒) → 移到后台线程, 先在UI线程快照全部参数
-                int prof = cmbLatency.SelectedIndex < 0 ? 0 : cmbLatency.SelectedIndex;
-                int preMs = LatencyProfiles[prof][0], outMs = LatencyProfiles[prof][1];
-                int dlyL = (int)nudDelayL.Value, dlyR = (int)nudDelayR.Value;
-                float gain = pendingGain, master = CurrentMaster();
-                int gainPct = (int)Math.Round(gain * 100);
-                int mode = driftMode, fixedVal = fixedPpm;
-                string leftId = DeviceIdAt(cmbLeft.SelectedIndex);
-                string rightId = DeviceIdAt(cmbRight.SelectedIndex);
-
                 // 预置运行期设备ID: 引擎在后台完成前 runCaptureId 还是空, Starting 期拔出会漏警
                 // (AutoConfigure 已把系统默认设为 cmbDefault 项 → 捕获源即该设备; 引擎完成回调里再以 eng.CaptureId 校正)
-                runLeftId = leftId;
-                runRightId = rightId;
+                runLeftId = DeviceIdAt(cmbLeft.SelectedIndex);
+                runRightId = DeviceIdAt(cmbRight.SelectedIndex);
                 runCaptureId = DeviceIdAt(cmbDefault.SelectedIndex);
-                string expectCap = runCaptureId;
 
-                startAbort = false;
-                startFinished.Reset();
-                ThreadPool.QueueUserWorkItem(delegate
-                {
-                    AudioEngine eng = null;
-                    try
-                    {
-                        if (startAbort) throw new OperationCanceledException("启动已取消");
-                        eng = new AudioEngine(leftId, rightId, Log, mode, fixedVal);
-                        AudioEngine.StartOutcome outcome = eng.Start(gain, master, preMs, outMs, dlyL, dlyR,
-                            delegate { return startAbort; }, expectCap);
-
-                        if (exiting || IsDisposed || !IsHandleCreated)
-                        {   // 关窗等待期间完成 → 只释放引擎, 不碰UI
-                            try { eng.Dispose(); } catch { }
-                            return;
-                        }
-                        BeginInvoke(new Action(delegate
-                        {
-                            if (exiting) { try { eng.Dispose(); } catch { } return; }
-                            engine = eng;
-                            runCaptureId = eng.CaptureId;
-                            runLeftId = leftId;
-                            runRightId = rightId;
-                            SetAppState(AppState.Running);
-                            ApplyVolumes();
-                            Log("[启动] 端点绑定: 主=" + DevInfo(bindings.Master) + " / 左=" + DevInfo(bindings.Left) + " / 右=" + DevInfo(bindings.Right));
-                            Log("[启动] 分流已启动 (增益 " + gainPct + "%)" +
-                                (outcome == AudioEngine.StartOutcome.NoAudioYet ? "，等待音频数据" : ""));
-                        }));
-                    }
-                    catch (Exception ex)
-                    {
-                        try { if (eng != null) eng.Dispose(); } catch { }
-                        if (exiting || IsDisposed || !IsHandleCreated) return;
-                        string reason = AudioErrors.Describe(ex);
-                        try
-                        {
-                            BeginInvoke(new Action(delegate
-                            {
-                                if (exiting) return;
-                                Log("[错误] 启动失败: " + reason);
-                                StartFailed();
-                                if (!(ex is OperationCanceledException))
-                                    MessageBox.Show("启动失败: " + reason, "错误");
-                            }));
-                        }
-                        catch { }
-                    }
-                    finally { startFinished.Set(); }
-                });
+                autoRestartCount = 0;   // 手动启动 → 重新给自动重建机会
+                LaunchEngine(runLeftId, runRightId, runCaptureId, SnapshotStartParams(), false);
             }
             catch (Exception ex)
             {
@@ -1422,13 +1401,105 @@ namespace StereoSplitter
             }
         }
 
+        // 启动参数快照: 引擎 Start 在后台线程跑, UI 值必须先在本线程拷出来
+        class StartParams
+        {
+            public int PreMs, OutMs, DlyL, DlyR, GainPct, Mode, FixedPpm;
+            public float Gain, Master;
+        }
+
+        StartParams SnapshotStartParams()
+        {
+            int prof = cmbLatency.SelectedIndex < 0 ? 0 : cmbLatency.SelectedIndex;
+            return new StartParams
+            {
+                PreMs = LatencyProfiles[prof][0],
+                OutMs = LatencyProfiles[prof][1],
+                DlyL = (int)nudDelayL.Value,
+                DlyR = (int)nudDelayR.Value,
+                Gain = pendingGain,
+                Master = CurrentMaster(),
+                GainPct = (int)Math.Round(pendingGain * 100),
+                Mode = driftMode,
+                FixedPpm = fixedPpm
+            };
+        }
+
+        // 手动启动与自动重建共用同一条启动链 (差别只在失败处理: 自动重建不弹框、不自动回滚)
+        void LaunchEngine(string leftId, string rightId, string expectCap, StartParams p, bool autoRestart)
+        {
+            startAbort = false;
+            startFinished.Reset();
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                AudioEngine eng = null;
+                try
+                {
+                    if (startAbort) throw new OperationCanceledException("启动已取消");
+                    eng = new AudioEngine(leftId, rightId, Log, p.Mode, p.FixedPpm);
+                    AudioEngine.StartOutcome outcome = eng.Start(p.Gain, p.Master, p.PreMs, p.OutMs, p.DlyL, p.DlyR,
+                        delegate { return startAbort; }, expectCap);
+
+                    if (exiting || IsDisposed || !IsHandleCreated)
+                    {   // 关窗等待期间完成 → 只释放引擎, 不碰UI
+                        try { eng.Dispose(); } catch { }
+                        return;
+                    }
+                    BeginInvoke(new Action(delegate
+                    {
+                        if (exiting) { try { eng.Dispose(); } catch { } return; }
+                        engine = eng;
+                        // 订阅放在赋值之后: 处理函数会按引用校验"还是不是当前引擎", 防止旧引擎的迟到事件触发二次重建
+                        eng.Stalled += OnEngineStalledFromAudio;
+                        runCaptureId = eng.CaptureId;
+                        runLeftId = leftId;
+                        runRightId = rightId;
+                        ResetWatchdog();
+                        runSinceTick = Environment.TickCount;
+                        SetAppState(AppState.Running);
+                        ApplyVolumes();
+                        Log("[启动] 端点绑定: 主=" + DevInfo(bindings.Master) + " / 左=" + DevInfo(bindings.Left) + " / 右=" + DevInfo(bindings.Right));
+                        Log("[启动] 分流已启动 (增益 " + p.GainPct + "%)" +
+                            (outcome == AudioEngine.StartOutcome.NoAudioYet ? "，等待音频数据" : ""));
+                        if (autoRestart)
+                        {
+                            restarting = false;
+                            Log("[恢复] 自动重建完成，分流继续");
+                        }
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    try { if (eng != null) eng.Dispose(); } catch { }
+                    if (exiting || IsDisposed || !IsHandleCreated) return;
+                    string reason = AudioErrors.Describe(ex);
+                    try
+                    {
+                        BeginInvoke(new Action(delegate
+                        {
+                            if (exiting) return;
+                            Log("[错误] 启动失败: " + reason);
+                            if (autoRestart)
+                            {
+                                restarting = false;
+                                GiveUp();   // 重建失败 → 别再假装运行, 明确停下来
+                                Log("[错误] 自动重建失败，分流已停止；请检查设备后手动开始");
+                                return;
+                            }
+                            StartFailed();
+                            if (!(ex is OperationCanceledException))
+                                MessageBox.Show("启动失败: " + reason, "错误");
+                        }));
+                    }
+                    catch { }
+                }
+                finally { startFinished.Set(); }
+            });
+        }
+
         void StopEngine()
         {
-            if (engine != null)
-            {
-                try { engine.Stop(); engine.Dispose(); } catch { }
-                engine = null;
-            }
+            TearDownEngine();
             if (state == AppState.Running || state == AppState.Starting)
             {
                 SetAppState(AppState.Stopped);
@@ -1438,6 +1509,190 @@ namespace StereoSplitter
             runCaptureId = runLeftId = runRightId = null;
             expectCaptureId = null;
             warnedLostIds.Clear();
+            autoRestartCount = 0;
+            restarting = false;
+        }
+
+        // 只拆引擎, 不动状态/绑定/设备ID (自动重建要沿用这些)
+        void TearDownEngine()
+        {
+            var eng = engine;
+            engine = null;
+            if (eng == null) return;
+            try { eng.Stop(); } catch { }
+            try { eng.Dispose(); } catch { }
+        }
+
+        // 彻底放弃: 拆引擎 + 转失败态 + 解绑, 与 StopEngine 的区别是不打"用户主动停止"的日志
+        void GiveUp()
+        {
+            TearDownEngine();
+            SetAppState(AppState.Failed);
+            UnbindAllVolumeSync();
+            runCaptureId = runLeftId = runRightId = null;
+            expectCaptureId = null;
+            warnedLostIds.Clear();
+            autoRestartCount = 0;
+            restarting = false;
+        }
+
+        // ---------------- 长期运行看门狗 ----------------
+
+        void ResetWatchdog()
+        {
+            watchRendered = -1;
+            watchRenderedTick = Environment.TickCount;
+            captureIdleLogged = false;
+            captureIdleSince = 0;
+            lastCaptureCheckTick = 0;
+        }
+
+        /// <summary>
+        /// 每 2 秒判定一次链路活性。核心判据是"输出线程有没有被调用"(RenderedSamples 是否增长),
+        /// 而不是水位高低 —— 源静音时水位本来就该是 0, 用水位判会天天误报。
+        /// </summary>
+        void WatchdogTick()
+        {
+            var eng = engine;
+            if (!running || eng == null) return;
+            int now = Environment.TickCount;
+
+            // 连续健康 5 分钟 → 清空重建计数, 避免一天里偶发两三次后就被永久锁死在"不再重试"
+            if (autoRestartCount > 0 && runSinceTick != 0 && unchecked(now - runSinceTick) >= 300000)
+                autoRestartCount = 0;
+
+            long rendered = eng.RenderedSamples;
+            if (rendered != watchRendered)
+            {
+                watchRendered = rendered;
+                watchRenderedTick = now;
+            }
+            else if (watchRenderedTick != 0 && unchecked(now - watchRenderedTick) >= WatchdogFreezeMs)
+            {
+                // 10 秒一次 Read 都没被调用 → 输出端已停摆 (设备休眠/被独占/驱动挂起且没抛事件)
+                OnEngineStalled("输出线程已 " + (WatchdogFreezeMs / 1000) + " 秒未取数据（水位 " + eng.OutputBufferMs + "ms）");
+                return;
+            }
+
+            int capTick = eng.LastCaptureTick;
+            bool captureActive = capTick != 0 && unchecked(now - capTick) < 3000;
+            if (captureActive)
+            {
+                captureIdleLogged = false;
+                captureIdleSince = 0;
+                lastCaptureCheckTick = 0;
+                return;
+            }
+
+            // 捕获端没数据: 多数情况只是系统静音, 只提示一次, 不重建
+            if (captureIdleSince == 0) captureIdleSince = now;
+            if (!captureIdleLogged && unchecked(now - captureIdleSince) >= 30000)
+            {
+                captureIdleLogged = true;
+                Log("[状态] 捕获源已 30 秒无音频数据（系统静音或源未播放），分流保持待命");
+            }
+            // 空闲期顺带确认捕获设备是否还在 (1 分钟一次): 设备被移除时引擎不会自杀, 只有这里能发现
+            if (captureIdleLogged && (lastCaptureCheckTick == 0 || unchecked(now - lastCaptureCheckTick) >= 60000))
+            {
+                lastCaptureCheckTick = now;
+                if (runCaptureId != null && !IsEndpointActive(runCaptureId))
+                    OnEngineStalled("捕获设备已不可用");
+            }
+        }
+
+        // 引擎在音频线程上报 → 回 UI 线程统一处理
+        void OnEngineStalledFromAudio(AudioEngine src, string why)
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+            try
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    // 旧引擎的迟到事件不能触发二次重建
+                    if (!ReferenceEquals(src, engine)) return;
+                    OnEngineStalled(why);
+                }));
+            }
+            catch { }
+        }
+
+        void OnEngineStalled(string why)
+        {
+            if (exiting || IsDisposed || restarting) return;
+            if (state != AppState.Running && state != AppState.Starting) return;
+
+            Log("[错误] " + why + " → 分流链路已中断，进入自动恢复流程");
+
+            if (autoRestartCount >= MaxAutoRestart)
+            {
+                Log("[错误] 已连续自动重建 " + autoRestartCount + " 次仍未恢复，停止重试；请检查设备后手动开始");
+                GiveUp();
+                return;
+            }
+            autoRestartCount++;
+            Log("[恢复] 自动重建输出流 (" + autoRestartCount + "/" + MaxAutoRestart + ")");
+            RestartEngine();
+        }
+
+        /// <summary>按当前运行参数重建整条链路 (不断开音量绑定, 不重跑 AutoConfigure)。</summary>
+        void RestartEngine()
+        {
+            if (exiting || IsDisposed) return;
+            string leftId = runLeftId, rightId = runRightId, capId = runCaptureId;
+
+            if (string.IsNullOrEmpty(leftId) || string.IsNullOrEmpty(rightId) || string.IsNullOrEmpty(capId))
+            {
+                Log("[错误] 缺少运行期设备信息，无法自动重建；请手动重新开始");
+                GiveUp();
+                return;
+            }
+            if (!IsEndpointActive(leftId) || !IsEndpointActive(rightId))
+            {
+                Log("[错误] 左右目标设备已不可用，放弃自动重建；请刷新设备后重新开始");
+                GiveUp();
+                return;
+            }
+
+            restarting = true;
+            TearDownEngine();                 // 起播水位/缓冲全部重来, 与首次启动一致
+            SetAppState(AppState.Starting);   // 期间 running=false → 看门狗自然停手
+            LaunchEngine(leftId, rightId, capId, SnapshotStartParams(), true);
+        }
+
+        // 端点是否仍在"活动输出"列表里 (枚举失败一律按"还在"处理, 避免误判触发重建)
+        static bool IsEndpointActive(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return false;
+            try
+            {
+                using (var enumerator = new MMDeviceEnumerator())
+                {
+                    var coll = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+                    for (int i = 0; i < coll.Count; i++)
+                    {
+                        try { if (coll[i].ID == id) return true; } catch { }
+                    }
+                }
+                return false;
+            }
+            catch { return true; }
+        }
+
+        void OnPowerModeChanged(object sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+        {
+            if (e.Mode != Microsoft.Win32.PowerModes.Resume) return;
+            if (IsDisposed || !IsHandleCreated) return;
+            try
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    if (!running || exiting) return;
+                    Log("[恢复] 系统已从休眠唤醒，等待设备就绪后重建音频流");
+                    powerTimer.Stop();
+                    powerTimer.Start();
+                }));
+            }
+            catch { }
         }
 
         float CurrentMaster()
@@ -1503,6 +1758,19 @@ namespace StereoSplitter
                 saveDebounce.Stop();
                 saveDebounce.Dispose();
                 saveDebounce = null;
+            }
+            try { Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged; } catch { }
+            if (watchTimer != null)
+            {
+                watchTimer.Stop();
+                watchTimer.Dispose();
+                watchTimer = null;
+            }
+            if (powerTimer != null)
+            {
+                powerTimer.Stop();
+                powerTimer.Dispose();
+                powerTimer = null;
             }
             if (activateEvent != null)
             {
@@ -1724,8 +1992,10 @@ namespace StereoSplitter
                     var b = blocks.Peek();
                     int avail = b.Len - b.Offset;
                     int take = (int)Math.Min(avail, buffered - targetBytes);
-                    emit(b.Data, b.Offset, take);
-                    b.Offset += take;
+                    // emit 抛异常时整块丢弃: 否则该块永远卡在队头, 之后每次 Write 都在同一处失败,
+                    // 队列只进不出 → 长时间运行内存无界增长
+                    if (EmitSafe(b.Data, b.Offset, take)) b.Offset += take;
+                    else b.Offset = b.Len;
                     buffered -= take;
                     if (b.Offset >= b.Len)
                     {
@@ -1738,6 +2008,12 @@ namespace StereoSplitter
                     }
                 }
             }
+        }
+
+        bool EmitSafe(byte[] data, int offset, int len)
+        {
+            try { emit(data, offset, len); return true; }
+            catch { return false; }
         }
 
         public void Clear()
@@ -1780,6 +2056,14 @@ namespace StereoSplitter
         // 输出缓冲溢出告警限流 (DiscardOnBufferOverflow 会静默丢块, 不记就等于丢音无迹可查)
         int lastOverflowWarnTick;
 
+        // 长期运行看门狗: 输出/捕获线程会因设备休眠、被独占、拔插而"悄悄停止",
+        // 不订阅这些事件时界面会一直显示"运行中"却早已无声 (实测有过 71 分钟)
+        volatile bool stopping;             // 主动 Stop 期间这些事件也会触发 → 屏蔽
+        int stallNotified;                  // Stalled 只上报一次 (左右常同时停)
+        int lastCaptureTick;                // 最近一次收到捕获数据的 TickCount (0 = 尚未收到)
+        /// <summary>链路意外中断 (参数为人话原因)。在音频线程触发, 订阅方须自行回 UI 线程。</summary>
+        public event Action<AudioEngine, string> Stalled;
+
         // 起播余量: 覆盖输出端起播时对缓冲的预拉取。
         // 实测(蓝牙音箱) 95ms 目标起播后 5 秒内掉到 14ms, 峰值抽走约 80ms → 取 100ms 留裕度。
         // 多填的这部分由起播瞬态消耗, 稳态由时钟环回落到 driftTargetMs, 不增加稳态延迟。
@@ -1804,6 +2088,36 @@ namespace StereoSplitter
             get
             {
                 try { return captureDev != null ? captureDev.ID : null; } catch { return null; }
+            }
+        }
+
+        /// <summary>最近一次收到捕获数据的时刻 (Environment.TickCount), 0 = 起播后尚未收到。</summary>
+        public int LastCaptureTick
+        {
+            get { return lastCaptureTick; }
+        }
+
+        /// <summary>输出线程累计渲染样本数。看门狗用它判断输出线程是否还在被调用:
+        /// 比看水位可靠 —— 水位在连通时也可能短暂不动, 而渲染计数冻结必然是停摆。</summary>
+        public long RenderedSamples
+        {
+            get
+            {
+                long l = leftProvider == null ? 0 : leftProvider.RenderedSamples;
+                long r = rightProvider == null ? 0 : rightProvider.RenderedSamples;
+                return l + r;
+            }
+        }
+
+        /// <summary>当前瞬时水位 (ms, 取左右较大值), 仅供看门狗日志描述现场。</summary>
+        public int OutputBufferMs
+        {
+            get
+            {
+                int l = leftProvider == null ? -1 : leftProvider.BufferedMs;
+                int r = rightProvider == null ? -1 : rightProvider.BufferedMs;
+                int v = Math.Max(l, r);
+                return v < 0 ? 0 : v;
             }
         }
 
@@ -1875,6 +2189,12 @@ namespace StereoSplitter
             leftOut.Init(leftProvider);
             rightOut.Init(rightProvider);
 
+            // 输出/捕获线程意外退出 → 看门狗接管 (设备休眠、被独占、被移除都会走到这里)。
+            // 主动 Stop 时也会触发, 由 stopping 标记屏蔽, 否则每次停止都会被当成故障。
+            leftOut.PlaybackStopped += delegate(object s, StoppedEventArgs e) { OnOutputStopped("左", e); };
+            rightOut.PlaybackStopped += delegate(object s, StoppedEventArgs e) { OnOutputStopped("右", e); };
+            loopback.RecordingStopped += delegate(object s, StoppedEventArgs e) { OnCaptureStopped(e); };
+
             // 左右独立延迟线: 输入是交错多声道原始数据 → 按 blockAlign(帧) 算目标字节并天然对齐
             // (旧算法按 mono float 4字节算 → 延迟减半; &~3 未对齐帧 → 44100Hz 等场景字节错位出破音)
             int blockAlign = Math.Max(1, wf.BlockAlign);
@@ -1891,6 +2211,8 @@ namespace StereoSplitter
                 {
                     leftLine.Write(e.Buffer, e.BytesRecorded);
                     rightLine.Write(e.Buffer, e.BytesRecorded);
+                    // 捕获活性时间戳: 看门狗用它区分"源本来就静音"和"捕获线程已死"
+                    if (e.BytesRecorded > 0) lastCaptureTick = Environment.TickCount;
                     if (silentStartup && e.BytesRecorded > 0 && Interlocked.Exchange(ref firstDataLogged, 1) == 0)
                         log("[启动] 音频流已就绪 (捕获源开始有数据)");
                 }
@@ -2039,8 +2361,36 @@ namespace StereoSplitter
             return v.ToString("+0;-0;0") + "ppm";
         }
 
+        // 停止事件在音频线程触发; stopping 期间(自己停的)一律忽略
+        void OnOutputStopped(string side, StoppedEventArgs e)
+        {
+            if (stopping) return;
+            string why = "输出" + side + "声道已停止";
+            if (e != null && e.Exception != null) why += ": " + e.Exception.Message;
+            else why += "（设备休眠/被独占/已移除）";
+            RaiseStalled(why);
+        }
+
+        void OnCaptureStopped(StoppedEventArgs e)
+        {
+            if (stopping) return;
+            string why = "捕获已停止";
+            if (e != null && e.Exception != null) why += ": " + e.Exception.Message;
+            RaiseStalled(why);
+        }
+
+        // 只上报第一次: 左右两路往往同时停, 后续还可能连环触发
+        void RaiseStalled(string why)
+        {
+            if (Interlocked.Exchange(ref stallNotified, 1) != 0) return;
+            var handler = Stalled;
+            if (handler != null) { try { handler(this, why); } catch { } }
+            else if (log != null) { try { log("[错误] " + why); } catch { } }  // 无人接管时才自己记, 避免与订阅方重复
+        }
+
         public void Stop()
         {
+            stopping = true; // 先置位: 下面的 Stop 会同步触发 Stopped 事件
             if (loopback != null) { try { loopback.StopRecording(); } catch { } }
             if (leftOut != null) { try { leftOut.Stop(); } catch { } }
             if (rightOut != null) { try { rightOut.Stop(); } catch { } }
@@ -2216,6 +2566,9 @@ namespace StereoSplitter
         int lastLowWarnTick;
         int clampStreak;
         int lastClampWarnTick;
+        // 输出线程活性计数: 只在采样线程自增, UI 线程读取 (64 位进程读 long 不会撕裂)。
+        // 冻结即代表 WasapiOut 不再调用 Read → 输出端停摆, 比看水位可靠。
+        long renderedSamples;
 
         public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples)
             : this(src, targetSamples, 1, 0, null)
@@ -2294,6 +2647,9 @@ namespace StereoSplitter
 
         public long UnderrunSamples { get { return Interlocked.Read(ref underrunSamples); } }
 
+        /// <summary>累计渲染样本数 (只增不减), 看门狗用它判定输出线程是否还在跑。</summary>
+        public long RenderedSamples { get { return renderedSamples; } }
+
         public int TakeMinBufferedMs()
         {
             int v = Interlocked.Exchange(ref minTotalSinceStatus, int.MaxValue);
@@ -2304,6 +2660,7 @@ namespace StereoSplitter
 
         public int Read(float[] samples, int offset, int countRequested)
         {
+            renderedSamples += countRequested;   // 活性计数: 只要被调用就说明输出线程还活着
             float g = gain;
             float m = master;
             for (int i = 0; i < countRequested; i++)
