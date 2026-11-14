@@ -28,11 +28,6 @@ namespace StereoSplitter.Devices
             get { return enumerator; }
         }
 
-        public int Count
-        {
-            get { return endpoints.Count; }
-        }
-
         /// <summary>重新枚举活动输出设备; 只释放自己拥有的展示用实例。</summary>
         public void Refresh()
         {
@@ -59,12 +54,6 @@ namespace StereoSplitter.Devices
             if (string.IsNullOrEmpty(id)) return null;
             try { return enumerator.GetDevice(id); }
             catch { return null; }
-        }
-
-        /// <summary>该 ID 是否仍在当前活动设备列表中 (等价于设备可用)。</summary>
-        public bool IsActive(string id)
-        {
-            return IndexOf(id) >= 0;
         }
 
         public int IndexOf(string id)

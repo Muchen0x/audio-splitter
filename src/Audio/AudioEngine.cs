@@ -86,10 +86,6 @@ namespace StereoSplitter
         // 多填的这部分由起播瞬态消耗, 稳态由时钟环回落到 driftTargetMs, 不增加稳态延迟。
         const int PrePullGuardMs = 100;
 
-        public AudioEngine(string leftDevId, string rightDevId, Action<string> log)
-            : this(leftDevId, rightDevId, log, 1, 0)
-        { }
-
         public AudioEngine(string leftDevId, string rightDevId, Action<string> log, int driftMode, int fixedPpm)
         {
             this.leftDevId = leftDevId;
@@ -148,12 +144,6 @@ namespace StereoSplitter
             Insufficient,
             /// <summary>超时且完全没有数据 (捕获源当前静音/无声源)。</summary>
             NoAudioYet
-        }
-
-        public StartOutcome Start(float gain, float master, int prebufferMs, int outLatencyMs, int leftDelayMs, int rightDelayMs,
-            Func<bool> aborted)
-        {
-            return Start(gain, master, prebufferMs, outLatencyMs, leftDelayMs, rightDelayMs, aborted, null);
         }
 
         public StartOutcome Start(float gain, float master, int prebufferMs, int outLatencyMs, int leftDelayMs, int rightDelayMs,
@@ -431,10 +421,10 @@ namespace StereoSplitter
         {
             int excess = buf.BufferedBytes - targetBytes;
             if (excess <= 0) return;
-            var tmp = new byte[excess];
+            var tmp = new byte[4096];          // 固定小缓冲: 原先按 excess 分配, 起播时一次几百 KB
             while (excess > 0)
             {
-                int got = buf.Read(tmp, 0, excess);
+                int got = buf.Read(tmp, 0, Math.Min(excess, tmp.Length));
                 if (got <= 0) break;
                 excess -= got;
             }

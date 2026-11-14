@@ -95,18 +95,6 @@ namespace StereoSplitter
         double maxGapMs, maxDurMs;
         int lastTimingWarnTick;
 
-        public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples)
-            : this(src, targetSamples, 1, 0, null)
-        { }
-
-        public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples, int mode, int fixedPpm)
-            : this(src, targetSamples, mode, fixedPpm, null)
-        { }
-
-        public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples, int mode, int fixedPpm, Action<string> log)
-            : this(src, targetSamples, mode, fixedPpm, log, null)
-        { }
-
         public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples, int mode, int fixedPpm, Action<string> log, string tag)
         {
             this.src = src;
@@ -220,6 +208,7 @@ namespace StereoSplitter
             lastReadTs = t0;
             float g = gain;
             float m = master;
+            float gm = g * m;      // 提到循环外: 每样本从 2 次乘法降到 1 次 (~9.6 万次/秒)
             for (int i = 0; i < countRequested; i++)
             {
                 if (count < 3 || holding)
@@ -240,7 +229,7 @@ namespace StereoSplitter
                 int i1 = head;
                 int i2 = i1 + 1; if (i2 >= RingSize) i2 -= RingSize;
                 int i3 = i1 + 2; if (i3 >= RingSize) i3 -= RingSize;
-                float v = Cubic(prev, ring[i1], ring[i2], ring[i3], (float)phase) * g * m;
+                float v = Cubic(prev, ring[i1], ring[i2], ring[i3], (float)phase) * gm;
                 if (v > 1f) v = 1f;
                 else if (v < -1f) v = -1f;
                 if (fadeIn < 1f)

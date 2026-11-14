@@ -25,8 +25,9 @@ namespace StereoSplitter
         }
 
         readonly Queue<Block> blocks = new Queue<Block>();
-        // 块缓冲复用: 延迟开启时每块原本都要 new byte[len], 稳态后可从池中取回
-        readonly Stack<byte[]> pool = new Stack<byte[]>();
+        // 块缓冲复用: 延迟开启时每块原本都要 new byte[len], 稳态后可从池中取回。
+        // 用 List 而非 Stack: 需要挑"最小够用块", Stack 弹到过小的块只能丢弃 → 池统计漂移且频繁重分配
+        readonly List<byte[]> pool = new List<byte[]>();
         int pooledBytes;
         const int PoolMaxBytes = 1 << 20; // 池上限 1MB, 防止大块数据长期驻留
         readonly int targetBytes;
@@ -54,11 +55,15 @@ namespace StereoSplitter
                 }
 
                 byte[] copy = null;
-                while (pool.Count > 0)
+                // 挑最小的"够用"块: 过小的块留在池里等下次更长需求, 不再丢弃
+                int best = -1;
+                for (int pi = 0; pi < pool.Count; pi++)
+                    if (pool[pi].Length >= len && (best < 0 || pool[pi].Length < pool[best].Length)) best = pi;
+                if (best >= 0)
                 {
-                    byte[] candidate = pool.Pop();
-                    pooledBytes -= candidate.Length;
-                    if (candidate.Length >= len) { copy = candidate; break; }
+                    copy = pool[best];
+                    pool.RemoveAt(best);
+                    pooledBytes -= copy.Length;
                 }
                 if (copy == null) copy = new byte[len];
                 Buffer.BlockCopy(data, 0, copy, 0, len);
@@ -80,7 +85,7 @@ namespace StereoSplitter
                         blocks.Dequeue();
                         if (pooledBytes + b.Data.Length <= PoolMaxBytes)
                         {
-                            pool.Push(b.Data);
+                            pool.Add(b.Data);
                             pooledBytes += b.Data.Length;
                         }
                     }
@@ -103,7 +108,7 @@ namespace StereoSplitter
                     var b = blocks.Dequeue();
                     if (pooledBytes + b.Data.Length <= PoolMaxBytes)
                     {
-                        pool.Push(b.Data);
+                        pool.Add(b.Data);
                         pooledBytes += b.Data.Length;
                     }
                 }

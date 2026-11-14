@@ -1302,7 +1302,15 @@ namespace StereoSplitter
             hasSnap = true;
 
             // 点击开始时自动配置: 设默认输出 + 绑定音量 + 自动选左右 + 回环检查
-            if (!AutoConfigure())
+            // 同步跑在 UI 线程, 含 3 次 SetDefaultEndpoint (100~500ms) → 先显示等待光标再执行
+            var prevCursor = Cursor;
+            bool cfgOk;
+            Cursor = Cursors.WaitCursor;
+            Update();                       // 只重绘, 不处理输入 (DoEvents 会有重入风险)
+            try { cfgOk = AutoConfigure(); }
+            finally { Cursor = prevCursor; }
+
+            if (!cfgOk)
             {
                 StartFailed();
                 MessageBox.Show("自动配置失败，已中止启动。\n详见日志。", "启动中止");
@@ -1574,7 +1582,7 @@ namespace StereoSplitter
             if (captureIdleLogged && (lastCaptureCheckTick == 0 || unchecked(now - lastCaptureCheckTick) >= 60000))
             {
                 lastCaptureCheckTick = now;
-                if (runCaptureId != null && !IsEndpointActive(runCaptureId))
+                if (runCaptureId != null && FindMissingEndpoint(runCaptureId) != null)
                     OnEngineStalled("捕获设备已不可用");
             }
         }
@@ -1625,7 +1633,7 @@ namespace StereoSplitter
                 GiveUp();
                 return;
             }
-            if (!IsEndpointActive(leftId) || !IsEndpointActive(rightId))
+            if (FindMissingEndpoint(leftId, rightId) != null)
             {
                 Log("[错误] 左右目标设备已不可用，放弃自动重建；请刷新设备后重新开始");
                 GiveUp();
@@ -1638,26 +1646,35 @@ namespace StereoSplitter
             LaunchEngine(leftId, rightId, capId, SnapshotStartParams(), true);
         }
 
-        // 端点是否仍在"活动输出"列表里 (枚举失败一律按"还在"处理, 避免误判触发重建)
-        static bool IsEndpointActive(string id)
+        // 一次枚举校验多个端点是否仍活动; 返回第一个缺失的 ID, 全部在位返回 null。
+        // 原实现每次只查一个 ID, 重建路径要枚举两遍; 枚举失败一律按"都在"处理, 避免误判触发重建。
+        static string FindMissingEndpoint(params string[] ids)
         {
-            if (string.IsNullOrEmpty(id)) return false;
+            if (ids == null || ids.Length == 0) return null;
+            for (int i = 0; i < ids.Length; i++)
+                if (string.IsNullOrEmpty(ids[i])) return ids[i] ?? "";   // 空 ID 与旧 IsEndpointActive 语义一致: 视为缺失
+
+            var missing = new List<string>(ids);
             try
             {
                 using (var enumerator = new MMDeviceEnumerator())
                 {
                     var coll = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
                     // MMDeviceCollection 本身无 Dispose; 索引器取出的 MMDevice 是新 RCW, 须逐个释放
-                    for (int i = 0; i < coll.Count; i++)
+                    for (int i = 0; i < coll.Count && missing.Count > 0; i++)
                     {
                         var d = coll[i];
-                        try { if (d.ID == id) return true; }
+                        try
+                        {
+                            string id = d.ID;
+                            if (id != null) missing.Remove(id);
+                        }
                         finally { try { d.Dispose(); } catch { } }
                     }
                 }
-                return false;
             }
-            catch { return true; }
+            catch { return null; }
+            return missing.Count > 0 ? missing[0] : null;
         }
 
         void OnPowerModeChanged(object sender, Microsoft.Win32.PowerModeChangedEventArgs e)
