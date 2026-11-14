@@ -2541,6 +2541,9 @@ namespace StereoSplitter
         // 排空段最长约 100s (0.2% 速率下降 100ms), 128s 后必然结束, 故加一个时间兜底。
         const int SwitchAfterUpdates = 6000;   // 6000 × 1024 / 48k ≈ 128s
         const double MaxRatio = 0.005;
+        // 补水位闸门的进入阈值(占目标的比例)。健康会话的瞬时水位会在 22–36ms 徘徊(块粒度锯齿),
+        // 阈值必须压到它以下; 真断流时水位只剩小环里那 1ms, 任何合理阈值都能在一个块内触发。
+        const double GateEnterRatio = 0.15;
         // 触顶判定窗口: 500 次更新 ≈ 10.7s (48kHz / 1024)
         const int ClampWarnUpdates = 500;
         // 同类异常事件限流: 采样线程上每 1024 样本就评估一次, 不限流会刷屏
@@ -2582,6 +2585,7 @@ namespace StereoSplitter
         // 旧行为是"有多少吃多少", 输出端会一直贴着 0 水位啃零头 ——
         // 实测一次 0.8 秒的捕获断流会变成 7–10 秒的低水位/断音, 而暂停补满只要约 100ms。
         bool holding;
+        int starveStreak;           // 连续处于"水位极低"的次数, 用于滤掉单次采样的锯齿谷底
         // 事件型诊断: 水位过低 / 校正触顶 (限流 + 恢复补记)
         bool lowWarned;
         int lastLowWarnTick;
@@ -2738,21 +2742,25 @@ namespace StereoSplitter
         /// 否则输出端会贴着 0 水位啃零头, 听感是长时间断音。</summary>
         bool StepStarved()
         {
-            // 必须先记下"进来时是不是空的": Fill() 会把环形缓冲填满, 之后再判 count 就永远是满的
-            bool empty = count < 3;
-            if (empty) Fill();
+            // count<3 只表示"这一环该续数据了", 每约 1.3ms 就会出现一次(64 样本小环),
+            // 与"源没有数据"无关。旧实现拿它当断粮信号, 判据实际退化成"瞬时水位 < 50% 就静音",
+            // 而瞬时值含块粒度锯齿(健康会话实测最低 22–36ms), 于是每 1–2 分钟误触发一次,
+            // 每次静音 9–84ms + 3ms 淡出淡入 —— 听感就是"偶尔破音"。
+            if (count < 3) Fill();
             int total = (int)(src.BufferedBytes / 4) + count;
 
             if (holding)
             {
-                if (total >= targetSamples * 0.95) { holding = false; return false; }
+                if (total >= targetSamples * 0.95) { holding = false; starveStreak = 0; return false; }
             }
-            // 只在"真的断粮"(水位不到一半)时进闸门; 正常补环时水位接近目标, 不能触发,
-            // 否则会变成"一补就停、一停就补"的抖动
-            else if (empty && total < targetSamples * 0.5)
+            // 只看真实水位, 阈值压到 15%(95ms → 14ms): 真断流时 total 只剩小环里的 1ms,
+            // 仍然会在一个块内立刻触发; 健康会话的锯齿谷底(22ms)碰不到。
+            else if (total < targetSamples * GateEnterRatio)
             {
-                holding = true;
+                // 连续两次(间隔约 1.3ms)都在阈值下才认, 单次采样恰好撞上谷底不算
+                if (++starveStreak >= 2) holding = true;
             }
+            else starveStreak = 0;
             return holding;
         }
 
