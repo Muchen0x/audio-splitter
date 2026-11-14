@@ -538,8 +538,12 @@ namespace StereoSplitter
         void OnSystemDefaultChanged(DataFlow flow, Role role, string newId)
         {
             if (flow != DataFlow.Render) return; // 只关心输出设备
+            // 通信角色(eCommunications)与音乐/视频播放无关, 且语音软件/系统策略会自动改写它。
+            // 不过滤的话会被误判成"默认输出被切走" → 解绑音量 → 一两秒后又重绑:
+            // 实测 21:50/21:51/21:53 各抖动一次, 每次捕获源短暂无数据 → 缓冲抽空到 0ms → 断音。
+            if (role == Role.Communications) return;
             if (IsDisposed || !IsHandleCreated) return;
-            try { BeginInvoke(new Action(delegate { HandleDefaultChanged(newId); })); }
+            try { BeginInvoke(new Action(delegate { HandleDefaultChanged(newId, role); })); }
             catch { }
         }
 
@@ -562,7 +566,7 @@ namespace StereoSplitter
                 " → 看门狗会在检测到断流后尝试自动重建；若设备已彻底移除则自动停止分流");
         }
 
-        void HandleDefaultChanged(string newId)
+        void HandleDefaultChanged(string newId, Role role)
         {
             if (newId == null || bindings == null) return;
 
@@ -578,11 +582,22 @@ namespace StereoSplitter
             if (newId == bindings.Master.DeviceId) return; // 我们自己切的(启动配置/退出恢复) → 忽略
 
             // 外部切走 → 先停双向绑定 + 还原原音量, 分流不停
-            Log("[恢复] 检测到默认输出被切换 → 已解除双向音量绑定(含捕获消音锁定)并还原原音量；" +
-                "分流仍捕获原设备，应用声音已不再进入捕获源，输出将无声，切回原设备可自动恢复");
+            // 日志必须写清"切到哪个设备/哪个角色": 只有这样才能判断是谁在改默认设备
+            Log("[恢复] 检测到默认输出被切换 → " + FindNameById(newId) + "（" + RoleName(role) + "）；" +
+                "已解除双向音量绑定(含捕获消音锁定)并还原原音量，应用声音不再进入捕获源，输出将无声，切回原设备可自动恢复");
             expectCaptureId = bindings.Master.DeviceId; // 记住期望捕获设备, 供"切回"识别
             UnbindAllVolumeSync();        // 解绑通知 + 还原三端点原音量 + 还原已改静音
             SetVolumeBindVisual(false);   // 数值标签变灰(绑定已失效)
+        }
+
+        static string RoleName(Role role)
+        {
+            switch (role)
+            {
+                case Role.Console: return "控制台角色";
+                case Role.Multimedia: return "多媒体角色";
+                default: return "通信角色";
+            }
         }
 
         // 默认输出切回捕获设备 → 自动重绑双向音量 (引擎未停, UI仍为权威源)
@@ -2526,6 +2541,8 @@ namespace StereoSplitter
         // 排空段最长约 100s (0.2% 速率下降 100ms), 128s 后必然结束, 故加一个时间兜底。
         const int SwitchAfterUpdates = 6000;   // 6000 × 1024 / 48k ≈ 128s
         const double MaxRatio = 0.005;
+        // 触顶判定窗口: 500 次更新 ≈ 10.7s (48kHz / 1024)
+        const int ClampWarnUpdates = 500;
         // 同类异常事件限流: 采样线程上每 1024 样本就评估一次, 不限流会刷屏
         const int WarnIntervalMs = 60000;
 
@@ -2561,10 +2578,15 @@ namespace StereoSplitter
         float fadeIn = 1f;
         float fadeStep;
         float decayCoef;
+        // 欠载后的"补水位"闸门: 断粮即停止消费, 等水位回到目标 95% 再恢复。
+        // 旧行为是"有多少吃多少", 输出端会一直贴着 0 水位啃零头 ——
+        // 实测一次 0.8 秒的捕获断流会变成 7–10 秒的低水位/断音, 而暂停补满只要约 100ms。
+        bool holding;
         // 事件型诊断: 水位过低 / 校正触顶 (限流 + 恢复补记)
         bool lowWarned;
         int lastLowWarnTick;
         int clampStreak;
+        double clampStartTotal;     // 本轮触顶开始时的水位 (判断"到底有没有在回升")
         int lastClampWarnTick;
         // 输出线程活性计数: 只在采样线程自增, UI 线程读取 (64 位进程读 long 不会撕裂)。
         // 冻结即代表 WasapiOut 不再调用 Read → 输出端停摆, 比看水位可靠。
@@ -2665,10 +2687,9 @@ namespace StereoSplitter
             float m = master;
             for (int i = 0; i < countRequested; i++)
             {
-                if (count < 3)
+                if (count < 3 || holding)
                 {
-                    Fill();
-                    if (count < 3)
+                    if (StepStarved())
                     {
                         Interlocked.Increment(ref underrunSamples);
                         // 软收尾: 把最后一次输出按 3ms 指数衰减到 0, 代替从任意电平硬切
@@ -2710,6 +2731,29 @@ namespace StereoSplitter
                 if (++updateCounter >= UpdateSamples) { updateCounter = 0; UpdateRatio(); }
             }
             return countRequested;
+        }
+
+        /// <summary>欠载处理: 返回 true 表示本样本输出静音且不消费。
+        /// holding 闸门是关键 —— 断粮后不再"有多少吃多少", 而是补到目标 95% 才恢复,
+        /// 否则输出端会贴着 0 水位啃零头, 听感是长时间断音。</summary>
+        bool StepStarved()
+        {
+            // 必须先记下"进来时是不是空的": Fill() 会把环形缓冲填满, 之后再判 count 就永远是满的
+            bool empty = count < 3;
+            if (empty) Fill();
+            int total = (int)(src.BufferedBytes / 4) + count;
+
+            if (holding)
+            {
+                if (total >= targetSamples * 0.95) { holding = false; return false; }
+            }
+            // 只在"真的断粮"(水位不到一半)时进闸门; 正常补环时水位接近目标, 不能触发,
+            // 否则会变成"一补就停、一停就补"的抖动
+            else if (empty && total < targetSamples * 0.5)
+            {
+                holding = true;
+            }
+            return holding;
         }
 
         void Fill()
@@ -2778,16 +2822,22 @@ namespace StereoSplitter
             else if (r > hi) r = hi;
             ratio = (float)r;
 
-            // 事件型诊断②: 连续触顶 (约 1 秒 = 50 次更新) 说明速率差已超出 ±0.5% 修正范围
-            // 只报"负向触顶": 正向触顶说明水位高于目标、正以最快速度排空, 属自愈状态;
-            // 负向触顶才是补不上来、有欠载风险。起播排空段因此不会误报。
+            // 事件型诊断②: 触顶 ≠ 故障。缓冲被抽空(捕获源短暂断流、设备切换)后, 环必须以 -0.5%
+            // 全速回补, 这段一定会触顶且水位很低 —— 用"触顶 1 秒"判会把每次回补都误报成速率失配
+            // (实测 21:53:56 就是这种情况: 默认输出被切走 1 秒, 水位掉到 0, 环在回补)。
+            // 真正的失配是: 触顶持续 10 秒以上, 且这 10 秒里水位几乎没有回升。
+            // 只报"负向触顶": 正向触顶是在排多余的水, 属自愈状态, 起播排空段因此也不会误报。
             if (clamped && fastGain && err < 0)
             {
-                if (++clampStreak >= 50 && WarnAllowed(ref lastClampWarnTick))
+                if (clampStreak == 0) clampStartTotal = smoothedTotal;
+                clampStreak++;
+                if (clampStreak >= ClampWarnUpdates)
                 {
-                    clampStreak = 0;
-                    Report("[警告] 时钟校正已触顶 " + PpmOf(r) + " (调节水位 " + smoothedMs + "ms / 目标 " +
-                        MsOf(targetSamples, sr) + "ms)，两设备速率差超出可修正范围");
+                    bool recovering = smoothedTotal - clampStartTotal > targetSamples * 0.1;
+                    clampStreak = 0;   // 每 10 秒一个独立窗口
+                    if (!recovering && WarnAllowed(ref lastClampWarnTick))
+                        Report("[警告] 时钟校正已触顶 " + PpmOf(r) + " 超过 10 秒且水位未回升 (调节水位 " +
+                            smoothedMs + "ms / 目标 " + MsOf(targetSamples, sr) + "ms)，两设备速率差超出可修正范围");
                 }
             }
             else clampStreak = 0;
