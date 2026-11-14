@@ -143,6 +143,37 @@ namespace StereoSplitter.Devices
                    n.IndexOf("Steam", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        /// <summary>端点传输类型原始串 (PKEY_Device_EnumeratorName): BTHENUM/USB/HDAUDIO…, 取不到返回空串。</summary>
+        public static string TransportName(MMDevice d)
+        {
+            if (d == null) return "";
+            try
+            {
+                var key = new PropertyKey(new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), 24);
+                var v = d.Properties[key];
+                string s = v == null ? null : v.ToString();
+                return s == null ? "" : s.Trim();
+            }
+            catch { return ""; }
+        }
+
+        /// <summary>把传输类型翻成人话, 用于启动日志。</summary>
+        public static string TransportText(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "未知";
+            if (raw.StartsWith("BTHENUM", StringComparison.OrdinalIgnoreCase)) return "蓝牙";
+            if (raw.StartsWith("USB", StringComparison.OrdinalIgnoreCase)) return "USB";
+            if (raw.StartsWith("HDAUDIO", StringComparison.OrdinalIgnoreCase)) return "板载";
+            if (raw.StartsWith("SWD", StringComparison.OrdinalIgnoreCase)) return "虚拟/软件";
+            return raw;
+        }
+
+        public static bool IsBluetooth(string raw)
+        {
+            return !string.IsNullOrEmpty(raw) &&
+                   raw.StartsWith("BTHENUM", StringComparison.OrdinalIgnoreCase);
+        }
+
         void ReleaseOwned()
         {
             for (int i = 0; i < owned.Count; i++)

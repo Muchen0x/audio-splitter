@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
@@ -2182,6 +2183,13 @@ namespace StereoSplitter
             sampleRate = wf.SampleRate;
             log("[启动] 格式: " + wf.SampleRate + "Hz / " + wf.Encoding + " / " + wf.BitsPerSample + "bit / " + wf.Channels + "ch");
 
+            // 端点传输类型: 蓝牙 A2DP 自成一条链路, 偶发"咔哒"多出在链路层而不是缓冲层,
+            // 写进日志才能在排查时立刻区分责任方
+            string lt = DeviceCatalog.TransportName(leftDev), rt = DeviceCatalog.TransportName(rightDev);
+            log("[启动] 端点传输: 左=" + DeviceCatalog.TransportText(lt) + " / 右=" + DeviceCatalog.TransportText(rt));
+            if ((DeviceCatalog.IsBluetooth(lt) || DeviceCatalog.IsBluetooth(rt)) && outLatencyMs < 20)
+                log("[提示] 蓝牙端点使用 " + outLatencyMs + "ms 输出缓冲偏紧；若链路上偶发\"咔哒\"，把「延迟」档位调到 25ms/20ms 或更高");
+
             var outFormat = WaveFormat.CreateIeeeFloatWaveFormat(wf.SampleRate, 1);
             // 时钟环稳态目标: 档位越小目标越低, 上限 150ms
             int driftTargetMs = Math.Min(150, Math.Max(prebufferMs, outLatencyMs) + 80);
@@ -2366,6 +2374,10 @@ namespace StereoSplitter
                     " 最低 L=" + minL + "ms R=" + minR + "ms";
                 long ul = leftProvider.UnderrunSamples, ur = rightProvider.UnderrunSamples;
                 if (ul > 0 || ur > 0) s += " 欠载 L=" + ul + " R=" + ur;
+                // 只在真出现时才显示: 迟到 = WasapiOut 没按时取数据(设备侧可能已欠载), 卡顿 = 音频线程被抢占
+                string tl = leftProvider.TimingInfo, tr = rightProvider.TimingInfo;
+                if (tl != null) s += " 左" + tl;
+                if (tr != null) s += " 右" + tr;
                 return s;
             }
             catch { return "-"; }
@@ -2595,6 +2607,13 @@ namespace StereoSplitter
         // 输出线程活性计数: 只在采样线程自增, UI 线程读取 (64 位进程读 long 不会撕裂)。
         // 冻结即代表 WasapiOut 不再调用 Read → 输出端停摆, 比看水位可靠。
         long renderedSamples;
+        // 输出线程时序诊断: 我们的水位计数只能看见"我们给不出数据", 看不见
+        // "WasapiOut 没按时来取" —— 后者会让设备侧自己欠载(蓝牙 A2DP 尤其容易),
+        // 听感同样是"咔", 但日志里一片安静。这里量调用间隔与单次耗时把它暴露出来。
+        long lastReadTs;
+        int lateReads, slowReads;
+        double maxGapMs, maxDurMs;
+        int lastTimingWarnTick;
 
         public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples)
             : this(src, targetSamples, 1, 0, null)
@@ -2676,6 +2695,17 @@ namespace StereoSplitter
         /// <summary>累计渲染样本数 (只增不减), 看门狗用它判定输出线程是否还在跑。</summary>
         public long RenderedSamples { get { return renderedSamples; } }
 
+        /// <summary>输出线程时序摘要; 全部正常时返回 null (状态行不显示, 免得干扰读数)。</summary>
+        public string TimingInfo
+        {
+            get
+            {
+                if (lateReads == 0 && slowReads == 0) return null;
+                return "迟到 " + lateReads + "次/最大 " + maxGapMs.ToString("0") + "ms" +
+                       " 卡顿 " + slowReads + "次/最大 " + maxDurMs.ToString("0") + "ms";
+            }
+        }
+
         public int TakeMinBufferedMs()
         {
             int v = Interlocked.Exchange(ref minTotalSinceStatus, int.MaxValue);
@@ -2686,7 +2716,23 @@ namespace StereoSplitter
 
         public int Read(float[] samples, int offset, int countRequested)
         {
+            long t0 = Stopwatch.GetTimestamp();
             renderedSamples += countRequested;   // 活性计数: 只要被调用就说明输出线程还活着
+            // 时序诊断①: 两次调用间隔远大于块时长 → WasapiOut 没按时来取, 设备侧会自己欠载
+            if (lastReadTs != 0)
+            {
+                double gapMs = (t0 - lastReadTs) * 1000.0 / Stopwatch.Frequency;
+                int expMs = countRequested * 1000 / Math.Max(1, src.WaveFormat.SampleRate);
+                if (gapMs > expMs * 1.5 + 15)
+                {
+                    lateReads++;
+                    if (gapMs > maxGapMs) maxGapMs = gapMs;
+                    if (WarnAllowed(ref lastTimingWarnTick))
+                        Report("[警告] 输出线程取数据迟到 " + gapMs.ToString("0") + "ms (期望约 " + expMs +
+                            "ms)，设备侧可能已欠载断音；若频繁出现请调高「延迟」档位或改用有线输出");
+                }
+            }
+            lastReadTs = t0;
             float g = gain;
             float m = master;
             for (int i = 0; i < countRequested; i++)
@@ -2733,6 +2779,14 @@ namespace StereoSplitter
                 }
 
                 if (++updateCounter >= UpdateSamples) { updateCounter = 0; UpdateRatio(); }
+            }
+            // 时序诊断②: 单次 Read 耗时超过 4ms 说明音频线程被抢占/卡住,
+            // 高温或 GC 时会出现; 块时长只有 10ms, 吃满就意味着下一块必然迟到
+            double durMs = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
+            if (durMs > 4)
+            {
+                slowReads++;
+                if (durMs > maxDurMs) maxDurMs = durMs;
             }
             return countRequested;
         }
