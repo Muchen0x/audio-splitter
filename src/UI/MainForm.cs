@@ -36,6 +36,8 @@ namespace StereoSplitter
         string stateText = "就绪";
         // 连续输入 (拖数字框) 的合并窗口: 每 30ms 最多走一次"编译+刷新"
         int lastEditTick;
+        // 上次提示过的捕获声道数 (避免换设备/刷新时重复刷日志)
+        int lastWarnedSrcCh = -1;
         static readonly int[][] LatencyProfiles = new int[][] {
             new int[] { 100, 50 },
             new int[] { 50, 30 },
@@ -1557,8 +1559,14 @@ namespace StereoSplitter
         /// </summary>
         string CheckRunModel(RoutingModel m, string captureId)
         {
+            // 校验必须拿真实的捕获声道数: 以前写死 8, 于是 2ch 源配了 s4 也查不出来,
+            // 启动后 Compile 把 s4 % 2 = s0 折过去, 声音"有但不对", 最难查。
+            int srcCh = 0;
+            if (catalog != null && !string.IsNullOrEmpty(captureId)) srcCh = catalog.EndpointChannels(captureId);
+            if (srcCh <= 0 && engine != null) srcCh = engine.CaptureChannels;
+
             var issues = m.ValidateSinks(captureId, delegate(string id) { return catalog.EndpointChannels(id); });
-            issues.AddRange(m.Validate(8, m.SinkSpecs));
+            issues.AddRange(m.Validate(srcCh, m.SinkSpecs));
             // 同一现象 ValidateSinks/Validate 各报一次, 按 (级别, 文本) 去重再输出
             var seen = new HashSet<string>();
             var errors = new List<string>();
@@ -2290,6 +2298,42 @@ namespace StereoSplitter
             string id = DeviceIdAt(cmbDefault.SelectedIndex);
             int ch = string.IsNullOrEmpty(id) ? 0 : catalog.EndpointChannels(id);
             lblCaptureInfo.Text = ch > 0 ? "(" + ch + "ch)" : "";
+            WarnIfTapsOutOfSource(ch);
+        }
+
+        /// <summary>当前捕获源会被拿来做捕获的声道数: 运行中取引擎实测值, 否则查端点混音格式。</summary>
+        int CaptureChannels()
+        {
+            if (running && engine != null && engine.CaptureChannels > 0) return engine.CaptureChannels;
+            if (catalog == null || cmbDefault == null || cmbDefault.SelectedIndex < 0) return 0;
+            string id = DeviceIdAt(cmbDefault.SelectedIndex);
+            if (string.IsNullOrEmpty(id)) return 0;
+            return catalog.EndpointChannels(id);
+        }
+
+        /// <summary>
+        /// 换了捕获设备后, 已配好的抽头可能指向新源里不存在的声道 (比如 5.1 配置切回 2ch 端点)。
+        /// 这时不静默改配置 —— 只在日志里说清"哪条、怎么修", 由用户决定重建还是手改。
+        /// </summary>
+        void WarnIfTapsOutOfSource(int srcCh)
+        {
+            if (routing == null || srcCh <= 0) return;
+            string bad = null;
+            for (int i = 0; i < routing.Channels.Count && bad == null; i++)
+            {
+                var c = routing.Channels[i];
+                for (int t = 0; t < c.Taps.Count; t++)
+                    if (c.Taps[t].Src >= srcCh) { bad = c.Name + "(源声道 " + c.Taps[t].Src + ")"; break; }
+            }
+            if (bad == null)
+            {
+                lastWarnedSrcCh = srcCh;
+                return;
+            }
+            if (srcCh == lastWarnedSrcCh) return;
+            lastWarnedSrcCh = srcCh;
+            Log("[提示] 当前捕获源只有 " + srcCh + " 声道，但 " + bad +
+                " 指向的源声道不存在；点一次当前模式按钮即可按新源重建清单");
         }
 
         string SinkDeviceId(int i)
@@ -2325,12 +2369,16 @@ namespace StereoSplitter
         void CommitMode(WorkMode mode)
         {
             if (routing == null) return;
-            routing.ApplyModeTemplate(mode, routing.EnabledSinks());
+            int srcCh = CaptureChannels();
+            routing.ApplyModeTemplate(mode, routing.EnabledSinks(), srcCh);
             modeStrip.Mode = routing.Mode;
             modeStrip.CancelConfirm();
             channelStrip.Model = routing;
             RebuildSinkRows();
             Log("[模式] " + ModeStripControl.NameOf(routing.Mode) + " → " + routing.DescribeConfig());
+            if (mode == WorkMode.Surround || mode == WorkMode.SplitLr || mode == WorkMode.MirrorStereo)
+                Log("[模式] 源映射: " + RoutingModel.DescribeSource(srcCh));
+            lastWarnedSrcCh = srcCh;
             OnRoutingEdited();
         }
 
@@ -2354,7 +2402,8 @@ namespace StereoSplitter
             if (routing == null || index < 0 || index >= routing.Channels.Count) return;
             var ch = routing.Channels[index];
             if (editPopup != null && !editPopup.IsDisposed) editPopup.Close();
-            editPopup = new ChannelEditPopup(ch, routing, routing.EnabledSinks(), 2, delegate
+            int srcCh = CaptureChannels();
+            editPopup = new ChannelEditPopup(ch, routing, routing.EnabledSinks(), srcCh > 0 ? srcCh : 2, delegate
             {
                 channelStrip.RefreshCards();
                 RefreshSinkRoles();

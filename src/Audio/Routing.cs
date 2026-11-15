@@ -198,19 +198,79 @@ namespace StereoSplitter
         }
 
         // ---------------------------------------------------------------- 模板
-        /// <summary>按模式生成默认清单与绑定。custom 不动。返回是否发生了改动。</summary>
-        public bool ApplyModeTemplate(WorkMode mode, IList<SinkSpec> sinks)
+        /// <summary>
+        /// 按模式生成默认清单与绑定。custom 不动。返回是否发生了改动。
+        /// <para>srcCh = 捕获源实际声道数。**模板必须知道它**: 真 5.1 源进来时中置/低音/环绕
+        /// 有各自的声道, 若还按 2 声道上混, 后置放的是前置内容、中置没有对白 —— 听感"像有声音"
+        /// 所以极难发现。0 或 2 表示按立体声上混 (旧行为, 逐系数不变)。</para>
+        /// </summary>
+        public bool ApplyModeTemplate(WorkMode mode, IList<SinkSpec> sinks, int srcCh = 0)
         {
             if (mode == WorkMode.Custom) { Mode = mode; return false; }
             Mode = mode;
             switch (mode)
             {
-                case WorkMode.SplitLr: BuildSplitLr(sinks); return true;
-                case WorkMode.MirrorStereo: BuildMirror(sinks); return true;
-                case WorkMode.Surround: BuildSurround(Layout, sinks); return true;
-                case WorkMode.MonoBroadcast: BuildMono(sinks); return true;
+                case WorkMode.SplitLr: BuildSplitLr(sinks, srcCh); return true;
+                case WorkMode.MirrorStereo: BuildMirror(sinks, srcCh); return true;
+                case WorkMode.Surround: BuildSurround(Layout, sinks, srcCh); return true;
+                case WorkMode.MonoBroadcast: BuildMono(sinks, srcCh); return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// Windows 端点的声道顺序表 (KSAUDIO_SPEAKER_*): 按声道数给出各语义声道的源索引,
+        /// -1 = 该源里没有这个声道。1ch 时全部落到 s0。
+        /// <para>1:FC 2:FL,FR 3:FL,FR,FC 4:FL,FR,BL,BR 5:FL,FR,FC,BL,BR
+        /// 6:FL,FR,FC,LFE,BL,BR 7:FL,FR,FC,LFE,BC,SL,SR 8:FL,FR,FC,LFE,BL,BR,SL,SR</para>
+        /// </summary>
+        struct SourceMap
+        {
+            public int FL, FR, C, LFE, SL, SR, BL, BR;
+
+            public bool HasCenter { get { return C >= 0; } }
+            /// <summary>源里完全没有环绕 (≤3ch) → 需要上混。</summary>
+            public bool SurroundMissing { get { return SL < 0 && BL < 0; } }
+            /// <summary>5.1 的后环绕: 优先取 SL, 4ch 源退回 BL。</summary>
+            public int SurL { get { return SL >= 0 ? SL : BL; } }
+            public int SurR { get { return SR >= 0 ? SR : BR; } }
+        }
+
+        static SourceMap MapOf(int srcCh)
+        {
+            var m = new SourceMap { C = -1, LFE = -1, SL = -1, SR = -1, BL = -1, BR = -1 };
+            m.FL = 0;
+            m.FR = srcCh >= 2 ? 1 : 0;
+            switch (srcCh)
+            {
+                case 3: m.C = 2; break;
+                case 4: m.BL = 2; m.BR = 3; break;
+                case 5: m.C = 2; m.BL = 3; m.BR = 4; break;
+                case 6: m.C = 2; m.LFE = 3; m.SL = 4; m.SR = 5; break;
+                // 6.1 的 s4 是背中置, 没有对应的输出声道, 忽略 (不硬塞进环绕)
+                case 7: m.C = 2; m.LFE = 3; m.SL = 5; m.SR = 6; break;
+                default:
+                    if (srcCh >= 8) { m.C = 2; m.LFE = 3; m.BL = 4; m.BR = 5; m.SL = 6; m.SR = 7; }
+                    break;
+            }
+            return m;
+        }
+
+        /// <summary>日志/UI 用: 这个源有几个声道、算不算"真多声道源"。</summary>
+        public static string DescribeSource(int srcCh)
+        {
+            if (srcCh <= 0) return "声道数未知";
+            if (srcCh <= 2) return srcCh + " 声道（立体声上混）";
+            var m = MapOf(srcCh);
+            var sb = new StringBuilder();
+            sb.Append(srcCh).Append(" 声道直通:");
+            sb.Append(" L=s").Append(m.FL);
+            sb.Append(" R=s").Append(m.FR);
+            if (m.HasCenter) sb.Append(" C=s").Append(m.C);
+            if (m.LFE >= 0) sb.Append(" LFE=s").Append(m.LFE);
+            if (m.SurL >= 0) sb.Append(" 环绕=s").Append(m.SurL).Append('/').Append(m.SurR);
+            if (m.BL >= 0 && m.SL >= 0) sb.Append(" 后置=s").Append(m.BL).Append('/').Append(m.BR);
+            return sb.ToString();
         }
 
         /// <summary>原行为的等价表达: 两个逻辑声道各绑一台单声道设备。</summary>
@@ -233,12 +293,22 @@ namespace StereoSplitter
         /// <summary>与清单配套的设备规格 (P1 由 SplitLr 工厂填充; P2 起从 ini 读)。</summary>
         public List<SinkSpec> SinkSpecs = new List<SinkSpec>();
 
-        void BuildSplitLr(IList<SinkSpec> sinks)
+        void BuildSplitLr(IList<SinkSpec> sinks, int srcCh)
         {
             Channels.Clear(); Bindings.Clear();
             Layout = ChannelLayout.Stereo;
-            Channels.Add(new LogicalChannel("ch0", "左", ChannelKind.FL, new SourceTap(0, 1f)));
-            Channels.Add(new LogicalChannel("ch1", "右", ChannelKind.FR, new SourceTap(1, 1f)));
+            var l = new LogicalChannel("ch0", "左", ChannelKind.FL, new SourceTap(0, 1f));
+            var r = new LogicalChannel("ch1", "右", ChannelKind.FR, new SourceTap(1, 1f));
+            // 真多声道源: 中置折进左右。不折就会丢掉全部对白人声 (5.1 电影里最明显),
+            // 且这一步不花任何运行时开销 —— 只是多一项矩阵系数。
+            // 环绕与 LFE 不折: 本模式是"两路各分一只音箱", 再塞进来必然削波。
+            var map = MapOf(srcCh);
+            if (map.HasCenter && map.C != 0 && map.C != 1)
+            {
+                l.Taps.Add(new SourceTap(map.C, 0.707f));
+                r.Taps.Add(new SourceTap(map.C, 0.707f));
+            }
+            Channels.Add(l); Channels.Add(r);
             if (sinks == null) return;
             for (int i = 0; i < sinks.Count && i < 2; i++)
             {
@@ -247,12 +317,19 @@ namespace StereoSplitter
             }
         }
 
-        void BuildMirror(IList<SinkSpec> sinks)
+        void BuildMirror(IList<SinkSpec> sinks, int srcCh)
         {
             Channels.Clear(); Bindings.Clear();
             Layout = ChannelLayout.Stereo;
-            Channels.Add(new LogicalChannel("ch0", "左", ChannelKind.FL, new SourceTap(0, 1f)));
-            Channels.Add(new LogicalChannel("ch1", "右", ChannelKind.FR, new SourceTap(1, 1f)));
+            var l = new LogicalChannel("ch0", "左", ChannelKind.FL, new SourceTap(0, 1f));
+            var r = new LogicalChannel("ch1", "右", ChannelKind.FR, new SourceTap(1, 1f));
+            var map = MapOf(srcCh);
+            if (map.HasCenter && map.C != 0 && map.C != 1)
+            {
+                l.Taps.Add(new SourceTap(map.C, 0.707f));
+                r.Taps.Add(new SourceTap(map.C, 0.707f));
+            }
+            Channels.Add(l); Channels.Add(r);
             if (sinks == null) return;
             for (int i = 0; i < sinks.Count; i++)
             {
@@ -262,12 +339,16 @@ namespace StereoSplitter
             }
         }
 
-        void BuildMono(IList<SinkSpec> sinks)
+        void BuildMono(IList<SinkSpec> sinks, int srcCh)
         {
             Channels.Clear(); Bindings.Clear();
             Layout = ChannelLayout.Mono;
-            Channels.Add(new LogicalChannel("ch0", "单声道", ChannelKind.C,
-                new SourceTap(0, 0.5f), new SourceTap(1, 0.5f)));
+            var c = new LogicalChannel("ch0", "单声道", ChannelKind.C,
+                new SourceTap(0, 0.5f), new SourceTap(1, 0.5f));
+            var map = MapOf(srcCh);
+            if (map.HasCenter && map.C != 0 && map.C != 1)
+                c.Taps.Add(new SourceTap(map.C, 0.35f));
+            Channels.Add(c);
             if (sinks == null) return;
             for (int i = 0; i < sinks.Count; i++)
             {
@@ -278,39 +359,105 @@ namespace StereoSplitter
             }
         }
 
-        void BuildSurround(ChannelLayout layout, IList<SinkSpec> sinks)
+        void BuildSurround(ChannelLayout layout, IList<SinkSpec> sinks, int srcCh)
         {
             Channels.Clear(); Bindings.Clear();
             if (layout != ChannelLayout.Surround51 && layout != ChannelLayout.Surround71 && layout != ChannelLayout.Quad)
                 layout = ChannelLayout.Surround51;
             Layout = layout;
 
-            // 2 声道源的上混系数 (5.1/7.1); 若捕获是真 6ch, P4 再按 srcCh 换另一套
+            var map = MapOf(srcCh);
             switch (layout)
             {
                 case ChannelLayout.Quad:
-                    AddCh("FL", "左前置", ChannelKind.FL, T(0, 1f));
-                    AddCh("FR", "右前置", ChannelKind.FR, T(1, 1f));
-                    AddCh("BL", "左后置", ChannelKind.BL, T(0, 0.7f));
-                    AddCh("BR", "右后置", ChannelKind.BR, T(1, 0.7f));
+                    if (map.BL >= 0)
+                    {
+                        // 4ch 及以上的四声道直通 (4ch 源本身就是 FL,FR,BL,BR)
+                        AddCh("FL", "左前置", ChannelKind.FL, T(map.FL, 1f));
+                        AddCh("FR", "右前置", ChannelKind.FR, T(map.FR, 1f));
+                        AddCh("BL", "左后置", ChannelKind.BL, T(map.BL, 1f));
+                        AddCh("BR", "右后置", ChannelKind.BR, T(map.BR, 1f));
+                    }
+                    else
+                    {
+                        AddCh("FL", "左前置", ChannelKind.FL, T(0, 1f));
+                        AddCh("FR", "右前置", ChannelKind.FR, T(1, 1f));
+                        AddCh("BL", "左后置", ChannelKind.BL, T(0, 0.7f));
+                        AddCh("BR", "右后置", ChannelKind.BR, T(1, 0.7f));
+                    }
                     break;
+
                 case ChannelLayout.Surround71:
-                    AddCh("FL", "左前置", ChannelKind.FL, T(0, 1f));
-                    AddCh("FR", "右前置", ChannelKind.FR, T(1, 1f));
-                    AddCh("C", "中置", ChannelKind.C, new SourceTap(0, 0.5f), new SourceTap(1, 0.5f));
-                    AddCh("LFE", "低音", ChannelKind.LFE, new SourceTap(0, 0.35f), new SourceTap(1, 0.35f));
-                    AddCh("SL", "左环绕", ChannelKind.SL, T(0, 0.7f));
-                    AddCh("SR", "右环绕", ChannelKind.SR, T(1, 0.7f));
-                    AddCh("BL", "左后置", ChannelKind.BL, T(0, 0.7f));
-                    AddCh("BR", "右后置", ChannelKind.BR, T(1, 0.7f));
+                    if (map.SL >= 0 && map.BL >= 0)
+                    {
+                        // 真 7.1 源: 侧环与后置各就各位
+                        AddCh("FL", "左前置", ChannelKind.FL, T(map.FL, 1f));
+                        AddCh("FR", "右前置", ChannelKind.FR, T(map.FR, 1f));
+                        AddCh("C", "中置", ChannelKind.C, T(map.C, 1f));
+                        AddCh("LFE", "低音", ChannelKind.LFE, T(map.LFE, 1f));
+                        AddCh("SL", "左环绕", ChannelKind.SL, T(map.SL, 1f));
+                        AddCh("SR", "右环绕", ChannelKind.SR, T(map.SR, 1f));
+                        AddCh("BL", "左后置", ChannelKind.BL, T(map.BL, 1f));
+                        AddCh("BR", "右后置", ChannelKind.BR, T(map.BR, 1f));
+                    }
+                    else if (map.SL >= 0)
+                    {
+                        // 5.1 源扩成 7.1: 后置由环绕按 -3dB 派生 (不新增信息, 只是把声场铺开)
+                        AddCh("FL", "左前置", ChannelKind.FL, T(map.FL, 1f));
+                        AddCh("FR", "右前置", ChannelKind.FR, T(map.FR, 1f));
+                        AddCh("C", "中置", ChannelKind.C, T(map.C, 1f));
+                        AddCh("LFE", "低音", ChannelKind.LFE, T(map.LFE, 1f));
+                        AddCh("SL", "左环绕", ChannelKind.SL, T(map.SL, 1f));
+                        AddCh("SR", "右环绕", ChannelKind.SR, T(map.SR, 1f));
+                        AddCh("BL", "左后置", ChannelKind.BL, T(map.SL, 0.707f));
+                        AddCh("BR", "右后置", ChannelKind.BR, T(map.SR, 0.707f));
+                    }
+                    else
+                    {
+                        AddCh("FL", "左前置", ChannelKind.FL, T(0, 1f));
+                        AddCh("FR", "右前置", ChannelKind.FR, T(1, 1f));
+                        AddCh("C", "中置", ChannelKind.C, new SourceTap(0, 0.5f), new SourceTap(1, 0.5f));
+                        AddCh("LFE", "低音", ChannelKind.LFE, new SourceTap(0, 0.35f), new SourceTap(1, 0.35f));
+                        AddCh("SL", "左环绕", ChannelKind.SL, T(0, 0.7f));
+                        AddCh("SR", "右环绕", ChannelKind.SR, T(1, 0.7f));
+                        AddCh("BL", "左后置", ChannelKind.BL, T(0, 0.7f));
+                        AddCh("BR", "右后置", ChannelKind.BR, T(1, 0.7f));
+                    }
                     break;
-                default:
-                    AddCh("FL", "左前置", ChannelKind.FL, T(0, 1f));
-                    AddCh("FR", "右前置", ChannelKind.FR, T(1, 1f));
-                    AddCh("C", "中置", ChannelKind.C, new SourceTap(0, 0.5f), new SourceTap(1, 0.5f));
-                    AddCh("LFE", "低音", ChannelKind.LFE, new SourceTap(0, 0.35f), new SourceTap(1, 0.35f));
-                    AddCh("SL", "左环绕", ChannelKind.SL, T(0, 0.7f));
-                    AddCh("SR", "右环绕", ChannelKind.SR, T(1, 0.7f));
+
+                default:   // 5.1
+                    if (map.SL >= 0)
+                    {
+                        // 真 5.1 (6ch 源的 s4/s5 是后环绕): 直通, 不重算任何系数
+                        AddCh("FL", "左前置", ChannelKind.FL, T(map.FL, 1f));
+                        AddCh("FR", "右前置", ChannelKind.FR, T(map.FR, 1f));
+                        AddCh("C", "中置", ChannelKind.C, T(map.C, 1f));
+                        AddCh("LFE", "低音", ChannelKind.LFE, T(map.LFE, 1f));
+                        AddCh("SL", "左环绕", ChannelKind.SL, T(map.SurL, 1f));
+                        AddCh("SR", "右环绕", ChannelKind.SR, T(map.SurR, 1f));
+                    }
+                    else if (map.BL >= 0 || map.HasCenter)
+                    {
+                        // 3/4/5ch 源: 有直通的直通, 缺的由前置派生 (4ch 的 s2/s3 就是后置, 直接当环绕用)
+                        AddCh("FL", "左前置", ChannelKind.FL, T(map.FL, 1f));
+                        AddCh("FR", "右前置", ChannelKind.FR, T(map.FR, 1f));
+                        if (map.HasCenter)
+                            AddCh("C", "中置", ChannelKind.C, T(map.C, 1f));
+                        else
+                            AddCh("C", "中置", ChannelKind.C, new SourceTap(map.FL, 0.5f), new SourceTap(map.FR, 0.5f));
+                        AddCh("LFE", "低音", ChannelKind.LFE, new SourceTap(map.FL, 0.35f), new SourceTap(map.FR, 0.35f));
+                        AddCh("SL", "左环绕", ChannelKind.SL, map.BL >= 0 ? T(map.BL, 1f) : T(map.FL, 0.7f));
+                        AddCh("SR", "右环绕", ChannelKind.SR, map.BR >= 0 ? T(map.BR, 1f) : T(map.FR, 0.7f));
+                    }
+                    else
+                    {
+                        AddCh("FL", "左前置", ChannelKind.FL, T(0, 1f));
+                        AddCh("FR", "右前置", ChannelKind.FR, T(1, 1f));
+                        AddCh("C", "中置", ChannelKind.C, new SourceTap(0, 0.5f), new SourceTap(1, 0.5f));
+                        AddCh("LFE", "低音", ChannelKind.LFE, new SourceTap(0, 0.35f), new SourceTap(1, 0.35f));
+                        AddCh("SL", "左环绕", ChannelKind.SL, T(0, 0.7f));
+                        AddCh("SR", "右环绕", ChannelKind.SR, T(1, 0.7f));
+                    }
                     break;
             }
 
@@ -370,9 +517,12 @@ namespace StereoSplitter
                 for (int t = 0; t < c.Taps.Count; t++)
                 {
                     var tap = c.Taps[t];
-                    if (tap.Src < 0 || tap.Src >= srcCh)
+                    // srcCh <= 0 表示"还不知道源有几个声道"(启动前拿不到端点格式), 此时不判,
+                    // 否则会把合法的 6ch 配置全部误报成错误。
+                    if (srcCh > 0 && (tap.Src < 0 || tap.Src >= srcCh))
                         issues.Add(new RoutingIssue(IssueSev.Error, c.Key,
-                            c.Name + " 引用了不存在的源声道 " + tap.Src + "（当前捕获源只有 " + srcCh + " 声道）"));
+                            c.Name + " 引用了不存在的源声道 " + tap.Src + "（当前捕获源只有 " + srcCh + " 声道，" +
+                            "点一次当前模式按钮可按新源重建清单）"));
                 }
                 if (!HasBinding(c.Key))
                     issues.Add(new RoutingIssue(IssueSev.Warn, c.Key, c.Name + " 未分配（该声道将静音）"));
@@ -441,6 +591,31 @@ namespace StereoSplitter
                 if (targets > 1)
                     issues.Add(new RoutingIssue(IssueSev.Info, Channels[i].Key,
                         Channels[i].Name + " 同时送到 " + targets + " 台设备（若在同一空间，会因到达时间差产生梳状滤波）"));
+            }
+
+            // 峰值增益: 同一物理声道的系数绝对值之和 > 1 时, 大音量峰值会被硬限幅。
+            // SinkRuntime 里有 clamp 兜底 (不破音), 但它救不了"已经削平的波形", 所以要提前讲。
+            for (int i = 0; i < sinks.Count; i++)
+            {
+                var s = sinks[i];
+                if (!s.Enabled) continue;
+                for (int p = 0; p < s.OutChannels; p++)
+                {
+                    float sum = 0f;
+                    for (int b = 0; b < Bindings.Count; b++)
+                    {
+                        var bind = Bindings[b];
+                        if (bind.SinkKey != s.Key || bind.Phys != p) continue;
+                        var ch = FindChannel(bind.ChannelKey);
+                        if (ch == null || ch.Mute) continue;
+                        float g = bind.Gain * ch.Gain;
+                        for (int t = 0; t < ch.Taps.Count; t++) sum += Math.Abs(g * ch.Taps[t].Gain);
+                    }
+                    if (sum > 1.01f)
+                        issues.Add(new RoutingIssue(IssueSev.Info, s.Key,
+                            s.Label + " 的物理声道 " + p + " 峰值增益 " + sum.ToString("0.00") +
+                            "，大音量时会限幅（可在声道浮层把系数降到 " + (1f / sum).ToString("0.00") + " 以内）"));
+                }
             }
 
             return issues;
@@ -558,10 +733,17 @@ namespace StereoSplitter
                     {
                         var tap = ch.Taps[t];
                         if (tap.Src < 0) continue;
-                        // 越界折叠而非丢弃: 单声道捕获时旧实现就是 `channel % ch` 回落到 ch0,
-                        // 这里保持一致 —— 否则单声道源会让右路整条静音 (听感是"少一半")。
-                        // 真正的配置错误仍由 Validate 报 Error 挡住启动。
-                        int src = srcCh > 0 ? tap.Src % srcCh : 0;
+                        // 单声道捕获: 旧实现就是 `channel % 1 = 0`, 右路靠它才不会整条静音,
+                        // 所以 srcCh==1 时保留折叠。
+                        // srcCh>1 时越界一律丢弃, **不能取模**: 6ch 配置撞上 2ch 源时,
+                        // s2%2=s0、s3%2=s1 会让中置/低音/环绕全部变成满音量的 L/R ——
+                        // 三台设备都在响、听着"没问题", 实际全是错的。宁可静音, 由 Validate 报错说清。
+                        int src;
+                        if (srcCh <= 0) src = tap.Src;
+                        else if (tap.Src < srcCh) src = tap.Src;
+                        else if (srcCh == 1) src = 0;
+                        else continue;
+                        if (src >= m.GetLength(1)) continue;
                         m[bind.Phys, src] += g * tap.Gain;
                     }
                 }

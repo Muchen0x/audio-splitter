@@ -110,6 +110,7 @@ namespace StereoSplitter
             {
                 int sc = m.GetLength(1);
                 int useCh = sc < srcCh ? sc : srcCh;
+                int clipped = 0;
                 for (int f = 0; f < frames; f++)
                 {
                     int sb = f * srcCh;
@@ -122,10 +123,14 @@ namespace StereoSplitter
                             float k = m[p, s];
                             if (k != 0f) acc += k * srcF[sb + s];
                         }
-                        if (acc > 1f) acc = 1f; else if (acc < -1f) acc = -1f;
+                        if (acc > 1f) { acc = 1f; clipped++; }
+                        else if (acc < -1f) { acc = -1f; clipped++; }
                         mixed[db + p] = acc;
                     }
                 }
+                // 限幅兜底是"不破音", 不是"不失真": 削平的波形听感是压缩与爆点,
+                // 所以要么让用户看见 (这里), 要么在 Validate 里提前算峰值增益 (那边也会报)。
+                if (clipped > 0) OnClipped(clipped);
             }
 
             System.Buffer.BlockCopy(mixed, 0, outBytes, 0, need * 4);
@@ -171,6 +176,22 @@ namespace StereoSplitter
             if (lastOverflowWarnTick != 0 && now - lastOverflowWarnTick < 60000) return false;
             lastOverflowWarnTick = now;
             return true;
+        }
+
+        long clippedSamples;
+        int lastClipWarnTick;
+        /// <summary>本路累计被限幅的样本数 (UI 可据此判断是否该降增益)。</summary>
+        public long ClippedSamples { get { return clippedSamples; } }
+
+        void OnClipped(int n)
+        {
+            clippedSamples += n;
+            int now = Environment.TickCount;
+            // 限幅是持续性的, 10 秒一条就够, 别把日志刷满
+            if (lastClipWarnTick != 0 && unchecked(now - lastClipWarnTick) < 10000) return;
+            lastClipWarnTick = now;
+            log("[警告] " + label + " 峰值被限幅 (本段 " + n + " 样本, 累计 " + clippedSamples +
+                ")，请调低该路增益或声道抽头系数");
         }
 
         /// <summary>延迟线的目标字节数 = 采样率 × 毫秒 / 1000 帧 × 整帧字节。</summary>

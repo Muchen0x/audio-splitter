@@ -25,6 +25,10 @@ namespace StereoSplitter
         volatile int sampleRate;
         volatile int captureChannels;   // 运行中重编译矩阵要用
 
+        /// <summary>捕获源的实际声道数 (启动后才有值; 0 = 还没启动)。UI 建模板时优先用它,
+        /// 拿不到就查端点格式 —— 模板必须知道源有几个声道, 否则真 5.1 源会被当成立体声上混。</summary>
+        public int CaptureChannels { get { return captureChannels; } }
+
         readonly List<SinkSpec> specs = new List<SinkSpec>();
         readonly List<SinkRuntime> sinks = new List<SinkRuntime>();
         RoutingModel routing;

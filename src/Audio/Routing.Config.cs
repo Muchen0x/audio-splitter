@@ -259,6 +259,13 @@ namespace StereoSplitter
         public void SaveToIni(SettingsStore ini)
         {
             if (ini == null) return;
+            // ini 是"插入顺序 + 只覆盖不删除"的表: 删掉一条声道/设备后, 旧键 (Chan7.*) 会留在
+            // 文件里, 和 ChanCount 对不上 —— 人工打开 ini 会以为它还在生效 (实际加载按 count 截断)。
+            // 每次存盘先把本模型写过的键全部清掉再重写, 文件即等于内存模型的镜像。
+            var stale = ini.SnapshotKeys();
+            for (int i = 0; i < stale.Count; i++)
+                if (IsRoutingKey(stale[i])) ini.Remove(stale[i]);
+
             ini.Put(KMode, ModeText(Mode));
             ini.Put(KLayout, LayoutText(Layout));
 

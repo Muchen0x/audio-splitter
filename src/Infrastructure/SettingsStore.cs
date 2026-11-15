@@ -64,6 +64,21 @@ namespace StereoSplitter.Infrastructure
             Put(key, value.ToString());
         }
 
+        /// <summary>删一个键 (值 + 顺序)。返回是否真的存在过。</summary>
+        public bool Remove(string key)
+        {
+            if (key == null) return false;
+            bool had = values.Remove(key);
+            if (had) order.Remove(key);
+            return had;
+        }
+
+        /// <summary>当前全部键的快照 (遍历中允许删除)。</summary>
+        public List<string> SnapshotKeys()
+        {
+            return new List<string>(order);
+        }
+
         public string GetStr(string key)
         {
             string s;
