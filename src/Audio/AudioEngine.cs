@@ -183,13 +183,14 @@ namespace StereoSplitter
                 log("[提示] 蓝牙端点使用 " + outLatencyMs + "ms 输出缓冲偏紧；若链路上偶发\"咔哒\"，把「延迟」档位调到 25ms/20ms 或更高");
 
             var outFormat = WaveFormat.CreateIeeeFloatWaveFormat(wf.SampleRate, 1);
-            // 时钟环稳态目标: 档位越小目标越低, 上限 110ms。
-            // 安全余量: 校正环稳态摆动 std 8ms (shared ratio 后更小) + 块锯齿 18ms = ±42ms 极端 (3σ)。
-            // 高档位 (pre/out >= 25ms) 用 +30: 极低 55ms 最低水位 13ms vs 阈值 8.25ms, 余 5ms。
-            // 低档位 (超低/极限) 保持 +40: 超低 55ms 同上; 极限 45ms 最低 3ms 接近阈值 6.75ms,
-            // 但极限档本标"频繁断音"且 starveStreak>=2 防抖过滤单次锯齿谷底。
-            int margin = (prebufferMs >= 25 || outLatencyMs >= 25) ? 30 : 40;
-            int driftTargetMs = Math.Min(110, Math.Max(prebufferMs, outLatencyMs) + margin);
+            // 时钟环稳态目标: 档位越小目标越低, 上限 100ms。
+            // 安全余量分三档: 校正环稳态摆动 std 8ms + 块锯齿 18ms = ±42ms 极端 (3σ)。
+            //   pre/out >= 50: +25 (标准/低延迟), 最低水位 33-58ms vs 阈值 11-15ms, 安全
+            //   pre/out >= 25: +30 (极低), 最低水位 13ms vs 阈值 8.25ms, 余 5ms
+            //   else:          +40 (超低/极限), 极限 45ms 最低 3ms 接近阈值 6.75ms
+            int margin = (prebufferMs >= 50 || outLatencyMs >= 50) ? 25 :
+                         (prebufferMs >= 25 || outLatencyMs >= 25) ? 30 : 40;
+            int driftTargetMs = Math.Min(100, Math.Max(prebufferMs, outLatencyMs) + margin);
             int driftTargetSamples = (int)((long)wf.SampleRate * driftTargetMs / 1000);
             // 起播填充目标 = 稳态目标 + 余量 (见 PrePullGuardMs 注释)
             int fillTargetMs = driftTargetMs + PrePullGuardMs;
