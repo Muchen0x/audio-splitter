@@ -93,6 +93,9 @@ namespace StereoSplitter
         public string DeviceId;
         public int OutChannels = 1;    // 该路实际使用几个物理声道 (1 ~ 端点声道数)
         public int DelayMs;
+        /// <summary>该路音量 (0~2, 1 = 原始电平)。乘进编译矩阵的每一格,
+        /// 不动 Windows 端点音量 —— 端点音量是共享的, 多路同设备时彼此会打架。</summary>
+        public float Volume = 1f;
         public string ClockGroupId = "";   // 空 = 独立组
         /// <summary>0 = 不建链路。停用只影响启动, 配置 (含绑定) 原样保留。</summary>
         public bool Enabled = true;
@@ -109,11 +112,21 @@ namespace StereoSplitter
         public SinkSpec Clone()
         {
             var s = new SinkSpec(Key, Label, DeviceId, OutChannels, DelayMs);
+            s.Volume = Volume;
             s.ClockGroupId = ClockGroupId;
             s.Enabled = Enabled;
             s.CachedName = CachedName;
             return s;
         }
+
+        /// <summary>音量夹到 [0,2]: ini 里手写的 999 或负数不该把矩阵推出量程。</summary>
+        public static float ClampVolume(float v)
+        {
+            if (v < 0f) return 0f;
+            if (v > 2f) return 2f;
+            return v;
+        }
+        public float EffectiveVolume { get { return ClampVolume(Volume); } }
     }
 
     /// <summary>编译产物: 每路一张 [outCh, srcCh] 矩阵, 运行时只读。</summary>
@@ -599,6 +612,13 @@ namespace StereoSplitter
             {
                 var s = sinks[i];
                 if (!s.Enabled) continue;
+                float vol = s.EffectiveVolume;
+                if (vol <= 0.001f)
+                {
+                    issues.Add(new RoutingIssue(IssueSev.Warn, s.Key,
+                        s.Label + " 的音量为 0，这一路会完全静音（可在设备行右侧把音量拉回来）"));
+                    continue;
+                }
                 for (int p = 0; p < s.OutChannels; p++)
                 {
                     float sum = 0f;
@@ -608,13 +628,14 @@ namespace StereoSplitter
                         if (bind.SinkKey != s.Key || bind.Phys != p) continue;
                         var ch = FindChannel(bind.ChannelKey);
                         if (ch == null || ch.Mute) continue;
-                        float g = bind.Gain * ch.Gain;
+                        float g = bind.Gain * ch.Gain * vol;
                         for (int t = 0; t < ch.Taps.Count; t++) sum += Math.Abs(g * ch.Taps[t].Gain);
                     }
                     if (sum > 1.01f)
                         issues.Add(new RoutingIssue(IssueSev.Info, s.Key,
-                            s.Label + " 的物理声道 " + p + " 峰值增益 " + sum.ToString("0.00") +
-                            "，大音量时会限幅（可在声道浮层把系数降到 " + (1f / sum).ToString("0.00") + " 以内）"));
+                            s.Label + " 的物理声道 " + (p + 1) + " 峰值增益 " + sum.ToString("0.00") +
+                            "，大音量时会限幅（把本路音量拉到 " + (int)(s.EffectiveVolume / sum * 100) +
+                            "% 以内，或在声道浮层把系数降到 " + (1f / sum).ToString("0.00") + " 以内）"));
                 }
             }
 
@@ -720,6 +741,7 @@ namespace StereoSplitter
                 r.SinkOutCh[s] = oc;
                 var m = new float[oc, Math.Max(1, srcCh)];
                 r.SinkMatrix[s] = m;
+                float vol = sinks[s].EffectiveVolume;
 
                 for (int b = 0; b < Bindings.Count; b++)
                 {
@@ -728,7 +750,7 @@ namespace StereoSplitter
                     if (bind.Phys < 0 || bind.Phys >= oc) continue;
                     var ch = FindChannel(bind.ChannelKey);
                     if (ch == null || ch.Mute) continue;
-                    float g = bind.Gain * ch.Gain;
+                    float g = bind.Gain * ch.Gain * vol;
                     for (int t = 0; t < ch.Taps.Count; t++)
                     {
                         var tap = ch.Taps[t];

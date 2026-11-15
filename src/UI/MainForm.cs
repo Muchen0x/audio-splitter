@@ -2132,6 +2132,8 @@ namespace StereoSplitter
                 for (int i = 0; i < sinkRows.Count; i++)
                 {
                     sinkRows[i].Changed -= OnSinkRowChanged;
+                    sinkRows[i].VolumeChanged -= OnSinkVolumeChanged;
+                    sinkRows[i].RoleClicked -= OnSinkRoleClicked;
                     sinkRows[i].RemoveRequested -= OnSinkRemoveRequested;
                     sinkFlow.Controls.Remove(sinkRows[i]);
                     sinkRows[i].Dispose();
@@ -2143,6 +2145,8 @@ namespace StereoSplitter
                     var spec = routing.SinkSpecs[i];
                     var row = new SinkRowControl(spec);
                     row.Changed += OnSinkRowChanged;
+                    row.VolumeChanged += OnSinkVolumeChanged;
+                    row.RoleClicked += OnSinkRoleClicked;
                     row.RemoveRequested += OnSinkRemoveRequested;
 
                     bool offline = !string.IsNullOrEmpty(spec.DeviceId) &&
@@ -2160,22 +2164,40 @@ namespace StereoSplitter
             RefreshSinkRoles();
         }
 
-        /// <summary>第二行文案: "承担 1 声道 · p0:左"，未接线时明确说"未接到任何声道"。</summary>
+        /// <summary>
+        /// 第二行文案: "占用 2 个物理声道: 左 → 声道1, 右 → 声道2"。
+        ///
+        /// 这里刻意不写内部的 "p0": 那是代码下标, 用户在 Windows 声音面板里看到的是
+        /// "左/右/中置" 和声道序号, 看到 p0 根本不知道对应哪一路。所以统一用
+        /// "声道1/声道2"(从 1 开始) 表示端点上的第几个物理声道。
+        /// </summary>
         void RefreshSinkRoles()
         {
             if (routing == null) return;
             for (int i = 0; i < sinkRows.Count && i < routing.SinkSpecs.Count; i++)
+                sinkRows[i].SetRole(SinkRoleText(routing.SinkSpecs[i]));
+        }
+
+        string SinkRoleText(SinkSpec spec)
+        {
+            int oc = Math.Max(1, spec.OutChannels);
+            var pairs = new List<string>();
+            int empty = 0;
+            for (int p = 0; p < oc; p++)
             {
-                var spec = routing.SinkSpecs[i];
-                int oc = Math.Max(1, spec.OutChannels);
-                var parts = new List<string>();
-                for (int p = 0; p < oc; p++)
-                {
-                    string who = ChannelNameAt(spec.Key, p);
-                    parts.Add("p" + p + ":" + (who == null ? "—" : who));
-                }
-                sinkRows[i].SetRole("承担 " + oc + " 声道 · " + string.Join(" ", parts.ToArray()));
+                string who = ChannelNameAt(spec.Key, p);
+                if (string.IsNullOrEmpty(who)) { empty++; continue; }
+                pairs.Add(who + " → 声道" + (p + 1));
             }
+            if (pairs.Count == 0) return "未接到任何声道（点这里选） ▾";
+
+            string body = pairs[0];
+            for (int i = 1; i < pairs.Count && i < 3; i++) body += "，" + pairs[i];
+            if (pairs.Count > 3) body += " 等 " + pairs.Count + " 个";
+
+            string head = "占用 " + oc + " 个物理声道: ";
+            if (empty > 0) body += "（" + empty + " 个声道空着）";
+            return head + body + "  ▾";
         }
 
         string ChannelNameAt(string sinkKey, int phys)
@@ -2225,12 +2247,111 @@ namespace StereoSplitter
             RefreshSinkRoles();
             UpdateStatusText();
             SaveSettings();
-            ApplyRoutingLive();
+            ApplyRoutingLive(false);
 
             // 换设备后端点声道数可能不同 → 刷新该行的可选声道数
             int idx = sinkRows.IndexOf(row);
             if (idx >= 0 && idx < routing.SinkSpecs.Count && catalog != null)
                 row.SetChannelLimit(catalog.EndpointChannels(routing.SinkSpecs[idx].DeviceId));
+        }
+
+        /// <summary>
+        /// 拖动音量滑条: 30ms 合并一次热应用 (矩阵里乘的就是这个增益), 不写日志。
+        /// 写 ini 由 SaveSettings 内部的 300ms 去抖负责, 松手时再走一次 OnSinkRowChanged 收尾。
+        /// </summary>
+        void OnSinkVolumeChanged(SinkRowControl row)
+        {
+            if (routing == null) return;
+            int now = Environment.TickCount;
+            if (lastEditTick != 0 && unchecked(now - lastEditTick) < 30) return;
+            lastEditTick = now;
+            ApplyRoutingLive(true);
+            SaveSettings();
+        }
+
+        // ---------------------------------------------------------------- 设备行: 声道分配
+
+        void OnSinkRoleClicked(SinkRowControl row) { ShowSinkChannelMenu(row); }
+
+        /// <summary>
+        /// 点设备行第二行 → "这台设备的每个物理声道放什么"。
+        /// 改的是绑定层 (ChannelBinding): 声道数在上行 [1ch▾] 改, 抽头/系数在声道卡片上改,
+        /// 三者各管一件事, 所以这里只做"哪个物理声道接哪个逻辑声道"。
+        /// </summary>
+        void ShowSinkChannelMenu(SinkRowControl row)
+        {
+            if (routing == null || row == null || row.Spec == null) return;
+            var spec = row.Spec;
+            int oc = Math.Max(1, spec.OutChannels);
+
+            var menu = new ContextMenuStrip();
+            menu.Items.Add(new ToolStripMenuItem("这台设备的每个物理声道放什么") { Enabled = false });
+            menu.Items.Add(new ToolStripSeparator());
+
+            for (int p = 0; p < oc; p++)
+            {
+                int phys = p;
+                string curKey = ChannelKeyAt(spec.Key, phys);
+                string curName = ChannelNameOfKey(curKey);
+                var item = new ToolStripMenuItem("声道" + (p + 1) + "：" + (curName == null ? "空着" : curName));
+
+                var empty = new ToolStripMenuItem("（空着，不出声）") { Checked = string.IsNullOrEmpty(curKey) };
+                empty.Click += delegate { SetSinkPhysChannel(spec.Key, phys, null); };
+                item.DropDownItems.Add(empty);
+                item.DropDownItems.Add(new ToolStripSeparator());
+
+                for (int c = 0; c < routing.Channels.Count; c++)
+                {
+                    var ch = routing.Channels[c];
+                    string ck = ch.Key;
+                    var mi = new ToolStripMenuItem(ch.Name) { Checked = ck == curKey };
+                    mi.Click += delegate { SetSinkPhysChannel(spec.Key, phys, ck); };
+                    item.DropDownItems.Add(mi);
+                }
+                menu.Items.Add(item);
+            }
+
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("用几个声道 → 上行 [1ch▾] 改；从哪来、几倍 → 点声道卡片") { Enabled = false });
+            menu.Show(row.RoleScreenAnchor);
+        }
+
+        /// <summary>把某台设备的某个物理声道改接到指定逻辑声道 (key 为空 = 断开)。</summary>
+        void SetSinkPhysChannel(string sinkKey, int phys, string channelKey)
+        {
+            if (routing == null) return;
+            string before = ChannelNameOfKey(ChannelKeyAt(sinkKey, phys));
+
+            routing.Bindings.RemoveAll(delegate(ChannelBinding b)
+            {
+                return b.SinkKey == sinkKey && b.Phys == phys;
+            });
+            if (!string.IsNullOrEmpty(channelKey) && routing.FindChannel(channelKey) != null)
+                routing.Bindings.Add(new ChannelBinding(channelKey, sinkKey, phys, 1f));
+
+            string after = ChannelNameOfKey(channelKey);
+            Log("[设备] " + SinkLabelOfKey(sinkKey) + " 的声道" + (phys + 1) + "：" +
+                (before == null ? "空着" : before) + " → " + (after == null ? "空着" : after));
+            OnRoutingEdited();
+        }
+
+        /// <summary>某台设备的某个物理声道当前接的逻辑声道 key (没接返回 null)。</summary>
+        string ChannelKeyAt(string sinkKey, int phys)
+        {
+            if (routing == null) return null;
+            for (int i = 0; i < routing.Bindings.Count; i++)
+            {
+                var b = routing.Bindings[i];
+                if (b.SinkKey == sinkKey && b.Phys == phys) return b.ChannelKey;
+            }
+            return null;
+        }
+
+        string ChannelNameOfKey(string key)
+        {
+            if (routing == null || string.IsNullOrEmpty(key)) return null;
+            var ch = routing.FindChannel(key);
+            return ch == null ? key : ch.Name;
         }
 
         void OnSinkRemoveRequested(SinkRowControl row)
@@ -2394,7 +2515,7 @@ namespace StereoSplitter
             int now = Environment.TickCount;
             if (lastEditTick != 0 && unchecked(now - lastEditTick) < 30) return;
             lastEditTick = now;
-            ApplyRoutingLive();
+            ApplyRoutingLive(false);
         }
 
         void OpenChannelEditor(int index)
@@ -2409,7 +2530,7 @@ namespace StereoSplitter
                 RefreshSinkRoles();
                 UpdateStatusText();
                 SaveSettings();
-                ApplyRoutingLive();
+                ApplyRoutingLive(false);
             }, delegate(string key)
             {
                 string id = SinkIdOfKey(key);
@@ -2421,12 +2542,14 @@ namespace StereoSplitter
         }
 
         /// <summary>运行中改绑定/增益: 重新 Compile 并原子替换每路矩阵, 不停链路、不断音。</summary>
-        void ApplyRoutingLive()
+        /// <param name="quiet">拖动音量滑条时用 true: 每 30ms 一次, 每次都记日志会刷屏。</param>
+        void ApplyRoutingLive(bool quiet)
         {
             if (!running || engine == null || routing == null) return;
             try
             {
-                if (engine.SetRouting(routing)) Log("[路由] 已热应用 (" + routing.DescribeConfig() + ")，链路未中断");
+                if (engine.SetRouting(routing) && !quiet)
+                    Log("[路由] 已热应用 (" + routing.DescribeConfig() + ")，链路未中断");
             }
             catch (Exception ex) { Log("[错误] 热应用路由失败: " + ex.Message); }
         }

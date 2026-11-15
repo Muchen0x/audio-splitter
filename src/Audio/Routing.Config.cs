@@ -162,6 +162,7 @@ namespace StereoSplitter
                     Math.Max(1, Math.Min(8, ini.GetInt(p + "Channels", 1))),
                     Math.Max(0, Math.Min(2000, ini.GetInt(p + "DelayMs", 0))));
                 s.Enabled = ini.GetInt(p + "Enabled", 1) != 0;
+                s.Volume = Math.Max(0, Math.Min(200, ini.GetInt(p + "Volume", 100))) / 100f;
                 s.ClockGroupId = Str(ini, p + "ClockGroup", "");
                 s.CachedName = Str(ini, p + "Name", "");
                 m.SinkSpecs.Add(s);
@@ -305,6 +306,7 @@ namespace StereoSplitter
                 ini.Put(p + "DelayMs", s.DelayMs.ToString(CultureInfo.InvariantCulture));
                 ini.Put(p + "ClockGroup", s.ClockGroupId ?? "");
                 ini.Put(p + "Channels", s.OutChannels.ToString(CultureInfo.InvariantCulture));
+                ini.Put(p + "Volume", ((int)Math.Round(s.EffectiveVolume * 100)).ToString(CultureInfo.InvariantCulture));
             }
         }
 
