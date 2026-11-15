@@ -18,6 +18,12 @@ namespace StereoSplitter
         internal const string MutexName = "StereoSplitter_GUI_SingleInstance";
         internal const string ActivateEventName = "Local\\StereoSplitter_Activate";
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool AllowSetForegroundWindow(int dwProcessId);
+
+        // ASFW_ANY: 把"允许抢前台"的许可发给本会话里的任意进程
+        const int ASFW_ANY = -1;
+
         [STAThread]
         static void Main()
         {
@@ -50,7 +56,11 @@ namespace StereoSplitter
             {
                 if (!createdNew)
                 {
-                    // 已有实例: 发激活通知后退出
+                    // 已有实例: 先把前台权限转授出去, 再发激活通知, 然后退出。
+                    // Windows 前台锁定只允许"当前前台进程"把窗口提到最前, 第二个实例此刻是前台,
+                    // 但如果只是 Set() 一下就退出, 许可会随进程消失 → 已有实例的 SetForegroundWindow
+                    // 被系统拒绝, 表现为任务栏按钮闪一下、窗口仍在后面。ASFW_ANY 把许可显式留在会话里。
+                    try { AllowSetForegroundWindow(ASFW_ANY); } catch { }
                     try
                     {
                         using (var evt = EventWaitHandle.OpenExisting(ActivateEventName))

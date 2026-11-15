@@ -58,6 +58,22 @@ namespace StereoSplitter
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern bool SetForegroundWindow(IntPtr hWnd);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool BringWindowToTop(IntPtr hWnd);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr GetForegroundWindow();
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr SetFocus(IntPtr hWnd);
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        static extern uint GetCurrentThreadId();
+
+        const int SW_RESTORE = 9;
 
         enum AppState { Ready, Starting, Running, Stopped, Failed }
         AppState state = AppState.Ready;
@@ -1130,8 +1146,40 @@ namespace StereoSplitter
             if (!ShowInTaskbar) ShowInTaskbar = true;
             if (!Visible) Show();
             if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+
+            IntPtr h = Handle;
+            ShowWindow(h, SW_RESTORE);
             Activate();
-            SetForegroundWindow(Handle);
+            if (GetForegroundWindow() == h) return;
+
+            // 前台锁定兜底: 正常路径由第二个实例 AllowSetForegroundWindow(ASFW_ANY) 转授许可,
+            // 但从托盘菜单/任务栏点进来时没有第二实例, 只能靠把自己的输入队列临时挂到当前前台
+            // 线程上 —— 共享输入队列后本线程就"继承"了前台资格, SetForegroundWindow 才会生效。
+            uint fgPid;
+            uint fgThread = GetWindowThreadProcessId(GetForegroundWindow(), out fgPid);
+            uint myThread = GetCurrentThreadId();
+            bool attached = false;
+            try
+            {
+                if (fgThread != 0 && fgThread != myThread)
+                    attached = AttachThreadInput(myThread, fgThread, true);
+                BringWindowToTop(h);
+                SetForegroundWindow(h);
+                SetFocus(h);
+            }
+            catch { }
+            finally
+            {
+                if (attached) { try { AttachThreadInput(myThread, fgThread, false); } catch { } }
+            }
+
+            if (GetForegroundWindow() != h)
+            {
+                // 最后兜底: 前台许可被彻底拒绝 (组策略/别的进程持续抢前台) 时短暂置顶再放开
+                TopMost = true;
+                TopMost = false;
+                Activate();
+            }
         }
 
         void RegisterActivateHandler()
