@@ -17,6 +17,7 @@ namespace StereoSplitter
     {
         NoWheelComboBox cmbLeft, cmbRight, cmbDefault, cmbLatency;
         NumericUpDown nudDelayL, nudDelayR;
+        NumericUpDown nudCapDelay;   // 捕获端统一延迟: 与左右延迟叠加, 左右各自再叠加自己的补偿值
         NumericUpDown nudWaterInterval;
         static readonly int[][] LatencyProfiles = new int[][] {
             new int[] { 100, 50 },
@@ -114,8 +115,8 @@ namespace StereoSplitter
         public MainForm()
         {
             Text = "Stereo Splitter - 双声道分流";
-            Size = new Size(530, 486);
-            MinimumSize = new Size(530, 486);
+            Size = new Size(610, 486);
+            MinimumSize = new Size(610, 486);
             Font = new Font("Microsoft YaHei UI", 9F);
 
             // 上下可拖动面板: 内容区 | 6px灰分隔条 | 日志区 (参照 tk.PanedWindow)
@@ -141,8 +142,11 @@ namespace StereoSplitter
 
             var lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
             cmbDefault = new NoWheelComboBox { Location = new Point(110, 12), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
-            chkMuteCapture = new CheckBox { Text = "消音", Location = new Point(363, 14), AutoSize = true };
-            btnRefresh = new Button { Text = "刷新设备", Location = new Point(417, 11), Width = 72, Height = 23 };
+            var lblDCap = new Label { Text = "延迟", Location = new Point(370, 15), AutoSize = true };
+            nudCapDelay = new NumericUpDown { Location = new Point(402, 12), Width = 60, Minimum = 0, Maximum = 2000 };
+            var lblMsCap = new Label { Text = "ms", Location = new Point(465, 15), AutoSize = true };
+            chkMuteCapture = new CheckBox { Text = "消音", Location = new Point(488, 14), AutoSize = true };
+            btnRefresh = new Button { Text = "刷新设备", Location = new Point(528, 11), Width = 64, Height = 23 };
 
             var lblL = new Label { Text = "左声道设备:", Location = new Point(15, 45), AutoSize = true };
             cmbLeft = new NoWheelComboBox { Location = new Point(110, 42), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -157,49 +161,49 @@ namespace StereoSplitter
             var lblMsR = new Label { Text = "ms", Location = new Point(465, 75), AutoSize = true };
 
             var lblVL = new Label { Text = "左音量:", Location = new Point(15, 145), AutoSize = true };
-            volLeft = new TrackBar { Location = new Point(80, 140), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
-            lblVolLeft = new Label { Text = "100%", Location = new Point(390, 145), AutoSize = true };
-            chkMuteL = new CheckBox { Text = "静音", Location = new Point(435, 144), AutoSize = true };
+            volLeft = new TrackBar { Location = new Point(80, 140), Width = 380, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
+            lblVolLeft = new Label { Text = "100%", Location = new Point(470, 145), AutoSize = true };
+            chkMuteL = new CheckBox { Text = "静音", Location = new Point(515, 144), AutoSize = true };
 
             var lblVR = new Label { Text = "右音量:", Location = new Point(15, 180), AutoSize = true };
-            volRight = new TrackBar { Location = new Point(80, 175), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
-            lblVolRight = new Label { Text = "100%", Location = new Point(390, 180), AutoSize = true };
-            chkMuteR = new CheckBox { Text = "静音", Location = new Point(435, 179), AutoSize = true };
+            volRight = new TrackBar { Location = new Point(80, 175), Width = 380, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
+            lblVolRight = new Label { Text = "100%", Location = new Point(470, 180), AutoSize = true };
+            chkMuteR = new CheckBox { Text = "静音", Location = new Point(515, 179), AutoSize = true };
 
             var lblVM = new Label { Text = "主音量:", Location = new Point(15, 215), AutoSize = true };
-            volMaster = new TrackBar { Location = new Point(80, 210), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
-            lblVolMaster = new Label { Text = "100%", Location = new Point(390, 215), AutoSize = true };
-            chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(435, 214), AutoSize = true };
+            volMaster = new TrackBar { Location = new Point(80, 210), Width = 380, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
+            lblVolMaster = new Label { Text = "100%", Location = new Point(470, 215), AutoSize = true };
+            chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(515, 214), AutoSize = true };
 
             var lblG = new Label { Text = "增益:", Location = new Point(15, 250), AutoSize = true };
-            volGain = new TrackBar { Location = new Point(80, 245), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 300, Value = 100, TickFrequency = 10 };
-            lblVolGain = new Label { Text = "100%", Location = new Point(390, 250), AutoSize = true };
+            volGain = new TrackBar { Location = new Point(80, 245), Width = 380, Height = 34, AutoSize = false, Minimum = 0, Maximum = 300, Value = 100, TickFrequency = 10 };
+            lblVolGain = new Label { Text = "100%", Location = new Point(470, 250), AutoSize = true };
 
-            btnStart = new Button { Text = "开始分流", Location = new Point(190, 285), Width = 130, Height = 35 };
+            btnStart = new Button { Text = "开始分流", Location = new Point(232, 285), Width = 130, Height = 35 };
 
             lblDot = new Label { Text = "●", Location = new Point(17, 290), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
             lblStatus = new Label { Text = "状态: 就绪", Location = new Point(37, 295), AutoSize = true, ForeColor = Color.Gray };
 
             var lblLatency = new Label { Text = "启动延迟:", Location = new Point(15, 108), AutoSize = true };
-            cmbLatency = new NoWheelComboBox { Location = new Point(85, 105), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbLatency = new NoWheelComboBox { Location = new Point(85, 105), Width = 260, DropDownStyle = ComboBoxStyle.DropDownList };
             cmbLatency.Items.AddRange(new object[] { "标准 (预缓冲100ms)", "低延迟 (50ms)", "极低 (25ms, 可能断音)", "超低 (15ms, 断音增多)", "极限 (5ms, 频繁断音)" });
             cmbLatency.SelectedIndex = 0;
 
-            chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(290, 107), AutoSize = true };
+            chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(350, 107), AutoSize = true };
             chkDrift = new CheckBox { Text = "校正", AutoSize = true, Checked = true };
             chkDrift.Location = new Point(chkMinimizeToTray.Right + 8, chkMinimizeToTray.Top);
 
             // 水位监控组: 日志面板标题行右侧, 清除日志按钮左边 (间隔0=关闭监控)
-            var lblWater = new Label { Text = "水位监控:", Location = new Point(209, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            var lblWaterIv = new Label { Text = "间隔", Location = new Point(275, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            nudWaterInterval = new NoWheelNumeric { Location = new Point(313, 5), Width = 60, Minimum = 0, Maximum = 3600, Value = 30, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            var lblWaterSec = new Label { Text = "秒", Location = new Point(377, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            var lblWater = new Label { Text = "水位监控:", Location = new Point(289, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            var lblWaterIv = new Label { Text = "间隔", Location = new Point(355, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            nudWaterInterval = new NoWheelNumeric { Location = new Point(393, 5), Width = 60, Minimum = 0, Maximum = 3600, Value = 30, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            var lblWaterSec = new Label { Text = "秒", Location = new Point(457, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
 
             var lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true, Font = new Font("Microsoft YaHei UI", 10F) };
             btnClearLog = new Button
             {
                 Text = "清除日志",
-                Location = new Point(405, 4),
+                Location = new Point(485, 4),
                 Width = 85,
                 Height = 22,
                 Anchor = AnchorStyles.Top | AnchorStyles.Right
@@ -223,7 +227,7 @@ namespace StereoSplitter
             cmsLog.Items.Add("全选", null, (s, e) => txtLog.SelectAll());
             txtLog.ContextMenuStrip = cmsLog;
 
-            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblL, cmbLeft, lblDL, nudDelayL, lblMsL, lblR, cmbRight, lblDR, nudDelayR, lblMsR, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, lblDCap, nudCapDelay, lblMsCap, chkMuteCapture, btnRefresh, lblL, cmbLeft, lblDL, nudDelayL, lblMsL, lblR, cmbRight, lblDR, nudDelayR, lblMsR, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
 
             btnStart.Click += BtnStart_Click;
@@ -252,6 +256,7 @@ namespace StereoSplitter
             cmbLatency.SelectedIndexChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudDelayL.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudDelayR.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
+            nudCapDelay.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudWaterInterval.ValueChanged += (s, e) =>
             {
                 int v = (int)nudWaterInterval.Value;
@@ -397,6 +402,7 @@ namespace StereoSplitter
             cmbLatency.Enabled = !busy && !run;
             nudDelayL.Enabled = !busy && !run;
             nudDelayR.Enabled = !busy && !run;
+            nudCapDelay.Enabled = !busy && !run;
             nudWaterInterval.Enabled = !busy;
             btnStart.Enabled = !busy;
 
@@ -928,6 +934,7 @@ namespace StereoSplitter
             cmbLatency.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("LatencyProfile", 0)));
             nudDelayL.Value = Math.Max(0, Math.Min(2000, GetInt("DelayLeft", 0)));
             nudDelayR.Value = Math.Max(0, Math.Min(2000, GetInt("DelayRight", 0)));
+            nudCapDelay.Value = Math.Max(0, Math.Min(2000, GetInt("DelayCapture", 0)));
             int wi = GetInt("WaterIntervalSec", 30);
             if (wi != 0) wi = Math.Max(5, Math.Min(3600, wi)); // 0=关闭, 1-4 按 5 秒
             nudWaterInterval.Value = wi;
@@ -999,6 +1006,7 @@ namespace StereoSplitter
                 settings.Put("LatencyProfile", Math.Max(0, cmbLatency.SelectedIndex).ToString());
                 settings.Put("DelayLeft", ((int)nudDelayL.Value).ToString());
                 settings.Put("DelayRight", ((int)nudDelayR.Value).ToString());
+                settings.Put("DelayCapture", ((int)nudCapDelay.Value).ToString());
                 settings.Put("WaterIntervalSec", ((int)nudWaterInterval.Value).ToString());
                 settings.Put("Gain", volGain.Value.ToString());
                 settings.Put("DeviceLeft", DeviceIdAt(cmbLeft.SelectedIndex));
@@ -1094,7 +1102,8 @@ namespace StereoSplitter
                     " 左=" + volLeft.Value + "%/" + (chkMuteL.Checked ? "静音" : "开") +
                     " 右=" + volRight.Value + "%/" + (chkMuteR.Checked ? "静音" : "开") +
                     " 增益=" + volGain.Value + "%" +
-                    (chkMuteCapture.Checked ? " 捕获消音=开" : ""));
+                    (chkMuteCapture.Checked ? " 捕获消音=开" : "") +
+                    (nudCapDelay.Value > 0 ? " 捕获延迟=" + nudCapDelay.Value + "ms" : ""));
         }
 
         // ==================== 托盘与单实例激活 ====================
@@ -1381,7 +1390,7 @@ namespace StereoSplitter
         // 启动参数快照: 引擎 Start 在后台线程跑, UI 值必须先在本线程拷出来
         class StartParams
         {
-            public int PreMs, OutMs, DlyL, DlyR, GainPct, Mode, FixedPpm;
+            public int PreMs, OutMs, DlyL, DlyR, GainPct, Mode, FixedPpm, CapMs;
             public float Gain, Master;
         }
 
@@ -1394,6 +1403,7 @@ namespace StereoSplitter
                 OutMs = LatencyProfiles[prof][1],
                 DlyL = (int)nudDelayL.Value,
                 DlyR = (int)nudDelayR.Value,
+                CapMs = (int)nudCapDelay.Value,
                 Gain = pendingGain,
                 Master = CurrentMaster(),
                 GainPct = (int)Math.Round(pendingGain * 100),
@@ -1414,7 +1424,7 @@ namespace StereoSplitter
                 {
                     if (startAbort) throw new OperationCanceledException("启动已取消");
                     eng = new AudioEngine(leftId, rightId, Log, p.Mode, p.FixedPpm);
-                    AudioEngine.StartOutcome outcome = eng.Start(p.Gain, p.Master, p.PreMs, p.OutMs, p.DlyL, p.DlyR,
+                    AudioEngine.StartOutcome outcome = eng.Start(p.Gain, p.Master, p.PreMs, p.OutMs, p.DlyL, p.DlyR, p.CapMs,
                         delegate { return startAbort; }, expectCap);
 
                     if (exiting || IsDisposed || !IsHandleCreated)

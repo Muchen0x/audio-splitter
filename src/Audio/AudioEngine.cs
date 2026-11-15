@@ -169,7 +169,7 @@ namespace StereoSplitter
         }
 
         public StartOutcome Start(float gain, float master, int prebufferMs, int outLatencyMs, int leftDelayMs, int rightDelayMs,
-            Func<bool> aborted, string expectedCaptureId)
+            int capDelayMs, Func<bool> aborted, string expectedCaptureId)
         {
             // 三个 MMDevice 都在本线程创建: 跨线程使用 UI 线程创建的 MMDevice 会 QI IMMDevice 失败 E_NOINTERFACE (NAudio #214)
             var enumerator = new MMDeviceEnumerator();
@@ -243,10 +243,15 @@ namespace StereoSplitter
 
             // 左右独立延迟线: 输入是交错多声道原始数据 → 按 blockAlign(帧) 算目标字节并天然对齐
             // (旧算法按 mono float 4字节算 → 延迟减半; &~3 未对齐帧 → 44100Hz 等场景字节错位出破音)
+            // 捕获延迟 capDelayMs 叠加到两侧: 它在分叉点之前生效, 语义上等于"捕获端统一延迟",
+            // 与左右各自的声像补偿值是纯相加关系 → 左右必然同步增加 capDelayMs, 相对差值不变。
             int blockAlign = Math.Max(1, wf.BlockAlign);
-            leftLine = new DelayLine((int)Math.Min(int.MaxValue, (long)wf.SampleRate * leftDelayMs / 1000) * blockAlign,
+            int capMs = Math.Max(0, Math.Min(2000, capDelayMs));
+            int leftTotalMs = leftDelayMs + capMs;
+            int rightTotalMs = rightDelayMs + capMs;
+            leftLine = new DelayLine((int)Math.Min(int.MaxValue, (long)wf.SampleRate * leftTotalMs / 1000) * blockAlign,
                 (buf, off, len) => Split(buf, off, len, 0, leftBuf));
-            rightLine = new DelayLine((int)Math.Min(int.MaxValue, (long)wf.SampleRate * rightDelayMs / 1000) * blockAlign,
+            rightLine = new DelayLine((int)Math.Min(int.MaxValue, (long)wf.SampleRate * rightTotalMs / 1000) * blockAlign,
                 (buf, off, len) => Split(buf, off, len, 1, rightBuf));
 
             dataReady = new AutoResetEvent(false);
@@ -285,7 +290,7 @@ namespace StereoSplitter
             int fillBytes = fillTargetSamples * 4;
             int targetMs = driftTargetSamples * 1000 / wf.SampleRate;
             // 等待上限随填充目标与延迟补偿动态放宽 (延迟 2000ms 时固定 2s 会超时)
-            int maxWaitMs = fillTargetMs + Math.Max(leftDelayMs, rightDelayMs) + 1000;
+            int maxWaitMs = fillTargetMs + Math.Max(leftTotalMs, rightTotalMs) + 1000;
             int waitStart = Environment.TickCount;
             while (leftBuf.BufferedBytes < fillBytes || rightBuf.BufferedBytes < fillBytes)
             {
@@ -327,8 +332,9 @@ namespace StereoSplitter
 
             silentStartup = (outcome == StartOutcome.NoAudioYet);
             log("[启动] 时钟漂移补偿: " + (driftMode == 0 ? "关闭" : driftMode == 2 ? "固定 " + fixedPpm + "ppm" : "自适应") + ", 比例上限 ±0.50%");
-            if (leftDelayMs > 0 || rightDelayMs > 0)
-                log("[启动] 延迟补偿: 左=" + leftDelayMs + "ms 右=" + rightDelayMs + "ms");
+            if (leftDelayMs > 0 || rightDelayMs > 0 || capMs > 0)
+                log("[启动] 延迟补偿: 捕获=" + capMs + "ms 左=" + leftDelayMs + "ms 右=" + rightDelayMs +
+                    "ms (合计 左=" + leftTotalMs + "ms 右=" + rightTotalMs + "ms)");
 
             if (aborted != null && aborted()) throw new OperationCanceledException("启动已取消");
 
