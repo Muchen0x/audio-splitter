@@ -17,26 +17,9 @@ namespace StereoSplitter
     {
         const int RingSize = 64;
         const int UpdateSamples = 1024;
-        // 增益调度: 本环是"积分型对象 + 速率扰动", 时间常数 τ = T/(Cin*Kp)。
-        // Kp=0.004 时 τ=23.75s、穿越频率 0.0067Hz, 而蓝牙设备时钟漂移的时间尺度是 40–60s,
-        // 环与扰动同速 → 压不掉 (实测稳态摆动 std 8.1ms、均值偏差 +3.9ms)。
-        // 原参数相位裕度尚有 85°, 提到 0.02 后 τ=4.7s、穿越 0.031Hz, PM 仍有 67°。
-        // 排空段 (起播 195→95ms, 误差 >100%) 必须留在原增益, 否则会顶到 ±0.5% 限幅、
-        // 音高滑移变陡; 故按误差分两段, 切换带滞回 + 约 400ms 斜坡, 避免校正值跳变。
-        const double KpSteady = 0.02;
-        const double KpFill = 0.004;
-        const double GainEnterErr = 0.20;   // 误差降到 20% 以下 → 切稳态增益
-        const double GainExitErr = 0.50;    // 误差回升到 50% 以上 → 退回填充增益
-        // 兜底切换: 只用"误差<20%"判会死锁 —— 低增益下的稳态误差 = 速率差/KpFill,
-        // 速率差 1500ppm 时稳态误差就是 37%, 永远够不到阈值, 环卡在低增益上, 偏移一直是 37ms。
-        // 排空段最长约 100s (0.2% 速率下降 100ms), 128s 后必然结束, 故加一个时间兜底。
-        const int SwitchAfterUpdates = 6000;   // 6000 × 1024 / 48k ≈ 128s
-        const double MaxRatio = 0.005;
-        // 补水位闸门的进入阈值(占目标的比例)。健康会话的瞬时水位会在 22–36ms 徘徊(块粒度锯齿),
+        // 补水位闸门的进入阈值(占目标的比例)。健康会话的瞬时水位会在 22-36ms 徘徊(块粒度锯齿),
         // 阈值必须压到它以下; 真断流时水位只剩小环里那 1ms, 任何合理阈值都能在一个块内触发。
         const double GateEnterRatio = 0.15;
-        // 触顶判定窗口: 500 次更新 ≈ 10.7s (48kHz / 1024)
-        const int ClampWarnUpdates = 500;
         // 同类异常事件限流: 采样线程上每 1024 样本就评估一次, 不限流会刷屏
         const int WarnIntervalMs = 60000;
 
@@ -44,6 +27,8 @@ namespace StereoSplitter
         readonly int targetSamples;
         readonly Action<string> log;
         readonly string tag;   // 声道标识: 左右两路会报出内容相同的告警, 不带标识分不清是哪路
+        readonly bool isLeft;                    // 标识本侧是左还是右, 传给 shared 区分 err 写入
+        readonly DriftCorrectionShared shared;   // 左右共享的校正决策 (ratio/fastGain/kpNow)
         volatile int mode;          // 1=自适应 0=关闭 2=固定比例
         double fixedRatio;
         readonly byte[] tmp = new byte[RingSize * 4];
@@ -56,10 +41,6 @@ namespace StereoSplitter
         double smoothedTotal;
         // 供状态日志读的"调节水位": smoothedTotal 是 double 不能 volatile, 单独存毫秒整数
         volatile int smoothedMs;
-        // 增益调度当前状态 + 斜坡后的实际 Kp (避免切换瞬间 ratio 阶跃 → 音高跳变)
-        bool fastGain;
-        double kpNow = KpFill;
-        int updates;                // UpdateRatio 累计次数 (兜底切换用)
         int updateCounter;
         int minTotalSinceStatus = int.MaxValue;
         // 长整型: 静音整夜(48000/s)约 12.4 小时就会把 int 顶成负数, 欠载统计从此静默失效
@@ -78,12 +59,9 @@ namespace StereoSplitter
         // 实测一次 0.8 秒的捕获断流会变成 7–10 秒的低水位/断音, 而暂停补满只要约 100ms。
         bool holding;
         int starveStreak;           // 连续处于"水位极低"的次数, 用于滤掉单次采样的锯齿谷底
-        // 事件型诊断: 水位过低 / 校正触顶 (限流 + 恢复补记)
+        // 事件型诊断: 水位过低 (限流 + 恢复补记); 校正触顶诊断已搬到 shared
         bool lowWarned;
         int lastLowWarnTick;
-        int clampStreak;
-        double clampStartTotal;     // 本轮触顶开始时的水位 (判断"到底有没有在回升")
-        int lastClampWarnTick;
         // 输出线程活性计数: 只在采样线程自增, UI 线程读取 (64 位进程读 long 不会撕裂)。
         // 冻结即代表 WasapiOut 不再调用 Read → 输出端停摆, 比看水位可靠。
         long renderedSamples;
@@ -95,11 +73,14 @@ namespace StereoSplitter
         double maxGapMs, maxDurMs;
         int lastTimingWarnTick;
 
-        public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples, int mode, int fixedPpm, Action<string> log, string tag)
+        public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples, int mode, int fixedPpm,
+            Action<string> log, string tag, bool isLeft, DriftCorrectionShared shared)
         {
             this.src = src;
             this.log = log;
             this.tag = tag;
+            this.isLeft = isLeft;
+            this.shared = shared;
             this.targetSamples = Math.Max(1, targetSamples);
             this.mode = mode;
             this.smoothedTotal = this.targetSamples;
@@ -133,12 +114,10 @@ namespace StereoSplitter
             }
             else
             {
-                // 切回自适应时只复位调度状态(fastGain/kpNow), 不重置 smoothedTotal:
-                // 关闭期间 UpdateRatio 仍在跟踪实际水位, smoothedTotal 是准的;
-                // 重置成 targetSamples 会让控制器"假装水位正常"约 1.5 秒不排水,
-                // 在水位已堆积(如 240ms)时会导致继续涨到 400ms 才开始排。
-                fastGain = false;
-                kpNow = KpFill;
+                // 切回自适应(mode==1)时不重置 smoothedTotal: 关闭期间 UpdateRatio 仍在跟踪
+                // 实际水位, smoothedTotal 是准的; 重置成 targetSamples 会让控制器"假装水位正常"
+                // 约 1.5 秒不排水, 在水位已堆积(如 240ms)时会导致继续涨到 400ms 才开始排。
+                // fastGain/kpNow 在 shared 里, 共享状态保持连续, 不需要重置。
             }
             mode = newMode;
         }
@@ -158,7 +137,14 @@ namespace StereoSplitter
             }
         }
 
-        public double RatioPpm { get { return ((double)ratio - 1.0) * 1e6; } }
+        public double RatioPpm
+        {
+            get
+            {
+                if (shared != null && mode == 1) return shared.RatioPpm;
+                return ((double)ratio - 1.0) * 1e6;
+            }
+        }
 
         /// <summary>调节水位: 校正环实际调节的那个量 (2.1s 低通后的水位)。
         /// 与 BufferedMs 的区别: 后者是瞬时值, 含 WASAPI 回调块粒度造成的 ±18ms 锯齿,
@@ -342,53 +328,19 @@ namespace StereoSplitter
 
             if (mode != 1) return;
 
-            double err = (smoothedTotal - targetSamples) / targetSamples;
-
-            // 增益调度: 排空段(大误差)保持填充增益, 进入稳态段后换高增益
-            // 时间兜底防止"低增益稳态误差恰好高于切换阈值"时永远切不过去
-            updates++;
-            if (!fastGain && (Math.Abs(err) < GainEnterErr || updates > SwitchAfterUpdates)) fastGain = true;
-            else if (fastGain && Math.Abs(err) > GainExitErr) fastGain = false;
-            double kpTarget = fastGain ? KpSteady : KpFill;
-            kpNow += (kpTarget - kpNow) * 0.02;   // 约 1 秒过渡, 避免 ratio 阶跃导致音高跳变
-
-            double r = 1.0 + kpNow * err;
-            double lo = 1.0 - MaxRatio;
-            double hi = 1.0 + MaxRatio;
-            bool clamped = (r < lo) || (r > hi);
-            if (r < lo) r = lo;
-            else if (r > hi) r = hi;
-            ratio = (float)r;
-
-            // 事件型诊断②: 触顶 ≠ 故障。缓冲被抽空(捕获源短暂断流、设备切换)后, 环必须以 -0.5%
-            // 全速回补, 这段一定会触顶且水位很低 —— 用"触顶 1 秒"判会把每次回补都误报成速率失配
-            // (实测 21:53:56 就是这种情况: 默认输出被切走 1 秒, 水位掉到 0, 环在回补)。
-            // 真正的失配是: 触顶持续 10 秒以上, 且这 10 秒里水位几乎没有回升。
-            // 只报"负向触顶": 正向触顶是在排多余的水, 属自愈状态, 起播排空段因此也不会误报。
-            if (clamped && fastGain && err < 0)
+            // 校正决策委托给 shared: err 取左右平均, ratio / fastGain / kpNow 全部共享,
+            // 左右插值方向始终一致 -> 消除稳态偏音。
+            // 副作用: 左右水位反向偏移 (dL-dR)*target/(2*Kp), 同型号 USB 音箱约 0.25ms。
+            if (shared != null)
             {
-                if (clampStreak == 0) clampStartTotal = smoothedTotal;
-                clampStreak++;
-                if (clampStreak >= ClampWarnUpdates)
-                {
-                    bool recovering = smoothedTotal - clampStartTotal > targetSamples * 0.1;
-                    clampStreak = 0;   // 每 10 秒一个独立窗口
-                    if (!recovering && WarnAllowed(ref lastClampWarnTick))
-                        Report("[警告] 时钟校正已触顶 " + PpmOf(r) + " 超过 10 秒且水位未回升 (调节水位 " +
-                            smoothedMs + "ms / 目标 " + MsOf(targetSamples, sr) + "ms)，两设备速率差超出可修正范围");
-                }
+                shared.Update(isLeft, smoothedTotal);
+                ratio = shared.Ratio;
             }
-            else clampStreak = 0;
         }
 
         static int MsOf(double samples, int sr)
         {
             return sr > 0 ? (int)(samples * 1000 / sr) : 0;
-        }
-
-        static string PpmOf(double r)
-        {
-            return ((r - 1.0) * 1e6).ToString("+0;-0;0") + "ppm";
         }
 
         bool WarnAllowed(ref int lastTick)

@@ -194,8 +194,11 @@ namespace StereoSplitter
 
             leftOut = new WasapiOut(leftDev, AudioClientShareMode.Shared, true, outLatencyMs);
             rightOut = new WasapiOut(rightDev, AudioClientShareMode.Shared, true, outLatencyMs);
-            leftProvider = new DriftCorrectingProvider(leftBuf, driftTargetSamples, driftMode, fixedPpm, LogThrottled, "左");
-            rightProvider = new DriftCorrectingProvider(rightBuf, driftTargetSamples, driftMode, fixedPpm, LogThrottled, "右");
+            // 共享校正决策: 左右 provider 通过同一个 DriftCorrectionShared 协调 ratio,
+            // 消除"独立算 ratio -> 插值方向不对称 -> 偏音"的根因
+            var shared = new DriftCorrectionShared(driftTargetSamples, wf.SampleRate, LogThrottled);
+            leftProvider = new DriftCorrectingProvider(leftBuf, driftTargetSamples, driftMode, fixedPpm, LogThrottled, "左", true, shared);
+            rightProvider = new DriftCorrectingProvider(rightBuf, driftTargetSamples, driftMode, fixedPpm, LogThrottled, "右", false, shared);
             // Play 之前设好增益/主音量, 否则首帧以满音量(1.0)出声造成跳变
             leftProvider.Gain = gain;
             rightProvider.Gain = gain;
