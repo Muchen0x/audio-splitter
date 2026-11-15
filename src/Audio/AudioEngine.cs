@@ -147,7 +147,7 @@ namespace StereoSplitter
         }
 
         public StartOutcome Start(float gain, float master, int prebufferMs, int outLatencyMs, int leftDelayMs, int rightDelayMs,
-            Func<bool> aborted, string expectedCaptureId)
+            Func<bool> aborted, string expectedCaptureId, bool exclusive)
         {
             // 三个 MMDevice 都在本线程创建: 跨线程使用 UI 线程创建的 MMDevice 会 QI IMMDevice 失败 E_NOINTERFACE (NAudio #214)
             var enumerator = new MMDeviceEnumerator();
@@ -198,8 +198,13 @@ namespace StereoSplitter
             leftBuf = new BufferedWaveProvider(outFormat) { BufferDuration = TimeSpan.FromMilliseconds(1000), DiscardOnBufferOverflow = true };
             rightBuf = new BufferedWaveProvider(outFormat) { BufferDuration = TimeSpan.FromMilliseconds(1000), DiscardOnBufferOverflow = true };
 
-            leftOut = new WasapiOut(leftDev, AudioClientShareMode.Shared, true, outLatencyMs);
-            rightOut = new WasapiOut(rightDev, AudioClientShareMode.Shared, true, outLatencyMs);
+            // 独占模式: 设备缓冲由本程序独占, 其他程序无法播放到这两个设备。
+            // 延迟可更低 (设备侧不再与混音器共享周期), 但要求设备支持且当前未被占用。
+            var shareMode = exclusive ? AudioClientShareMode.Exclusive : AudioClientShareMode.Shared;
+            if (exclusive)
+                log("[启动] 输出模式: 独占 (设备将被独占, 其他程序无法播放到这两个设备)");
+            leftOut = new WasapiOut(leftDev, shareMode, true, outLatencyMs);
+            rightOut = new WasapiOut(rightDev, shareMode, true, outLatencyMs);
             // 共享校正决策: 左右 provider 通过同一个 DriftCorrectionShared 协调 ratio,
             // 消除"独立算 ratio -> 插值方向不对称 -> 偏音"的根因
             var shared = new DriftCorrectionShared(driftTargetSamples, wf.SampleRate, LogThrottled);
