@@ -367,9 +367,12 @@ namespace StereoSplitter
                 int minR = rightProvider.TakeMinBufferedMs();
                 // 调节水位在前: 它是校正环真正稳定的量, 也是判断是否需要扩缓冲的依据。
                 // 瞬时值紧随其后: 含块粒度锯齿, 只用于看单次回调的抖动幅度。
-                string s = "调节 L=" + leftProvider.RegulatedMs + "ms R=" + rightProvider.RegulatedMs + "ms" +
+                // 校正只显示一个值: shared ratio 后左右必然相等。
+                // 水位差: shared ratio 的副作用指标, 同型号 USB 音箱应 < 5ms。
+                int regL = leftProvider.RegulatedMs, regR = rightProvider.RegulatedMs;
+                string s = "调节 L=" + regL + "ms R=" + regR + "ms 差=" + (regL - regR) + "ms" +
                     " 瞬时 L=" + leftProvider.BufferedMs + "ms R=" + rightProvider.BufferedMs + "ms" +
-                    " 校正 L=" + Ppm(leftProvider.RatioPpm) + " R=" + Ppm(rightProvider.RatioPpm) +
+                    " 校正=" + Ppm(leftProvider.RatioPpm) +
                     " 最低 L=" + minL + "ms R=" + minR + "ms";
                 long ul = leftProvider.UnderrunSamples, ur = rightProvider.UnderrunSamples;
                 if (ul > 0 || ur > 0) s += " 欠载 L=" + ul + " R=" + ur;
