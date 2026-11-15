@@ -35,6 +35,27 @@ namespace StereoSplitter
         // 输出缓冲溢出告警限流 (DiscardOnBufferOverflow 会静默丢块, 不记就等于丢音无迹可查)
         int lastOverflowWarnTick;
 
+        // 捕获端固定开销估算 (WASAPI loopback 自身缓冲), 只用于界面选项与启动日志里的"总预估"
+        internal const int CaptureLatencyEstimateMs = 10;
+
+        // 时钟环稳态目标 (ms): 档位越小目标越低, 上限 100ms。
+        // 安全余量分三档: 校正环稳态摆动 std 8ms + 块锯齿 18ms = ±42ms 极端 (3σ)。
+        //   pre/out >= 50: +25 (标准/低延迟), 最低水位 33-58ms vs 阈值 11-15ms, 安全
+        //   pre/out >= 25: +30 (极低), 最低水位 13ms vs 阈值 8.25ms, 余 5ms
+        //   else:          +40 (超低/极限), 极限 45ms 最低 3ms 接近阈值 6.75ms
+        public static int DriftTargetMs(int preMs, int outMs)
+        {
+            int margin = (preMs >= 50 || outMs >= 50) ? 25 :
+                         (preMs >= 25 || outMs >= 25) ? 30 : 40;
+            return Math.Min(100, Math.Max(preMs, outMs) + margin);
+        }
+
+        // 界面/日志用的"总预估延迟" = 捕获 + 内部缓冲目标 + 输出缓冲, 不含 USB/DAC/声波
+        public static int EstimatedTotalMs(int preMs, int outMs)
+        {
+            return CaptureLatencyEstimateMs + DriftTargetMs(preMs, outMs) + outMs;
+        }
+
         // ---- 告警去重: 左右两路 provider 各自限流, 同一现象必然打两条 ----
         readonly object logGate = new object();
         readonly Dictionary<string, int> logCategoryTick = new Dictionary<string, int>();
@@ -205,14 +226,8 @@ namespace StereoSplitter
                 log("[提示] 蓝牙端点使用 " + outLatencyMs + "ms 输出缓冲偏紧；若链路上偶发\"咔哒\"，把「延迟」档位调到 25ms/20ms 或更高");
 
             var outFormat = WaveFormat.CreateIeeeFloatWaveFormat(wf.SampleRate, 1);
-            // 时钟环稳态目标: 档位越小目标越低, 上限 100ms。
-            // 安全余量分三档: 校正环稳态摆动 std 8ms + 块锯齿 18ms = ±42ms 极端 (3σ)。
-            //   pre/out >= 50: +25 (标准/低延迟), 最低水位 33-58ms vs 阈值 11-15ms, 安全
-            //   pre/out >= 25: +30 (极低), 最低水位 13ms vs 阈值 8.25ms, 余 5ms
-            //   else:          +40 (超低/极限), 极限 45ms 最低 3ms 接近阈值 6.75ms
-            int margin = (prebufferMs >= 50 || outLatencyMs >= 50) ? 25 :
-                         (prebufferMs >= 25 || outLatencyMs >= 25) ? 30 : 40;
-            int driftTargetMs = Math.Min(100, Math.Max(prebufferMs, outLatencyMs) + margin);
+            // 时钟环稳态目标: 档位越小目标越低, 上限 100ms (余量分档规则见 DriftTargetMs)
+            int driftTargetMs = DriftTargetMs(prebufferMs, outLatencyMs);
             int driftTargetSamples = (int)((long)wf.SampleRate * driftTargetMs / 1000);
             // 起播填充目标 = 稳态目标 + 余量 (见 PrePullGuardMs 注释)
             int fillTargetMs = driftTargetMs + PrePullGuardMs;
@@ -312,7 +327,9 @@ namespace StereoSplitter
             {
                 outcome = StartOutcome.Ready;
                 log("[启动] 预缓冲完成 (L=" + gotL + " R=" + gotR + " 字节, 填充目标 " + fillTargetMs +
-                    "ms / 时钟目标 " + targetMs + "ms / 档位 " + prebufferMs + "ms / 输出 " + outLatencyMs + "ms)");
+                    "ms / 时钟目标 " + targetMs + "ms / 档位 " + prebufferMs + "ms / 输出 " + outLatencyMs +
+                    "ms / 总预估≈" + (targetMs + outLatencyMs + CaptureLatencyEstimateMs) +
+                    "ms [捕获" + CaptureLatencyEstimateMs + "+内部" + targetMs + "+输出" + outLatencyMs + ", 不含USB/DAC])");
             }
             else if (gotL == 0 || gotR == 0)
             {

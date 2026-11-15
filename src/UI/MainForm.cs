@@ -196,9 +196,16 @@ namespace StereoSplitter
             lblDot = new Label { Text = "●", Location = new Point(17, 290), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
             lblStatus = new Label { Text = "状态: 就绪", Location = new Point(37, 295), AutoSize = true, ForeColor = Color.Gray };
 
-            var lblLatency = new Label { Text = "启动延迟:", Location = new Point(15, 108), AutoSize = true };
+            // 该下拉决定"预缓冲深度 + WASAPI 输出缓冲"整套组合, 直接影响稳态延迟, 不是启动耗时。
+            // 选项里的总预估 = 捕获(约10ms) + 内部缓冲目标(driftTarget) + 输出缓冲, 不含 USB/DAC/声波;
+            // 数字由 LatencyProfiles 现算, 改档位参数时文案自动跟随。
+            var lblLatency = new Label { Text = "延迟档位:", Location = new Point(15, 108), AutoSize = true };
             cmbLatency = new NoWheelComboBox { Location = new Point(85, 105), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
-            cmbLatency.Items.AddRange(new object[] { "标准 (预缓冲100ms)", "低延迟 (50ms)", "极低 (25ms, 可能断音)", "超低 (15ms, 断音增多)", "极限 (5ms, 频繁断音)" });
+            string[] latNames = { "标准", "低延迟", "极低", "超低", "极限" };
+            string[] latWarn = { "", "", ", 易断音", ", 易断音", ", 频繁断音" };
+            for (int i = 0; i < LatencyProfiles.Length; i++)
+                cmbLatency.Items.Add(latNames[i] + " (总预估" +
+                    AudioEngine.EstimatedTotalMs(LatencyProfiles[i][0], LatencyProfiles[i][1]) + "ms" + latWarn[i] + ")");
             cmbLatency.SelectedIndex = 0;
 
             chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(290, 107), AutoSize = true };
