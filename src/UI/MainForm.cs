@@ -170,14 +170,14 @@ namespace StereoSplitter
             // 增益独占一行 (主音量上方)。TrackBar 轨道画在控件顶部+10px 处,
             // 标签 Top=track.Top 时文字中心正好落在轨道线上。
             var lblG = new Label { Text = "增益:", Location = new Point(15, 72), AutoSize = true };
-            volGain = new TrackBar { Location = new Point(78, 72), Width = 200, Height = 34, AutoSize = false, Minimum = 0, Maximum = 300, Value = 100, TickFrequency = 50, TickStyle = TickStyle.None };
-            lblVolGain = new Label { Text = "100%", Location = new Point(282, 72), AutoSize = true };
+            volGain = new TrackBar { Location = new Point(78, 72), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 300, Value = 100, TickFrequency = 50, TickStyle = TickStyle.None };
+            lblVolGain = new Label { Text = "100%", Location = new Point(382, 72), AutoSize = true };
 
-            // 主音量独占一行 (增益下方)
+            // 主音量独占一行 (增益下方)。SmallChange/LargeChange=5: 点击/方向键每次 5%, 与输出卡片音量一致
             var lblVM = new Label { Text = "主音量:", Location = new Point(15, 106), AutoSize = true };
-            volMaster = new TrackBar { Location = new Point(78, 106), Width = 170, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10, TickStyle = TickStyle.None };
-            lblVolMaster = new Label { Text = "100%", Location = new Point(252, 106), AutoSize = true };
-            chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(294, 104), AutoSize = true };
+            volMaster = new TrackBar { Location = new Point(78, 106), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, SmallChange = 5, LargeChange = 5, TickFrequency = 10, TickStyle = TickStyle.None };
+            lblVolMaster = new Label { Text = "100%", Location = new Point(382, 106), AutoSize = true };
+            chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(424, 104), AutoSize = true };
 
             // 开始分流
             btnStart = new Button { Text = "开始分流", Location = new Point(15, 142), Width = 130, Height = 35 };

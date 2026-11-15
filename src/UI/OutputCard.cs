@@ -20,9 +20,9 @@ namespace StereoSplitter
 
     /// <summary>
     /// 输出卡片:
-    ///   第一行 [设备▾] [输出声道▾] [延迟][n][ms]
+    ///   第一行 [设备▾] [输出声道▾] [延迟][n][ms] [×]
     ///   第二行 音量 [滑条] n% [静音]
-    ///   最右一列上下居中放 [×] (独立列, 行内控件不进入该列, 不再互相遮挡)。
+    ///   × 紧挨延迟组右侧 (整组右对齐, 设备下拉吸收剩余宽度), 互不遮挡。
     /// 取代旧界面的"左/右声道设备 + 左右延迟 + 左右音量"三组控件。
     /// </summary>
     class OutputCardControl : UserControl
@@ -94,7 +94,7 @@ namespace StereoSplitter
                 Value = 100,
                 TickStyle = TickStyle.None,
                 SmallChange = 5,
-                LargeChange = 20
+                LargeChange = 5   // 点击每次 5%, 与主音量一致
             };
             lblVol = new Label { Text = "100%", AutoSize = true };
             chkMute = new CheckBox { Text = "静音", AutoSize = true };
@@ -165,25 +165,25 @@ namespace StereoSplitter
         void LayoutControls()
         {
             int w = Width;
-            int xCol = w - 36;   // 右侧 × 专列左界 (×宽26, 右边距6)
 
-            // × 放最右列, 上下居中 (卡片高78, 按钮高24)
-            btnRemove.Location = new Point(w - 32, (CardHeight - 24) / 2);
-
-            // 第一行右起排: ms → 延迟数字框 → 延迟标题 → 输出声道 → 设备
-            lblMs.Location = new Point(xCol - 30, 8);
+            // 第一行右起排: [×] ← [ms] ← [延迟数字框] ← [延迟] ← [输出声道], 设备下拉占满左侧。
+            // × 紧挨延迟组右侧 (距 ms 8px), 与单位文字不再互相遮挡。
+            btnRemove.Location = new Point(w - 8 - btnRemove.Width, 4);
+            lblMs.Location = new Point(btnRemove.Left - 8 - lblMs.Width, 8);
             nudDelay.Location = new Point(lblMs.Left - 4 - nudDelay.Width, 5);
             lblDelay.Location = new Point(nudDelay.Left - 4 - lblDelay.Width, 8);
             cmbChannel.Location = new Point(lblDelay.Left - 8 - cmbChannel.Width, 5);
             cmbDevice.Location = new Point(8, 5);
             cmbDevice.Width = Math.Max(90, cmbChannel.Left - 14);
 
-            // 第二行: 音量标题 → 滑条 → 百分比 → 静音 (标签与轨道中心对齐)
+            // 第二行: 音量标题 → 滑条(拉满可用宽度) → 百分比 → 静音 (标签与轨道中心对齐)
             const int row2 = 30;
             lblVolTitle.Location = new Point(10, row2);
-            volTrack.Location = new Point(lblVolTitle.Right + 6, row2);
-            lblVol.Location = new Point(Math.Min(xCol - 118, volTrack.Right + 6), row2);
-            chkMute.Location = new Point(Math.Min(xCol - 62, lblVol.Right + 12), row2 - 2);
+            int volX = lblVolTitle.Right + 6;
+            volTrack.Location = new Point(volX, row2);
+            volTrack.Width = Math.Max(120, w - volX - (8 + lblVol.Width + 12 + chkMute.Width + 8));
+            lblVol.Location = new Point(volTrack.Right + 8, row2);
+            chkMute.Location = new Point(lblVol.Right + 12, row2 - 2);
         }
 
         /// <summary>用模型值回填控件 (载入/外部改动后调用)。</summary>
