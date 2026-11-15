@@ -29,7 +29,14 @@ namespace StereoSplitter
         public DelayLine Line { get; private set; }
         public DriftCorrectingProvider Provider { get; private set; }
         public WasapiOut Output { get; private set; }
-        public float[,] Matrix { get; set; }
+        // 运行中热更新: 引擎 Compile 出新矩阵后整体替换引用, 混音线程每块取一次本地副本。
+        // volatile 保证替换立刻对音频线程可见 (矩阵本身不可变, 换引用即"原子提交")。
+        volatile float[,] matrix;
+        public float[,] Matrix
+        {
+            get { return matrix; }
+            set { matrix = value; }
+        }
         public int OutCh { get; private set; }
         public int FillBytes { get; private set; }
         public int DelayMs { get; private set; }
@@ -90,6 +97,8 @@ namespace StereoSplitter
             if (outBytes == null || outBytes.Length < need * 4) outBytes = new byte[need * 4];
 
             var m = Matrix;
+            // 声道数变了但还没重建 (热替换挡不住的边界): 宁可直通也不要越界
+            if (m != null && m.GetLength(0) != oc) m = null;
             if (m == null)
             {
                 // 未装配矩阵 (理论上不会发生): 直通前 N 个源声道, 保证不静音

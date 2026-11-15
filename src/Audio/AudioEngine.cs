@@ -23,6 +23,7 @@ namespace StereoSplitter
         readonly int driftMode, fixedPpm;
         Action<string> log;
         volatile int sampleRate;
+        volatile int captureChannels;   // 运行中重编译矩阵要用
 
         readonly List<SinkSpec> specs = new List<SinkSpec>();
         readonly List<SinkRuntime> sinks = new List<SinkRuntime>();
@@ -208,6 +209,7 @@ namespace StereoSplitter
             loopback = new WasapiLoopbackCapture(captureDev);
             var wf = loopback.WaveFormat;
             sampleRate = wf.SampleRate;
+            captureChannels = wf.Channels;
             log("[启动] 格式: " + wf.SampleRate + "Hz / " + wf.Encoding + " / " + wf.BitsPerSample + "bit / " + wf.Channels + "ch");
 
             // 端点传输类型: 蓝牙 A2DP 自成一条链路, 偶发"咔哒"多出在链路层而不是缓冲层
@@ -435,6 +437,29 @@ namespace StereoSplitter
         public void SetMaster(float m)
         {
             for (int i = 0; i < sinks.Count; i++) sinks[i].SetMaster(m);
+        }
+
+        /// <summary>
+        /// 运行中热替换路由: 重新 Compile 出矩阵并逐路原子换引用, 不停链路、不断音。
+        /// 返回 false = 没有可替换的链路 (未运行 / 声道数变了需要重建)。
+        ///
+        /// 只换矩阵不换 provider: 输出声道数一变就得重建 BufferedWaveProvider 与端点,
+        /// 那是"改设备"级别的事, 交给下一次启动 (P2 校验会先拦住超限配置)。
+        /// </summary>
+        public bool SetRouting(RoutingModel model)
+        {
+            if (model == null || sinks.Count == 0) return false;
+            var compiled = model.Compile(specs, captureChannels);
+            bool any = false;
+            for (int i = 0; i < sinks.Count; i++)
+            {
+                int idx = compiled.IndexOf(specs[i].Key);
+                if (idx < 0) continue;
+                if (compiled.SinkOutCh[idx] != sinks[i].OutCh) continue;   // 声道数变了, 不能热换
+                sinks[i].Matrix = compiled.SinkMatrix[idx];
+                any = true;
+            }
+            return any;
         }
 
         public void SetGain(float gain)
