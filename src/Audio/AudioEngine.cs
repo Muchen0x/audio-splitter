@@ -82,9 +82,9 @@ namespace StereoSplitter
         public event Action<AudioEngine, string> Stalled;
 
         // 起播余量: 覆盖输出端起播时对缓冲的预拉取。
-        // 实测(蓝牙音箱) 95ms 目标起播后 5 秒内掉到 14ms, 峰值抽走约 80ms → 取 100ms 留裕度。
+        // 实测(蓝牙音箱)起播后峰值抽走约 80ms; USB 有线音箱应更小, 取 80ms 匹配。
         // 多填的这部分由起播瞬态消耗, 稳态由时钟环回落到 driftTargetMs, 不增加稳态延迟。
-        const int PrePullGuardMs = 100;
+        const int PrePullGuardMs = 80;
 
         public AudioEngine(string leftDevId, string rightDevId, Action<string> log, int driftMode, int fixedPpm)
         {
@@ -183,8 +183,12 @@ namespace StereoSplitter
                 log("[提示] 蓝牙端点使用 " + outLatencyMs + "ms 输出缓冲偏紧；若链路上偶发\"咔哒\"，把「延迟」档位调到 25ms/20ms 或更高");
 
             var outFormat = WaveFormat.CreateIeeeFloatWaveFormat(wf.SampleRate, 1);
-            // 时钟环稳态目标: 档位越小目标越低, 上限 150ms
-            int driftTargetMs = Math.Min(150, Math.Max(prebufferMs, outLatencyMs) + 80);
+            // 时钟环稳态目标: 档位越小目标越低, 上限 120ms。
+            // +40 安全余量: 校正环稳态摆动 std 8ms (shared ratio 后更小) + 块锯齿 18ms
+            // = ±42ms 极端 (3σ)。+40 时最低档 (极限 45ms) 最低水位 3ms, 接近 holding 闸门
+            // 15%×45=6.75ms, 但极限档本标"频繁断音"且 starveStreak>=2 防抖过滤单次;
+            // 其余档位余量充足 (最低 13-78ms vs 阈值 8-18ms)。
+            int driftTargetMs = Math.Min(120, Math.Max(prebufferMs, outLatencyMs) + 40);
             int driftTargetSamples = (int)((long)wf.SampleRate * driftTargetMs / 1000);
             // 起播填充目标 = 稳态目标 + 余量 (见 PrePullGuardMs 注释)
             int fillTargetMs = driftTargetMs + PrePullGuardMs;
