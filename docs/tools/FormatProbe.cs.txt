@@ -1,0 +1,101 @@
+using System;
+using NAudio.CoreAudioApi;
+using NAudio.Wave;
+
+class Probe
+{
+    static void Main()
+    {
+        var en = new MMDeviceEnumerator();
+        var coll = en.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+        Console.WriteLine("端点总数: " + coll.Count);
+        for (int i = 0; i < coll.Count; i++)
+        {
+            var d = coll[i];
+            Console.WriteLine();
+            Console.WriteLine("[" + i + "] " + SafeName(d));
+            WaveFormat mf = null;
+            try
+            {
+                mf = d.AudioClient.MixFormat;
+            }
+            catch (Exception ex) { Console.WriteLine("  MixFormat 读取失败: " + ex.Message); }
+
+            if (mf != null)
+            {
+                Console.WriteLine("  mix: " + mf.SampleRate + "Hz " + mf.Encoding + " " + mf.BitsPerSample +
+                    "bit " + mf.Channels + "ch align=" + mf.BlockAlign);
+                var we = mf as WaveFormatExtensible;
+                if (we != null)
+                {
+                    string mask = "-";
+                    var pi = we.GetType().GetProperty("ChannelMask");
+                    if (pi != null) { try { mask = "0x" + Convert.ToInt64(pi.GetValue(we, null)).ToString("X"); } catch { } }
+                    Console.WriteLine("  extensible: mask=" + mask + " sub=" + we.SubFormat);
+                }
+                else Console.WriteLine("  (非 extensible)");
+
+                // 共享模式下逐种候选格式探测
+                int[] tryCh = new int[] { 1, 2, mf.Channels > 2 ? mf.Channels : 0 };
+                for (int t = 0; t < tryCh.Length; t++)
+                {
+                    int ch = tryCh[t];
+                    if (ch <= 0) continue;
+                    Probe1(d, "f32/" + ch + "ch", WaveFormat.CreateIeeeFloatWaveFormat(mf.SampleRate, ch));
+                }
+                if (mf.BitsPerSample == 16) Probe1(d, "pcm16/" + mf.Channels + "ch", new WaveFormat(mf.SampleRate, 16, mf.Channels));
+                // 44.1k 探测: 判断端点是否接受异采样率
+                Probe1(d, "f32/" + mf.Channels + "ch@44100", WaveFormat.CreateIeeeFloatWaveFormat(44100, mf.Channels));
+                Probe1(d, "f32/6ch", WaveFormat.CreateIeeeFloatWaveFormat(mf.SampleRate, 6));
+                Probe1(d, "f32/8ch", WaveFormat.CreateIeeeFloatWaveFormat(mf.SampleRate, 8));
+                Probe1(d, "pcm16/2ch", new WaveFormat(mf.SampleRate, 16, 2));
+                Probe1(d, "f32/2ch@96000", WaveFormat.CreateIeeeFloatWaveFormat(96000, 2));
+            }
+        }
+        Console.WriteLine();
+        Console.WriteLine("完成");
+    }
+
+    static void Probe1(MMDevice d, string tag, WaveFormat f)
+    {
+        string sup = "?";
+        try { sup = d.AudioClient.IsFormatSupported(AudioClientShareMode.Shared, f) ? "yes" : "no"; }
+        catch (Exception ex) { sup = "err:" + ex.GetType().Name; }
+
+        string init = "?";
+        var buf = new NAudio.Wave.BufferedWaveProvider(WaveFormat.CreateIeeeFloatWaveFormat(48000, 1));
+        try
+        {
+            using (var wo = new WasapiOut(d, AudioClientShareMode.Shared, false, 50))
+            {
+                wo.Init(new SilentProvider(f));
+                init = "ok";
+            }
+        }
+        catch (Exception ex) { init = ex.GetType().Name + ": " + Short(ex.Message); }
+        Console.WriteLine("  " + tag.PadRight(22) + " IsFormatSupported=" + sup.PadRight(4) + " WasapiOut.Init=" + init);
+    }
+
+    static string Short(string s)
+    {
+        if (s == null) return "";
+        return s.Length > 90 ? s.Substring(0, 90) : s;
+    }
+
+    static string SafeName(MMDevice d)
+    {
+        try { return d.FriendlyName; } catch { return "(?)"; }
+    }
+
+    class SilentProvider : IWaveProvider
+    {
+        readonly WaveFormat f;
+        public SilentProvider(WaveFormat f) { this.f = f; }
+        public WaveFormat WaveFormat { get { return f; } }
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            Array.Clear(buffer, offset, count);
+            return count;
+        }
+    }
+}
