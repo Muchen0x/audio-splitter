@@ -94,12 +94,25 @@ namespace StereoSplitter
         public int OutChannels = 1;    // 该路实际使用几个物理声道 (1 ~ 端点声道数)
         public int DelayMs;
         public string ClockGroupId = "";   // 空 = 独立组
+        /// <summary>0 = 不建链路。停用只影响启动, 配置 (含绑定) 原样保留。</summary>
+        public bool Enabled = true;
+        /// <summary>友好名缓存: 设备 ID 变了 (重装/换口) 时按名字二级匹配。</summary>
+        public string CachedName = "";
 
         public SinkSpec(string key, string label, string deviceId, int outChannels, int delayMs)
         {
             Key = key; Label = label; DeviceId = deviceId;
             OutChannels = outChannels < 1 ? 1 : outChannels;
             DelayMs = delayMs;
+        }
+
+        public SinkSpec Clone()
+        {
+            var s = new SinkSpec(Key, Label, DeviceId, OutChannels, DelayMs);
+            s.ClockGroupId = ClockGroupId;
+            s.Enabled = Enabled;
+            s.CachedName = CachedName;
+            return s;
         }
     }
 
@@ -119,7 +132,7 @@ namespace StereoSplitter
         }
     }
 
-    sealed class RoutingModel
+    partial class RoutingModel
     {
         public WorkMode Mode = WorkMode.SplitLr;
         public ChannelLayout Layout = ChannelLayout.Stereo;
@@ -127,6 +140,55 @@ namespace StereoSplitter
         public List<ChannelBinding> Bindings = new List<ChannelBinding>();
 
         public int ChannelCount { get { return Channels.Count; } }
+
+        /// <summary>深拷贝 (配置 → 运行期快照; 运行中改模型不影响已编译的矩阵)。</summary>
+        public RoutingModel Clone()
+        {
+            var m = new RoutingModel { Mode = Mode, Layout = Layout };
+            for (int i = 0; i < Channels.Count; i++) m.Channels.Add(Channels[i].Clone());
+            for (int i = 0; i < Bindings.Count; i++)
+            {
+                var b = Bindings[i];
+                m.Bindings.Add(new ChannelBinding(b.ChannelKey, b.SinkKey, b.Phys, b.Gain));
+            }
+            for (int i = 0; i < SinkSpecs.Count; i++) m.SinkSpecs.Add(SinkSpecs[i].Clone());
+            return m;
+        }
+
+        /// <summary>只留启用的路 (引擎/编译都吃这个列表)。顺序不变, 与 ini 索引一致。</summary>
+        public List<SinkSpec> EnabledSinks()
+        {
+            var list = new List<SinkSpec>();
+            for (int i = 0; i < SinkSpecs.Count; i++)
+                if (SinkSpecs[i].Enabled) list.Add(SinkSpecs[i]);
+            return list;
+        }
+
+        /// <summary>
+        /// 两路时代的下拉框仍影响 s0/s1 —— P2 阶段 UI 只有这两个控件,
+        /// 因此把它们视为 s0/s1 的设备/延迟权威源 (P3 换成设备列表后删除此桥接)。
+        /// </summary>
+        public void ApplyTwoSinkLegacy(string leftId, int leftDelay, string rightId, int rightDelay)
+        {
+            EnsureLegacySinks();
+            var l = SinkSpecs[0];
+            var r = SinkSpecs[1];
+            l.DeviceId = leftId ?? ""; l.Label = "左"; l.DelayMs = leftDelay;
+            r.DeviceId = rightId ?? ""; r.Label = "右"; r.DelayMs = rightDelay;
+        }
+
+        void EnsureLegacySinks()
+        {
+            while (SinkSpecs.Count < 2)
+            {
+                int n = SinkSpecs.Count;
+                var s = new SinkSpec("s" + n, n == 0 ? "左" : "右", "", n == 0 ? 1 : 1, 0);
+                s.ClockGroupId = "g0";
+                SinkSpecs.Add(s);
+            }
+            // 旧配置回退到左右分离时, 逻辑声道可能还没建 (ini 里只有设备名)
+            if (Channels.Count == 0) ApplyModeTemplate(WorkMode.SplitLr, SinkSpecs);
+        }
 
         public LogicalChannel FindChannel(string key)
         {
@@ -322,6 +384,14 @@ namespace StereoSplitter
                 return issues;
             }
 
+            int enabled = 0;
+            for (int i = 0; i < sinks.Count; i++) if (sinks[i].Enabled) enabled++;
+            if (enabled == 0)
+            {
+                issues.Add(new RoutingIssue(IssueSev.Error, "", "没有启用任何输出设备"));
+                return issues;
+            }
+
             // 绑定必须指向存在的设备与合法的物理声道
             for (int i = 0; i < Bindings.Count; i++)
             {
@@ -332,6 +402,12 @@ namespace StereoSplitter
                     issues.Add(new RoutingIssue(IssueSev.Warn, b.ChannelKey, "绑定指向的设备不在启用列表里"));
                     continue;
                 }
+                if (!sink.Enabled)
+                {
+                    // 停用不是删除: 绑定留在 ini 里, 重新启用即恢复
+                    issues.Add(new RoutingIssue(IssueSev.Info, b.ChannelKey, "指向已停用的 " + sink.Label + "（配置保留）"));
+                    continue;
+                }
                 if (b.Phys < 0 || b.Phys >= sink.OutChannels)
                     issues.Add(new RoutingIssue(IssueSev.Error, b.ChannelKey,
                         "物理声道 " + b.Phys + " 超出该路可用声道数 " + sink.OutChannels));
@@ -339,6 +415,8 @@ namespace StereoSplitter
 
             // 同一物理声道被多个逻辑声道占用 → 求和, 可能削波
             for (int i = 0; i < sinks.Count; i++)
+            {
+                if (!sinks[i].Enabled) continue;
                 for (int p = 0; p < sinks[i].OutChannels; p++)
                 {
                     int n = 0;
@@ -348,7 +426,86 @@ namespace StereoSplitter
                         issues.Add(new RoutingIssue(IssueSev.Warn, sinks[i].Key,
                             sinks[i].Label + " 的物理声道 " + p + " 被 " + n + " 个声道同时占用（会相加，注意削波）"));
                 }
+            }
 
+            // 同一逻辑声道绑到多台设备 → 同空间并联, 会有梳状滤波
+            for (int i = 0; i < Channels.Count; i++)
+            {
+                int targets = 0;
+                for (int b = 0; b < Bindings.Count; b++)
+                {
+                    if (Bindings[b].ChannelKey != Channels[i].Key) continue;
+                    var s = FindSink(sinks, Bindings[b].SinkKey);
+                    if (s != null && s.Enabled) targets++;
+                }
+                if (targets > 1)
+                    issues.Add(new RoutingIssue(IssueSev.Info, Channels[i].Key,
+                        Channels[i].Name + " 同时送到 " + targets + " 台设备（若在同一空间，会因到达时间差产生梳状滤波）"));
+            }
+
+            return issues;
+        }
+
+        /// <summary>
+        /// 设备层校验 (与捕获声道无关), 启动前跑。会就地修正 OutChannels 的失配值。
+        /// 返回列表里 Error 必须挡住启动。
+        /// </summary>
+        public List<RoutingIssue> ValidateSinks(string captureId, Func<string, int> endpointChannels)
+        {
+            var issues = new List<RoutingIssue>();
+            var seenId = new Dictionary<string, string>();
+            int enabled = 0;
+
+            for (int i = 0; i < SinkSpecs.Count; i++)
+            {
+                var s = SinkSpecs[i];
+                if (!s.Enabled) continue;
+                enabled++;
+
+                if (string.IsNullOrEmpty(s.DeviceId))
+                {
+                    issues.Add(new RoutingIssue(IssueSev.Error, s.Key, s.Label + " 没有选择输出设备"));
+                    continue;
+                }
+                if (!string.IsNullOrEmpty(captureId) && s.DeviceId == captureId)
+                {
+                    issues.Add(new RoutingIssue(IssueSev.Error, s.Key,
+                        s.Label + " 指向捕获设备本身（会造成回环）"));
+                    continue;
+                }
+                string other;
+                if (seenId.TryGetValue(s.DeviceId, out other))
+                {
+                    issues.Add(new RoutingIssue(IssueSev.Error, s.Key,
+                        s.Label + " 与 " + other + " 是同一台设备（同一端点开两路会互相抢占，其中一路会静音）"));
+                    continue;
+                }
+                seenId[s.DeviceId] = s.Label;
+
+                if (endpointChannels != null)
+                {
+                    int actual = endpointChannels(s.DeviceId);
+                    if (actual > 0 && actual != s.OutChannels)
+                    {
+                        issues.Add(new RoutingIssue(IssueSev.Warn, s.Key,
+                            s.Label + " 的声道数已按端点实际值从 " + s.OutChannels + " 调整为 " + actual));
+                        s.OutChannels = actual;
+                    }
+                }
+            }
+
+            if (enabled == 0)
+                issues.Add(new RoutingIssue(IssueSev.Error, "", "没有启用任何输出设备"));
+
+            // 调整声道数后可能把绑定挤出范围, 复检一次
+            for (int i = 0; i < Bindings.Count; i++)
+            {
+                var s = FindSink(SinkSpecs, Bindings[i].SinkKey);
+                if (s == null || !s.Enabled) continue;
+                if (Bindings[i].Phys >= s.OutChannels)
+                    issues.Add(new RoutingIssue(IssueSev.Error, Bindings[i].ChannelKey,
+                        s.Label + " 的物理声道 " + Bindings[i].Phys + " 已超出端点实际声道数 " + s.OutChannels));
+            }
             return issues;
         }
 

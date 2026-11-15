@@ -88,6 +88,10 @@ namespace StereoSplitter
         string expectCaptureId = null;
         // 运行期间生效的设备ID (拔出识别用: 默认输出切走时 bindings 会解绑但引擎仍在跑, 不能用 bindings 判断)
         string runCaptureId, runLeftId, runRightId;
+        // 路由配置 (ini 新 schema 的内存镜像): 设备列表/逻辑声道/绑定都在这里, P3 起由 UI 直接编辑
+        RoutingModel routing;
+        // 首次用旧 ini 启动时置位: 等 loadingSettings 解除后立刻写出新 schema
+        bool pendingSchemaRewrite;
         // 已警告过的断开设备 (设备状态事件可能连发, 同一设备只警告一次)
         HashSet<string> warnedLostIds = new HashSet<string>();
         // 启动前 UI 快照 (AutoConfigure 的 Bind 会用设备真值回填覆盖控件, 启动失败时恢复权威值)
@@ -485,6 +489,12 @@ namespace StereoSplitter
             finally
             {
                 loadingSettings = false;
+                // 旧 ini → 新 schema: 首次运行立刻落地, 之后删掉新键也能靠旧键再启动一次
+                if (pendingSchemaRewrite)
+                {
+                    pendingSchemaRewrite = false;
+                    FlushSettings();
+                }
             }
         }
 
@@ -513,11 +523,26 @@ namespace StereoSplitter
         void HandleDeviceLost(string id)
         {
             if (state != AppState.Starting && state != AppState.Running) return;
-            if (id != runCaptureId && id != runLeftId && id != runRightId) return;
+            string role = id == runCaptureId ? "捕获" : SinkRoleOf(id);
+            if (role == null) return;
             if (!warnedLostIds.Add(id)) return;
-            string role = id == runCaptureId ? "捕获" : (id == runLeftId ? "左声道" : "右声道");
             Log("[警告] " + role + "设备已断开: " + FindNameById(id) +
                 " → 看门狗会在检测到断流后尝试自动重建；若设备已彻底移除则自动停止分流");
+        }
+
+        /// <summary>设备 ID → 它在本次分流里的角色 ("左声道"/"右声道"/路名)。不相关返回 null。</summary>
+        string SinkRoleOf(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return null;
+            if (id == runLeftId) return "左声道";
+            if (id == runRightId) return "右声道";
+            if (routing != null)
+                for (int i = 0; i < routing.SinkSpecs.Count; i++)
+                {
+                    var s = routing.SinkSpecs[i];
+                    if (s.Enabled && s.DeviceId == id) return s.Label;
+                }
+            return null;
         }
 
         void HandleDefaultChanged(string newId, Role role)
@@ -964,6 +989,11 @@ namespace StereoSplitter
             volGain.Value = gain;
             lblVolGain.Text = gain + "%";
             pendingGain = gain / 100f;
+
+            // 路由配置: 旧 ini (无 SinkCount) 走 DeviceLeft/DeviceRight 兜底, 记为待重写
+            bool migrated;
+            routing = RoutingModel.LoadFromIni(settings, out migrated);
+            pendingSchemaRewrite = migrated;
         }
 
         int GetInt(string key, int def)
@@ -1036,6 +1066,15 @@ namespace StereoSplitter
                 settings.Put("MuteCapture", chkMuteCapture.Checked ? "1" : "0");
                 settings.Put("DriftMode", driftMode.ToString());
                 settings.Put("FixedRatioPpm", fixedPpm.ToString());
+
+                // 路由配置: 下拉框是 s0/s1 的权威源, 先同步再整体写出
+                // (DeviceLeft/DeviceRight 上面已写, 旧版 exe 仍可回退)
+                if (routing != null)
+                {
+                    routing.ApplyTwoSinkLegacy(DeviceIdAt(cmbLeft.SelectedIndex), (int)nudDelayL.Value,
+                                               DeviceIdAt(cmbRight.SelectedIndex), (int)nudDelayR.Value);
+                    routing.SaveToIni(settings);
+                }
             }
             catch { }
         }
@@ -1047,6 +1086,47 @@ namespace StereoSplitter
             int idx = catalog.IndexOf(id);
             if (idx >= 0) combo.SelectedIndex = idx;
             else Log("[初始化] 未找到已保存的" + label + "设备，使用默认选择");
+        }
+
+        /// <summary>
+        /// 解析每一路配置的设备: 端点 ID 会因重装驱动/换 USB 口/蓝牙重配而变,
+        /// 因此 ID 失配时按缓存名回落 (SinkResolver), 并把结果同步回 s0/s1 对应的旧键 ——
+        /// 否则点开始时下拉框会把手动/解析出来的设备冲回旧 ID。
+        /// </summary>
+        void ResolveRoutingSinks()
+        {
+            if (routing == null || catalog == null) return;
+
+            var taken = new List<string>();
+            for (int i = 0; i < routing.SinkSpecs.Count; i++)
+            {
+                var s = routing.SinkSpecs[i];
+                if (!s.Enabled) continue;
+
+                var r = SinkResolver.Resolve(s, catalog, taken);
+                if (!r.Found)
+                {
+                    if (!string.IsNullOrEmpty(s.DeviceId) || !string.IsNullOrEmpty(s.CachedName))
+                        Log("[设备] " + s.Label + " 配置的设备未找到（" +
+                            (string.IsNullOrEmpty(s.CachedName) ? s.DeviceId : s.CachedName) + "），保持未绑定");
+                    continue;
+                }
+
+                taken.Add(r.DeviceId);
+                if (r.Kind != SinkResolver.MatchKind.ExactId)
+                {
+                    Log("[设备] " + s.Label + " 的端点 ID 已失效，" + r.KindText + "，重新绑定到 " + r.FriendlyName);
+                    s.DeviceId = r.DeviceId;
+                    pendingSchemaRewrite = true;
+                }
+                s.CachedName = r.FriendlyName;
+            }
+
+            // s0/s1 是下拉框的取值来源, 反向同步旧键 (旧版 exe 回退也靠这两个键)
+            if (routing.SinkSpecs.Count > 0) settings.Put("DeviceLeft", routing.SinkSpecs[0].DeviceId ?? "");
+            if (routing.SinkSpecs.Count > 1) settings.Put("DeviceRight", routing.SinkSpecs[1].DeviceId ?? "");
+
+            Log("[配置] 路由: " + routing.DescribeConfig());
         }
 
         // ini 音量在启动时由 WriteUIValuesToDevice 统一写入端点 (Load 期尚未绑定端点, 此处只回填 UI)
@@ -1321,16 +1401,17 @@ namespace StereoSplitter
 
                 int defIdx = catalog.IndexOf(catalog.DefaultRenderId());
                 string defName = catalog.DefaultRenderName();
+                Log("[初始化] 发现 " + Devices.Count + " 个输出设备，默认输出: [" + defIdx + "] " + defName);
+
                 if (cmbLeft.Items.Count > 0) cmbLeft.SelectedIndex = 0;
                 if (cmbRight.Items.Count > 1) cmbRight.SelectedIndex = 1;
                 if (cmbDefault.Items.Count > 0) cmbDefault.SelectedIndex = defIdx >= 0 ? defIdx : 0;
 
                 // 恢复 ini 保存的设备选择 (按设备 ID, 找不到则保留上面的默认)
+                ResolveRoutingSinks();
                 RestoreDeviceSelection("DeviceLeft", cmbLeft, "左");
                 RestoreDeviceSelection("DeviceRight", cmbRight, "右");
                 RestoreDeviceSelection("DeviceDefault", cmbDefault, "捕获输出");
-
-                Log("[初始化] 发现 " + Devices.Count + " 个输出设备，默认输出: [" + defIdx + "] " + defName);
             }
             finally
             {
@@ -1421,6 +1502,18 @@ namespace StereoSplitter
                 runRightId = DeviceIdAt(cmbRight.SelectedIndex);
                 runCaptureId = DeviceIdAt(cmbDefault.SelectedIndex);
 
+                // 路由校验: 设备层错误 (重复/回环/未选/声道数失配) 在起链路之前拦住,
+                // 否则 WasapiOut.Init 只会抛 "尚未实现" 这类没法读的错
+                var runModel = BuildRunModel(runLeftId, runRightId, (int)nudDelayL.Value, (int)nudDelayR.Value);
+                string block = CheckRunModel(runModel, runCaptureId);
+                if (block != null)
+                {
+                    StartFailed();
+                    MessageBox.Show(block, "路由配置有误");
+                    return;
+                }
+                routing = runModel;   // 校验可能修正了声道数, 让它进 ini
+
                 autoRestartCount = 0;   // 手动启动 → 重新给自动重建机会
                 LaunchEngine(runLeftId, runRightId, runCaptureId, SnapshotStartParams(), false);
             }
@@ -1457,9 +1550,53 @@ namespace StereoSplitter
             };
         }
 
+        /// <summary>
+        /// 由当前配置生成运行期模型: 克隆 ini 里的路由 (可能已有多路),
+        /// 再把 s0/s1 的设备与延迟对齐到下拉框 —— P2 阶段 UI 只有左右两个设备控件,
+        /// 它们仍是这两路的权威源; P3 换成设备列表后这层桥接会被删掉。
+        /// </summary>
+        RoutingModel BuildRunModel(string leftId, string rightId, int dlyL, int dlyR)
+        {
+            RoutingModel m;
+            if (routing != null) m = routing.Clone();
+            else m = RoutingModel.SplitLr("s0", leftId, "左", dlyL, "s1", rightId, "右", dlyR);
+
+            m.ApplyTwoSinkLegacy(leftId, dlyL, rightId, dlyR);
+            if (catalog != null)
+            {
+                m.SinkSpecs[0].CachedName = catalog.NameOf(leftId);
+                m.SinkSpecs[1].CachedName = catalog.NameOf(rightId);
+            }
+            return m;
+        }
+
+        /// <summary>
+        /// 启动前校验。返回 null = 可以启动; 否则是给用户看的一句话 (阻塞原因)。
+        /// Warn/Info 只进日志: 它们是"能跑但值得知道"的情况 (声道被求和、设备离线保留配置)。
+        /// </summary>
+        string CheckRunModel(RoutingModel m, string captureId)
+        {
+            var issues = m.ValidateSinks(captureId, delegate(string id) { return catalog.EndpointChannels(id); });
+            issues.AddRange(m.Validate(8, m.SinkSpecs));
+            // 同一现象 ValidateSinks/Validate 各报一次, 按 (级别, 文本) 去重再输出
+            var seen = new HashSet<string>();
+            var errors = new List<string>();
+            for (int i = 0; i < issues.Count; i++)
+            {
+                var it = issues[i];
+                if (!seen.Add(((int)it.Severity) + "|" + it.Message)) continue;
+                if (it.Severity == IssueSev.Error) errors.Add(it.Message);
+                else Log("[路由] " + it.Message);
+            }
+            if (errors.Count == 0) return null;
+            return "以下问题会导致启动后无声或异常，请先修正：\n\n· " + string.Join("\n· ", errors.ToArray());
+        }
+
         // 手动启动与自动重建共用同一条启动链 (差别只在失败处理: 自动重建不弹框、不自动回滚)
         void LaunchEngine(string leftId, string rightId, string expectCap, StartParams p, bool autoRestart)
-        {
+        {            // 模型必须在 UI 线程克隆: 引擎在后台线程读它, 而 UI 随时可能改配置
+            RoutingModel model = BuildRunModel(leftId, rightId, p.DlyL, p.DlyR);
+
             startAbort = false;
             startFinished.Reset();
             ThreadPool.QueueUserWorkItem(delegate
@@ -1469,7 +1606,7 @@ namespace StereoSplitter
                 {
                     if (startAbort) throw new OperationCanceledException("启动已取消");
                     eng = new AudioEngine(leftId, rightId, Log, p.Mode, p.FixedPpm);
-                    AudioEngine.StartOutcome outcome = eng.Start(p.Gain, p.Master, p.PreMs, p.OutMs, p.DlyL, p.DlyR,
+                    AudioEngine.StartOutcome outcome = eng.Start(model, p.Gain, p.Master, p.PreMs, p.OutMs,
                         delegate { return startAbort; }, expectCap);
 
                     if (exiting || IsDisposed || !IsHandleCreated)
@@ -1729,9 +1866,9 @@ namespace StereoSplitter
                 GiveUp();
                 return;
             }
-            if (FindMissingEndpoint(leftId, rightId) != null)
+            if (FindMissingEndpoint(RunDeviceIds(leftId, rightId)) != null)
             {
-                Log("[错误] 左右目标设备已不可用，放弃自动重建；请刷新设备后重新开始");
+                Log("[错误] 目标输出设备已不可用，放弃自动重建；请刷新设备后重新开始");
                 GiveUp();
                 return;
             }
@@ -1740,6 +1877,22 @@ namespace StereoSplitter
             TearDownEngine();                 // 起播水位/缓冲全部重来, 与首次启动一致
             SetAppState(AppState.Starting);   // 期间 running=false → 看门狗自然停手
             LaunchEngine(leftId, rightId, capId, SnapshotStartParams(), true);
+        }
+
+        /// <summary>重建前要复查的设备集合: 配置里的全部启用路, 配置缺失时退回左右两路。</summary>
+        string[] RunDeviceIds(string leftId, string rightId)
+        {
+            if (routing != null)
+            {
+                var list = routing.EnabledSinks();
+                if (list.Count > 0)
+                {
+                    var ids = new string[list.Count];
+                    for (int i = 0; i < list.Count; i++) ids[i] = list[i].DeviceId;
+                    return ids;
+                }
+            }
+            return new string[] { leftId, rightId };
         }
 
         // 一次枚举校验多个端点是否仍活动; 返回第一个缺失的 ID, 全部在位返回 null。

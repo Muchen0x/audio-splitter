@@ -77,6 +77,30 @@ namespace StereoSplitter.Devices
             return e != null ? e.FriendlyName : (id ?? "(未绑定)");
         }
 
+        /// <summary>
+        /// 端点共享模式的混音声道数 (P2 校验用: 客户端声道数不得大于它, 否则 WasapiOut.Init 抛"尚未实现")。
+        /// 取不到返回 0 —— 调用方不要把它当 0 声道处理, 而是跳过校验。
+        /// </summary>
+        public static int EndpointChannels(MMDevice d)
+        {
+            if (d == null) return 0;
+            try
+            {
+                var fmt = d.AudioClient.MixFormat;
+                return fmt == null ? 0 : fmt.Channels;
+            }
+            catch { return 0; }
+        }
+
+        /// <summary>同上, 按 ID 临时开一个实例查询 (用完即释放, 不影响展示用实例)。</summary>
+        public int EndpointChannels(string id)
+        {
+            var d = Open(id);
+            if (d == null) return 0;
+            try { return EndpointChannels(d); }
+            finally { try { d.Dispose(); } catch { } }
+        }
+
         public string IdAt(int index)
         {
             return (index >= 0 && index < endpoints.Count) ? endpoints[index].ID : "";

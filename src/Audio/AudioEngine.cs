@@ -181,7 +181,10 @@ namespace StereoSplitter
             Func<bool> aborted, string expectedCaptureId)
         {
             specs.Clear();
-            specs.AddRange(model.SinkSpecs);
+            for (int i = 0; i < model.SinkSpecs.Count; i++)
+                if (model.SinkSpecs[i].Enabled) specs.Add(model.SinkSpecs[i]);
+            if (specs.Count == 0)
+                throw new AudioDeviceException("没有启用任何输出设备，请至少启用一路");
 
             var enumerator = new MMDeviceEnumerator();
             var devs = new List<MMDevice>();
