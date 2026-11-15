@@ -42,6 +42,10 @@ namespace StereoSplitter
 
         bool syncing;
         bool offline;
+        // 用户真的动过音量滑条才把 trackbar 的值写回模型:
+        // TrackBar 是像素量化的 (110px 跑 0~200, 有些值落不回原位, 100 会变 99),
+        // 载入时若照着 trackbar 回写, 用户设的 100% 会莫名变成 99%。
+        bool volumeDirty;
         string roleText = "";
 
         List<string> deviceIds = new List<string>();
@@ -155,6 +159,7 @@ namespace StereoSplitter
             trkVolume.ValueChanged += (s, e) =>
             {
                 if (syncing) return;
+                volumeDirty = true;
                 if (Spec != null) Spec.Volume = trkVolume.Value / 100f;
                 lblVolValue.Text = trkVolume.Value + "%";
                 var h = VolumeChanged;
@@ -209,7 +214,11 @@ namespace StereoSplitter
             {
                 Spec.Enabled = chkEnabled.Checked;
                 Spec.DelayMs = (int)nudDelay.Value;
-                Spec.Volume = trkVolume.Value / 100f;
+                if (volumeDirty)
+                {
+                    Spec.Volume = trkVolume.Value / 100f;
+                    volumeDirty = false;
+                }
                 if (cmbDevice.SelectedIndex >= 0 && cmbDevice.SelectedIndex < deviceIds.Count)
                     Spec.DeviceId = deviceIds[cmbDevice.SelectedIndex];
                 if (cmbChannels.SelectedIndex >= 0)
@@ -230,7 +239,9 @@ namespace StereoSplitter
                 nudDelay.Value = Math.Max(0, Math.Min(2000, Spec.DelayMs));
                 int vol = (int)Math.Round(Spec.EffectiveVolume * 100);
                 trkVolume.Value = Math.Max(trkVolume.Minimum, Math.Min(trkVolume.Maximum, vol));
-                lblVolValue.Text = trkVolume.Value + "%";
+                // 显示跟模型走: TrackBar 可能把 100 量化成 99, 但用户设的是 100
+                lblVolValue.Text = vol + "%";
+                volumeDirty = false;
                 RefreshChannelChoices();
                 RefreshRoleText();
             }
