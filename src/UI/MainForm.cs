@@ -97,6 +97,11 @@ namespace StereoSplitter
         const int WatchdogFreezeMs = 10000;
         long watchRenderedL = -1, watchRenderedR = -1;
         int watchRenderedTickL, watchRenderedTickR;
+        // 水位失衡判定: 一侧调节水位持续 >300ms 且校正触顶 → 设备消费速率严重低于捕获速率
+        // (独占模式设备采样率失配、驱动异常)。RenderedSamples 还在涨 → 停摆检测抓不到。
+        const int WatchdogImbalanceMs = 10000;
+        const int ImbalanceThresholdMs = 300;   // 正常水位 ≤142ms (target 100 + 波动 42), 300 远超
+        int watchImbalanceTickL, watchImbalanceTickR;
         bool captureIdleLogged;      // "捕获源无数据"只提示一次
         int captureIdleSince;
         int lastCaptureCheckTick;    // 空闲期确认捕获设备是否还在 (1 分钟一次)
@@ -1533,6 +1538,8 @@ namespace StereoSplitter
             watchRenderedR = -1;
             watchRenderedTickL = Environment.TickCount;
             watchRenderedTickR = Environment.TickCount;
+            watchImbalanceTickL = 0;
+            watchImbalanceTickR = 0;
             captureIdleLogged = false;
             captureIdleSince = 0;
             lastCaptureCheckTick = 0;
@@ -1570,6 +1577,45 @@ namespace StereoSplitter
                     " 秒未取数据（水位 " + eng.RightBufferMs + "ms）—— 单只音箱休眠/被独占的典型表现");
                 return;
             }
+
+            // 水位失衡检测: 独占模式下设备实际采样率可能与标称偏差 10%+,
+            // 远超校正环 ±0.5% 修正范围 → 一侧水位持续堆积到满、另一侧被 shared ratio 加速抽空。
+            // 此时 RenderedSamples 仍在涨 (Read 还被调用, 只是消费速率不匹配), 停摆检测抓不到。
+            // 判据: 一侧调节水位 >300ms (正常 ≤142ms) 且校正触顶 (|ppm|>4900), 持续 10 秒。
+            int ppm = eng.SharedRatioPpm;
+            bool clamped = ppm > 4900 || ppm < -4900;
+            int regL = eng.LeftRegulatedMs, regR = eng.RightRegulatedMs;
+            int imbalancedSide = 0;   // 0=无 1=左 2=右
+            if (clamped && regL > ImbalanceThresholdMs) imbalancedSide = 1;
+            else if (clamped && regR > ImbalanceThresholdMs) imbalancedSide = 2;
+
+            if (imbalancedSide != 0)
+            {
+                int tickKey = imbalancedSide == 1 ? watchImbalanceTickL : watchImbalanceTickR;
+                if (tickKey == 0)
+                {
+                    if (imbalancedSide == 1) watchImbalanceTickL = now;
+                    else watchImbalanceTickR = now;
+                }
+                else if (unchecked(now - tickKey) >= WatchdogImbalanceMs)
+                {
+                    string side = imbalancedSide == 1 ? "左" : "右";
+                    int reg = imbalancedSide == 1 ? regL : regR;
+                    // 独占模式失配是确定性问题, 重建也只会重复同样故障 → 直接停止并提示
+                    if (chkExclusive.Checked)
+                    {
+                        Log("[错误] " + side + "声道水位持续堆积至 " + reg + "ms 且校正已触顶 " + ppm +
+                            "ppm 超过 10 秒——独占模式下设备实际采样率与标称 48kHz 偏差远超校正范围 (±0.5%)，" +
+                            "独占模式与该设备不兼容。已停止分流，请取消「独占」勾选后重新开始");
+                        GiveUp();
+                        return;
+                    }
+                    OnEngineStalled(side + "声道水位持续堆积至 " + reg + "ms 且校正已触顶 " + ppm +
+                        "ppm 超过 10 秒——设备消费速率严重低于捕获速率，校正环无法补偿");
+                    return;
+                }
+            }
+            else { watchImbalanceTickL = 0; watchImbalanceTickR = 0; }
 
             int capTick = eng.LastCaptureTick;
             // 1.5s 阈值: 播放时回调约每 10ms 一次, 1.5s 无回调必为停流; 原 3s 会漏掉 2~3 秒的暂停

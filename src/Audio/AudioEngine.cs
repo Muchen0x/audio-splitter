@@ -135,6 +135,28 @@ namespace StereoSplitter
             get { return rightProvider == null ? 0 : rightProvider.BufferedMs; }
         }
 
+        /// <summary>单侧调节水位 (2.1s 低通后的平滑值), 看门狗用它判"水位持续单方向堆积"。</summary>
+        public int LeftRegulatedMs
+        {
+            get { return leftProvider == null ? 0 : leftProvider.RegulatedMs; }
+        }
+
+        public int RightRegulatedMs
+        {
+            get { return rightProvider == null ? 0 : rightProvider.RegulatedMs; }
+        }
+
+        /// <summary>共享校正比例 (ppm), 看门狗用它判"校正是否触顶"。
+        /// mode != 1 时返回左 provider 的独立 ratio (固定/关闭模式不会触顶, 不影响判据)。</summary>
+        public int SharedRatioPpm
+        {
+            get
+            {
+                if (leftProvider != null) return (int)leftProvider.RatioPpm;
+                return 0;
+            }
+        }
+
         /// <summary>启动结果: 预缓冲是否真的拿到了数据 (旧实现超时也当成功, 导致空缓冲起播)。</summary>
         public enum StartOutcome
         {
