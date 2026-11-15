@@ -38,7 +38,7 @@ namespace StereoSplitter
         Infrastructure.SessionLog sessionLog;
         SplitContainer splitContainer;
         TextBox txtLog;
-        CheckBox chkMuteL, chkMuteR, chkMuteMaster, chkMuteCapture, chkExclusive;
+        CheckBox chkMuteL, chkMuteR, chkMuteMaster, chkMuteCapture;
         CheckBox chkMinimizeToTray;
         CheckBox chkDrift;
         NotifyIcon trayIcon;
@@ -140,10 +140,9 @@ namespace StereoSplitter
             Controls.Add(splitContainer);
 
             var lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
-            cmbDefault = new NoWheelComboBox { Location = new Point(110, 12), Width = 228, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
-            chkMuteCapture = new CheckBox { Text = "消音", Location = new Point(340, 14), AutoSize = true };
-            chkExclusive = new CheckBox { Text = "独占", Location = new Point(385, 14), AutoSize = true };
-            btnRefresh = new Button { Text = "刷新设备", Location = new Point(432, 11), Width = 55, Height = 23 };
+            cmbDefault = new NoWheelComboBox { Location = new Point(110, 12), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
+            chkMuteCapture = new CheckBox { Text = "消音", Location = new Point(363, 14), AutoSize = true };
+            btnRefresh = new Button { Text = "刷新设备", Location = new Point(417, 11), Width = 72, Height = 23 };
 
             var lblL = new Label { Text = "左声道设备:", Location = new Point(15, 45), AutoSize = true };
             cmbLeft = new NoWheelComboBox { Location = new Point(110, 42), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -224,7 +223,7 @@ namespace StereoSplitter
             cmsLog.Items.Add("全选", null, (s, e) => txtLog.SelectAll());
             txtLog.ContextMenuStrip = cmsLog;
 
-            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, chkExclusive, btnRefresh, lblL, cmbLeft, lblDL, nudDelayL, lblMsL, lblR, cmbRight, lblDR, nudDelayR, lblMsR, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblL, cmbLeft, lblDL, nudDelayL, lblMsL, lblR, cmbRight, lblDR, nudDelayR, lblMsR, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
 
             btnStart.Click += BtnStart_Click;
@@ -253,7 +252,6 @@ namespace StereoSplitter
             cmbLatency.SelectedIndexChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudDelayL.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudDelayR.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
-            chkExclusive.CheckedChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudWaterInterval.ValueChanged += (s, e) =>
             {
                 int v = (int)nudWaterInterval.Value;
@@ -394,7 +392,6 @@ namespace StereoSplitter
             chkMuteR.Enabled = !busy;
             chkMuteMaster.Enabled = !busy;
             chkMuteCapture.Enabled = !busy;
-            chkExclusive.Enabled = !busy && !run;
             chkMinimizeToTray.Enabled = !busy;
             chkDrift.Enabled = !busy;
             cmbLatency.Enabled = !busy && !run;
@@ -1014,7 +1011,6 @@ namespace StereoSplitter
                 settings.Put("MuteRight", chkMuteR.Checked ? "1" : "0");
                 settings.Put("MuteMaster", chkMuteMaster.Checked ? "1" : "0");
                 settings.Put("MuteCapture", chkMuteCapture.Checked ? "1" : "0");
-                settings.Put("Exclusive", chkExclusive.Checked ? "1" : "0");
                 settings.Put("DriftMode", driftMode.ToString());
                 settings.Put("FixedRatioPpm", fixedPpm.ToString());
             }
@@ -1054,11 +1050,6 @@ namespace StereoSplitter
                 {
                     bool m = GetInt("MuteCapture", 0) != 0;
                     chkMuteCapture.Checked = m;
-                    any = true;
-                }
-                if (settings.Has("Exclusive"))
-                {
-                    chkExclusive.Checked = GetInt("Exclusive", 0) != 0;
                     any = true;
                 }
                 if (settings.Has("VolumeLeft"))
@@ -1103,8 +1094,7 @@ namespace StereoSplitter
                     " 左=" + volLeft.Value + "%/" + (chkMuteL.Checked ? "静音" : "开") +
                     " 右=" + volRight.Value + "%/" + (chkMuteR.Checked ? "静音" : "开") +
                     " 增益=" + volGain.Value + "%" +
-                    (chkMuteCapture.Checked ? " 捕获消音=开" : "") +
-                    (chkExclusive.Checked ? " 独占=开" : ""));
+                    (chkMuteCapture.Checked ? " 捕获消音=开" : ""));
         }
 
         // ==================== 托盘与单实例激活 ====================
@@ -1393,7 +1383,6 @@ namespace StereoSplitter
         {
             public int PreMs, OutMs, DlyL, DlyR, GainPct, Mode, FixedPpm;
             public float Gain, Master;
-            public bool Exclusive;
         }
 
         StartParams SnapshotStartParams()
@@ -1409,8 +1398,7 @@ namespace StereoSplitter
                 Master = CurrentMaster(),
                 GainPct = (int)Math.Round(pendingGain * 100),
                 Mode = driftMode,
-                FixedPpm = fixedPpm,
-                Exclusive = chkExclusive.Checked
+                FixedPpm = fixedPpm
             };
         }
 
@@ -1427,7 +1415,7 @@ namespace StereoSplitter
                     if (startAbort) throw new OperationCanceledException("启动已取消");
                     eng = new AudioEngine(leftId, rightId, Log, p.Mode, p.FixedPpm);
                     AudioEngine.StartOutcome outcome = eng.Start(p.Gain, p.Master, p.PreMs, p.OutMs, p.DlyL, p.DlyR,
-                        delegate { return startAbort; }, expectCap, p.Exclusive);
+                        delegate { return startAbort; }, expectCap);
 
                     if (exiting || IsDisposed || !IsHandleCreated)
                     {   // 关窗等待期间完成 → 只释放引擎, 不碰UI
@@ -1601,15 +1589,6 @@ namespace StereoSplitter
                 {
                     string side = imbalancedSide == 1 ? "左" : "右";
                     int reg = imbalancedSide == 1 ? regL : regR;
-                    // 独占模式失配是确定性问题, 重建也只会重复同样故障 → 直接停止并提示
-                    if (chkExclusive.Checked)
-                    {
-                        Log("[错误] " + side + "声道水位持续堆积至 " + reg + "ms 且校正已触顶 " + ppm +
-                            "ppm 超过 10 秒——独占模式下设备实际采样率与标称 48kHz 偏差远超校正范围 (±0.5%)，" +
-                            "独占模式与该设备不兼容。已停止分流，请取消「独占」勾选后重新开始");
-                        GiveUp();
-                        return;
-                    }
                     OnEngineStalled(side + "声道水位持续堆积至 " + reg + "ms 且校正已触顶 " + ppm +
                         "ppm 超过 10 秒——设备消费速率严重低于捕获速率，校正环无法补偿");
                     return;
