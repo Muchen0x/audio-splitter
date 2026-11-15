@@ -1,0 +1,13 @@
+# 统一按文本处理，仓库内统一 LF
+* text=auto eol=lf
+
+# Windows 批处理需要 CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 二进制
+*.exe binary
+*.dll binary
+*.zip binary
+*.png binary
+*.ico binary

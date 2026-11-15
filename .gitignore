@@ -1,10 +1,20 @@
-log/
-*.log
-SplitterGUI.ini
-
+# 构建产物
 bin/
 obj/
 dist/
 *.pdb
+
+# 根目录分发的二进制（由 build.cmd 生成）
 /*.exe
 /*.dll
+
+# 运行期生成
+log/
+*.log
+SplitterGUI.ini
+
+# 工具/编辑器本地数据
+.workbuddy/
+.vs/
+*.user
+*.suo
