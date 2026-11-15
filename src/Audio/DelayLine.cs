@@ -43,13 +43,6 @@ namespace StereoSplitter
 
         public void Write(byte[] data, int len)
         {
-            Write(data, 0, len);
-        }
-
-        // 带偏移量版本: 级联延迟线 (捕获级 → 左右级) 转发时, 上游 emit 给出的是一块里的片段,
-        // 从 0 开始拷会把片段之前的字节一起带下来 → 必须按 offset 拷
-        public void Write(byte[] data, int offset, int len)
-        {
             if (len <= 0) return;
             lock (sync)
             {
@@ -57,7 +50,7 @@ namespace StereoSplitter
                 // emit 同步消费 (AddSamples 立即拷入缓冲), e.Buffer 在回调返回前用完 → 生命周期安全
                 if (targetBytes == 0 && buffered == 0)
                 {
-                    emit(data, offset, len);
+                    emit(data, 0, len);
                     return;
                 }
 
@@ -73,7 +66,7 @@ namespace StereoSplitter
                     pooledBytes -= copy.Length;
                 }
                 if (copy == null) copy = new byte[len];
-                Buffer.BlockCopy(data, offset, copy, 0, len);
+                Buffer.BlockCopy(data, 0, copy, 0, len);
                 blocks.Enqueue(new Block { Data = copy, Len = len });
                 buffered += len;
 

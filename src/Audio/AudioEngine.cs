@@ -25,7 +25,7 @@ namespace StereoSplitter
         readonly int driftMode, fixedPpm;
         Action<string> log;
         volatile int sampleRate;
-        DelayLine capLine, leftLine, rightLine;
+        DelayLine leftLine, rightLine;
         bool splitErrLogged = false;
         // 起播时捕获源无数据 → 首帧到达时补一条"就绪"日志 (NoAudioYet 场景)
         volatile bool silentStartup = false;
@@ -169,7 +169,7 @@ namespace StereoSplitter
         }
 
         public StartOutcome Start(float gain, float master, int prebufferMs, int outLatencyMs, int leftDelayMs, int rightDelayMs,
-            int capDelayMs, Func<bool> aborted, string expectedCaptureId)
+            Func<bool> aborted, string expectedCaptureId)
         {
             // 三个 MMDevice 都在本线程创建: 跨线程使用 UI 线程创建的 MMDevice 会 QI IMMDevice 失败 E_NOINTERFACE (NAudio #214)
             var enumerator = new MMDeviceEnumerator();
@@ -241,24 +241,11 @@ namespace StereoSplitter
             rightOut.PlaybackStopped += delegate(object s, StoppedEventArgs e) { OnOutputStopped("右", e); };
             loopback.RecordingStopped += delegate(object s, StoppedEventArgs e) { OnCaptureStopped(e); };
 
-            // 延迟分两级, 与界面上三个输入框一一对应:
-            //   ① 捕获延迟 capMs —— 分叉点之前的一条共享延迟线, 左右同吃一份, 只推整体时基, 不改声像
-            //   ② 左右延迟 —— 分叉之后各自的补偿线, 只改该侧, 用来对齐两只音箱的距离差
-            // 旧实现把 capMs 叠加进左右两条线 (left+cap / right+cap): 数学上等价, 但左右线的长度
-            // 不再等于界面上的数值, 排查时容易误读成"调捕获延迟把左右也改了"。现在拆成真正独立的一级,
-            // 左右线长度严格等于界面值, 捕获延迟调到多少都不会动它们。
-            // 输入是交错多声道原始数据 → 按 blockAlign(帧) 算目标字节并天然对齐
+            // 左右独立延迟线: 输入是交错多声道原始数据 → 按 blockAlign(帧) 算目标字节并天然对齐
             // (旧算法按 mono float 4字节算 → 延迟减半; &~3 未对齐帧 → 44100Hz 等场景字节错位出破音)
             int blockAlign = Math.Max(1, wf.BlockAlign);
-            int capMs = Math.Max(0, Math.Min(2000, capDelayMs));
             int leftMs = Math.Max(0, leftDelayMs);
             int rightMs = Math.Max(0, rightDelayMs);
-            capLine = new DelayLine(BytesOf(wf, capMs, blockAlign), (buf, off, len) =>
-            {
-                // 捕获级的出口就是分叉点: 同一块原始数据左右各投一份
-                leftLine.Write(buf, off, len);
-                rightLine.Write(buf, off, len);
-            });
             leftLine = new DelayLine(BytesOf(wf, leftMs, blockAlign),
                 (buf, off, len) => Split(buf, off, len, 0, leftBuf));
             rightLine = new DelayLine(BytesOf(wf, rightMs, blockAlign),
@@ -270,7 +257,8 @@ namespace StereoSplitter
                 // 采样线程裸异常会直接杀进程 → 捕获并去重记一条
                 try
                 {
-                    capLine.Write(e.Buffer, e.BytesRecorded);
+                    leftLine.Write(e.Buffer, e.BytesRecorded);
+                    rightLine.Write(e.Buffer, e.BytesRecorded);
                     // 捕获活性时间戳: 看门狗用它区分"源本来就静音"和"捕获线程已死"
                     if (e.BytesRecorded > 0) lastCaptureTick = Environment.TickCount;
                     if (silentStartup && e.BytesRecorded > 0 && Interlocked.Exchange(ref firstDataLogged, 1) == 0)
@@ -298,9 +286,8 @@ namespace StereoSplitter
 
             int fillBytes = fillTargetSamples * 4;
             int targetMs = driftTargetSamples * 1000 / wf.SampleRate;
-            // 等待上限随填充目标与延迟动态放宽 (延迟 2000ms 时固定 2s 会超时)
-            // 数据要穿两级延迟才进 buffer: 捕获级 capMs + 该侧延迟
-            int maxWaitMs = fillTargetMs + capMs + Math.Max(leftMs, rightMs) + 1000;
+            // 等待上限随填充目标与延迟补偿动态放宽 (延迟 2000ms 时固定 2s 会超时)
+            int maxWaitMs = fillTargetMs + Math.Max(leftMs, rightMs) + 1000;
             int waitStart = Environment.TickCount;
             while (leftBuf.BufferedBytes < fillBytes || rightBuf.BufferedBytes < fillBytes)
             {
@@ -342,9 +329,8 @@ namespace StereoSplitter
 
             silentStartup = (outcome == StartOutcome.NoAudioYet);
             log("[启动] 时钟漂移补偿: " + (driftMode == 0 ? "关闭" : driftMode == 2 ? "固定 " + fixedPpm + "ppm" : "自适应") + ", 比例上限 ±0.50%");
-            if (capMs > 0 || leftMs > 0 || rightMs > 0)
-                log("[启动] 延迟: 捕获=" + capMs + "ms 左=" + leftMs + "ms 右=" + rightMs +
-                    "ms (合计 左=" + (capMs + leftMs) + "ms 右=" + (capMs + rightMs) + "ms)");
+            if (leftMs > 0 || rightMs > 0)
+                log("[启动] 延迟补偿: 左=" + leftMs + "ms 右=" + rightMs + "ms");
 
             if (aborted != null && aborted()) throw new OperationCanceledException("启动已取消");
 
@@ -463,7 +449,6 @@ namespace StereoSplitter
             if (loopback != null) { try { loopback.StopRecording(); } catch { } }
             if (leftOut != null) { try { leftOut.Stop(); } catch { } }
             if (rightOut != null) { try { rightOut.Stop(); } catch { } }
-            if (capLine != null) capLine.Clear();   // 先断上游: 清空期间不会有新数据从捕获级灌进左右线
             if (leftLine != null) leftLine.Clear();
             if (rightLine != null) rightLine.Clear();
         }
