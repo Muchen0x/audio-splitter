@@ -46,6 +46,12 @@ namespace StereoSplitter
         double clampStartAvgTotal;
         int lastClampWarnTick;
 
+        // ---- holding 联动 ----
+        // 左右 provider 各自的 holding 状态 (volatile bool 跨线程读写原子, 无需锁)。
+        // 一侧 holding 时另一侧应降低增益 (-6dB), 保持声像居中而非偏到一侧。
+        // 查询频率约 21ms (UpdateRatio), holding 持续通常数百 ms → 联动延迟可忽略。
+        volatile bool holdingLeft, holdingRight;
+
         public DriftCorrectionShared(double targetSamples, int sampleRate, Action<string> log)
         {
             this.targetSamples = Math.Max(1, targetSamples);
@@ -103,6 +109,19 @@ namespace StereoSplitter
         public double RatioPpm
         {
             get { double r; lock (sync) r = ratio; return (r - 1.0) * 1e6; }
+        }
+
+        /// <summary>一侧 holding 状态变化时通知 shared。</summary>
+        public void NotifyHolding(bool isLeft, bool holding)
+        {
+            if (isLeft) holdingLeft = holding;
+            else holdingRight = holding;
+        }
+
+        /// <summary>对侧是否正在 holding — 本侧是否应降低联动增益。</summary>
+        public bool OtherHolding(bool isLeft)
+        {
+            return isLeft ? holdingRight : holdingLeft;
         }
 
         bool WarnAllowed(ref int lastTick)

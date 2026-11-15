@@ -54,6 +54,10 @@ namespace StereoSplitter
         float fadeIn = 1f;
         float fadeStep;
         float decayCoef;
+        // 联动增益: 对侧 holding 时本侧降到 0.5 (-6dB), 保持声像居中而非偏到一侧。
+        // 平滑过渡用 fadeStep (约 3ms), 与欠载 fadeIn 节奏一致。
+        float linkGain = 1f;
+        float linkGainTarget = 1f;
         // 欠载后的"补水位"闸门: 断粮即停止消费, 等水位回到目标 95% 再恢复。
         // 旧行为是"有多少吃多少", 输出端会一直贴着 0 水位啃零头 ——
         // 实测一次 0.8 秒的捕获断流会变成 7–10 秒的低水位/断音, 而暂停补满只要约 100ms。
@@ -196,9 +200,15 @@ namespace StereoSplitter
             lastReadTs = t0;
             float g = gain;
             float m = master;
-            float gm = g * m;      // 提到循环外: 每样本从 2 次乘法降到 1 次 (~9.6 万次/秒)
             for (int i = 0; i < countRequested; i++)
             {
+                // 联动增益平滑跟踪: 对侧 holding 时本侧降到 -6dB, 约 3ms 过渡 (与 fadeIn 一致)
+                if (linkGainTarget != linkGain)
+                {
+                    if (linkGainTarget > linkGain) { linkGain += fadeStep; if (linkGain > linkGainTarget) linkGain = linkGainTarget; }
+                    else { linkGain -= fadeStep; if (linkGain < linkGainTarget) linkGain = linkGainTarget; }
+                }
+                float gm = g * m * linkGain;
                 if (count < 3 || holding)
                 {
                     if (StepStarved())
@@ -267,14 +277,24 @@ namespace StereoSplitter
 
             if (holding)
             {
-                if (total >= targetSamples * 0.95) { holding = false; starveStreak = 0; return false; }
+                if (total >= targetSamples * 0.95)
+                {
+                    holding = false;
+                    starveStreak = 0;
+                    if (shared != null) shared.NotifyHolding(isLeft, false);
+                    return false;
+                }
             }
             // 只看真实水位, 阈值压到 15%(95ms → 14ms): 真断流时 total 只剩小环里的 1ms,
             // 仍然会在一个块内立刻触发; 健康会话的锯齿谷底(22ms)碰不到。
             else if (total < targetSamples * GateEnterRatio)
             {
                 // 连续两次(间隔约 1.3ms)都在阈值下才认, 单次采样恰好撞上谷底不算
-                if (++starveStreak >= 2) holding = true;
+                if (++starveStreak >= 2)
+                {
+                    holding = true;
+                    if (shared != null) shared.NotifyHolding(isLeft, true);
+                }
             }
             else starveStreak = 0;
             return holding;
@@ -325,6 +345,10 @@ namespace StereoSplitter
                 lowWarned = false;
                 Report("[状态] 缓冲水位已恢复: " + smoothedMs + "ms / 目标 " + MsOf(targetSamples, sr) + "ms");
             }
+
+            // 联动增益与校正模式无关: 即使关闭校正, holding 联动仍需工作
+            if (shared != null)
+                linkGainTarget = shared.OtherHolding(isLeft) ? 0.5f : 1.0f;
 
             if (mode != 1) return;
 
