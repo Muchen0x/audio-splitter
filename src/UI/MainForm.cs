@@ -15,9 +15,13 @@ namespace StereoSplitter
 {
     class MainForm : Form
     {
-        NoWheelComboBox cmbLeft, cmbRight, cmbDefault, cmbLatency;
-        NumericUpDown nudDelayL, nudDelayR;
+        NoWheelComboBox cmbDefault, cmbLatency, cmbSpec;
         NumericUpDown nudWaterInterval;
+        // 输出卡片: 每张卡片 = 一路输出 (输出声道 + 设备 + 延迟 + 音量 + 静音)
+        readonly List<OutputLane> lanes = new List<OutputLane>();
+        readonly List<OutputCardControl> cards = new List<OutputCardControl>();
+        FlowLayoutPanel cardHost;
+        FlowLayoutPanel flwSpecChannels;
         static readonly int[][] LatencyProfiles = new int[][] {
             new int[] { 100, 50 },
             new int[] { 50, 30 },
@@ -29,8 +33,8 @@ namespace StereoSplitter
         System.Windows.Forms.Timer saveDebounce;
         System.Windows.Forms.Timer watchTimer;   // 看门狗: 2 秒一看输出线程活性
         System.Windows.Forms.Timer powerTimer;   // 唤醒后延迟重建 (端点恢复要几百毫秒)
-        TrackBar volLeft, volRight, volMaster, volGain;
-        Label lblVolLeft, lblVolRight, lblVolMaster, lblVolGain;
+        TrackBar volMaster, volGain;
+        Label lblVolMaster, lblVolGain;
         Label lblDot, lblStatus;
         Button btnStart;
         Button btnRefresh;
@@ -38,7 +42,7 @@ namespace StereoSplitter
         Infrastructure.SessionLog sessionLog;
         SplitContainer splitContainer;
         TextBox txtLog;
-        CheckBox chkMuteL, chkMuteR, chkMuteMaster, chkMuteCapture;
+        CheckBox chkMuteMaster, chkMuteCapture;
         CheckBox chkMinimizeToTray;
         CheckBox chkDrift;
         NotifyIcon trayIcon;
@@ -100,9 +104,11 @@ namespace StereoSplitter
         // 主/左/右端点绑定: 各自持有独立 MMDevice, 可安全释放
         ChannelBindingSet bindings;
 
+        static readonly IReadOnlyList<EndpointInfo> NoDevices = new List<EndpointInfo>();
         IReadOnlyList<EndpointInfo> Devices
         {
-            get { return catalog.Endpoints; }
+            // catalog 在 MainForm_Load 才建, 而 LoadSettings(含输出卡片)在构造期就要读
+            get { return catalog == null ? NoDevices : catalog.Endpoints; }
         }
 
         AudioEngine engine;
@@ -130,8 +136,8 @@ namespace StereoSplitter
         public MainForm()
         {
             Text = "Stereo Splitter - 双声道分流";
-            Size = new Size(530, 486);
-            MinimumSize = new Size(530, 486);
+            Size = new Size(600, 520);
+            MinimumSize = new Size(600, 420);
             Font = new Font("Microsoft YaHei UI", 9F);
 
             // 上下可拖动面板: 内容区 | 6px灰分隔条 | 日志区 (参照 tk.PanedWindow)
@@ -152,7 +158,7 @@ namespace StereoSplitter
             splitContainer.Panel2.BackColor = SystemColors.Control;
             splitContainer.Panel1.AutoScroll = true;
             // 初始340时日志区=111(客户457); 窗高减10 → 330 保持日志111不变
-            splitContainer.SplitterDistance = 330;
+            splitContainer.SplitterDistance = 352;
             Controls.Add(splitContainer);
 
             var lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
@@ -160,47 +166,59 @@ namespace StereoSplitter
             chkMuteCapture = new CheckBox { Text = "消音", Location = new Point(363, 14), AutoSize = true };
             btnRefresh = new Button { Text = "刷新设备", Location = new Point(417, 11), Width = 72, Height = 23 };
 
-            var lblL = new Label { Text = "左声道设备:", Location = new Point(15, 45), AutoSize = true };
-            cmbLeft = new NoWheelComboBox { Location = new Point(110, 42), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
-            var lblDL = new Label { Text = "延迟", Location = new Point(370, 45), AutoSize = true };
-            nudDelayL = new NumericUpDown { Location = new Point(402, 42), Width = 60, Minimum = 0, Maximum = 2000 };
-            var lblMsL = new Label { Text = "ms", Location = new Point(465, 45), AutoSize = true };
+            // 主音量 + 增益 (延迟档位行下方)
+            var lblVM = new Label { Text = "主音量:", Location = new Point(15, 78), AutoSize = true };
+            volMaster = new TrackBar { Location = new Point(78, 70), Width = 170, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10, TickStyle = TickStyle.None };
+            lblVolMaster = new Label { Text = "100%", Location = new Point(252, 78), AutoSize = true };
+            chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(294, 76), AutoSize = true };
+            var lblG = new Label { Text = "增益:", Location = new Point(346, 78), AutoSize = true };
+            volGain = new TrackBar { Location = new Point(388, 70), Width = 90, Height = 34, AutoSize = false, Minimum = 0, Maximum = 300, Value = 100, TickFrequency = 50, TickStyle = TickStyle.None };
+            lblVolGain = new Label { Text = "100%", Location = new Point(482, 78), AutoSize = true };
 
-            var lblR = new Label { Text = "右声道设备:", Location = new Point(15, 75), AutoSize = true };
-            cmbRight = new NoWheelComboBox { Location = new Point(110, 72), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
-            var lblDR = new Label { Text = "延迟", Location = new Point(370, 75), AutoSize = true };
-            nudDelayR = new NumericUpDown { Location = new Point(402, 72), Width = 60, Minimum = 0, Maximum = 2000 };
-            var lblMsR = new Label { Text = "ms", Location = new Point(465, 75), AutoSize = true };
+            // 开始分流
+            btnStart = new Button { Text = "开始分流", Location = new Point(15, 108), Width = 130, Height = 35 };
+            lblDot = new Label { Text = "●", Location = new Point(162, 113), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
+            lblStatus = new Label { Text = "状态: 就绪", Location = new Point(182, 118), AutoSize = true, ForeColor = Color.Gray };
 
-            var lblVL = new Label { Text = "左音量:", Location = new Point(15, 145), AutoSize = true };
-            volLeft = new TrackBar { Location = new Point(80, 140), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
-            lblVolLeft = new Label { Text = "100%", Location = new Point(390, 145), AutoSize = true };
-            chkMuteL = new CheckBox { Text = "静音", Location = new Point(435, 144), AutoSize = true };
+            // 规格行: 规格下拉 + 右侧各声道名称(带输出路数角标) + 最右「添加输出」
+            var lblSpec = new Label { Text = "规格:", Location = new Point(15, 155), AutoSize = true };
+            cmbSpec = new NoWheelComboBox { Location = new Point(62, 151), Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbSpec.Items.AddRange(new object[] { "单声道", "立体声", "2.1", "四声道", "5.1" });
+            cmbSpec.SelectedIndex = 1;
+            flwSpecChannels = new FlowLayoutPanel
+            {
+                Location = new Point(166, 148),
+                Size = new Size(310, 30),
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                AutoScroll = false,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+            };
+            var btnAddOutput = new Button
+            {
+                Text = "添加输出",
+                Location = new Point(482, 150),
+                Width = 92,
+                Height = 26,
+                Anchor = AnchorStyles.Top | AnchorStyles.Right
+            };
 
-            var lblVR = new Label { Text = "右音量:", Location = new Point(15, 180), AutoSize = true };
-            volRight = new TrackBar { Location = new Point(80, 175), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
-            lblVolRight = new Label { Text = "100%", Location = new Point(390, 180), AutoSize = true };
-            chkMuteR = new CheckBox { Text = "静音", Location = new Point(435, 179), AutoSize = true };
-
-            var lblVM = new Label { Text = "主音量:", Location = new Point(15, 215), AutoSize = true };
-            volMaster = new TrackBar { Location = new Point(80, 210), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10 };
-            lblVolMaster = new Label { Text = "100%", Location = new Point(390, 215), AutoSize = true };
-            chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(435, 214), AutoSize = true };
-
-            var lblG = new Label { Text = "增益:", Location = new Point(15, 250), AutoSize = true };
-            volGain = new TrackBar { Location = new Point(80, 245), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 300, Value = 100, TickFrequency = 10 };
-            lblVolGain = new Label { Text = "100%", Location = new Point(390, 250), AutoSize = true };
-
-            btnStart = new Button { Text = "开始分流", Location = new Point(190, 285), Width = 130, Height = 35 };
-
-            lblDot = new Label { Text = "●", Location = new Point(17, 290), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
-            lblStatus = new Label { Text = "状态: 就绪", Location = new Point(37, 295), AutoSize = true, ForeColor = Color.Gray };
+            // 输出卡片区 (可增删, 超出高度滚动)
+            cardHost = new FlowLayoutPanel
+            {
+                Location = new Point(15, 182),
+                Size = new Size(530, 166),
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoScroll = true,
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+            };
 
             // 该下拉决定"预缓冲深度 + WASAPI 输出缓冲"整套组合, 直接影响稳态延迟, 不是启动耗时。
             // 选项里的总预估 = 捕获(约10ms) + 内部缓冲目标(driftTarget) + 输出缓冲, 不含 USB/DAC/声波;
             // 数字由 LatencyProfiles 现算, 改档位参数时文案自动跟随。
-            var lblLatency = new Label { Text = "延迟档位:", Location = new Point(15, 108), AutoSize = true };
-            cmbLatency = new NoWheelComboBox { Location = new Point(85, 105), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
+            var lblLatency = new Label { Text = "延迟档位:", Location = new Point(15, 45), AutoSize = true };
+            cmbLatency = new NoWheelComboBox { Location = new Point(85, 42), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
             string[] latNames = { "标准", "低延迟", "极低", "超低", "极限" };
             string[] latWarn = { "", "", ", 易断音", ", 易断音", ", 频繁断音" };
             for (int i = 0; i < LatencyProfiles.Length; i++)
@@ -208,9 +226,25 @@ namespace StereoSplitter
                     AudioEngine.EstimatedTotalMs(LatencyProfiles[i][0], LatencyProfiles[i][1]) + "ms" + latWarn[i] + ")");
             cmbLatency.SelectedIndex = 0;
 
-            chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(290, 107), AutoSize = true };
+            chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(294, 44), AutoSize = true };
             chkDrift = new CheckBox { Text = "校正", AutoSize = true, Checked = true };
             chkDrift.Location = new Point(chkMinimizeToTray.Right + 8, chkMinimizeToTray.Top);
+
+            cardHost.Resize += (s2, e2) =>
+            {
+                int w = CardWidth();
+                for (int ci = 0; ci < cards.Count; ci++) cards[ci].Width = w;
+            };
+            btnAddOutput.Click += (s2, e2) => AddLaneCard(null);
+            cmbSpec.SelectedIndexChanged += (s2, e2) =>
+            {
+                if (loadingSettings) return;
+                ReassignLanesToSpec(true);
+                RebuildCards();
+                RefreshSpecBadges();
+                SaveSettings();
+                Log("[规格] " + SpecText() + " → " + SpecChannelNames());
+            };
 
             // 水位监控组: 日志面板标题行右侧, 清除日志按钮左边 (间隔0=关闭监控)
             var lblWater = new Label { Text = "水位监控:", Location = new Point(209, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
@@ -246,7 +280,7 @@ namespace StereoSplitter
             cmsLog.Items.Add("全选", null, (s, e) => txtLog.SelectAll());
             txtLog.ContextMenuStrip = cmsLog;
 
-            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblL, cmbLeft, lblDL, nudDelayL, lblMsL, lblR, cmbRight, lblDR, nudDelayR, lblMsR, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVL, volLeft, lblVolLeft, chkMuteL, lblVR, volRight, lblVolRight, chkMuteR, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart, lblSpec, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
 
             btnStart.Click += BtnStart_Click;
@@ -273,8 +307,6 @@ namespace StereoSplitter
                 }
             };
             cmbLatency.SelectedIndexChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
-            nudDelayL.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
-            nudDelayR.ValueChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudWaterInterval.ValueChanged += (s, e) =>
             {
                 int v = (int)nudWaterInterval.Value;
@@ -282,11 +314,7 @@ namespace StereoSplitter
                 SyncWaterTimer();
                 if (!loadingSettings) SaveSettings();
             };
-            cmbLeft.SelectedIndexChanged += (s, e) => { if (!loadingDevices) SaveSettings(); };
-            cmbRight.SelectedIndexChanged += (s, e) => { if (!loadingDevices) SaveSettings(); };
             cmbDefault.SelectedIndexChanged += (s, e) => { if (!loadingDevices) SaveSettings(); };
-            volLeft.Scroll += (s, e) => OnChannelScroll(volLeft, lblVolLeft, chkMuteL, bindings == null ? null : bindings.Left, "左声道");
-            volRight.Scroll += (s, e) => OnChannelScroll(volRight, lblVolRight, chkMuteR, bindings == null ? null : bindings.Right, "右声道");
             volMaster.Scroll += (s, e) =>
             {
                 lblVolMaster.Text = volMaster.Value + "%";
@@ -316,18 +344,6 @@ namespace StereoSplitter
                 lblVolGain.Text = volGain.Value + "%";
                 pendingGain = volGain.Value / 100f;
                 if (engine != null) engine.SetGain(pendingGain);
-                SaveSettings();
-            };
-            chkMuteL.CheckedChanged += (s, e) =>
-            {
-                if (!volSyncing && bindings != null && bindings.Left != null)
-                    bindings.Left.WriteMute(chkMuteL.Checked);
-                SaveSettings();
-            };
-            chkMuteR.CheckedChanged += (s, e) =>
-            {
-                if (!volSyncing && bindings != null && bindings.Right != null)
-                    bindings.Right.WriteMute(chkMuteR.Checked);
                 SaveSettings();
             };
 
@@ -403,25 +419,24 @@ namespace StereoSplitter
 
             bool busy = (s == AppState.Starting);
             bool run = (s == AppState.Running);
-            cmbLeft.Enabled = !busy && !run;
-            cmbRight.Enabled = !busy && !run;
             cmbDefault.Enabled = !busy && !run;
             btnRefresh.Enabled = !busy && !run;
-            volLeft.Enabled = !busy;
-            volRight.Enabled = !busy;
             volMaster.Enabled = !busy;
             volGain.Enabled = !busy;
-            chkMuteL.Enabled = !busy;
-            chkMuteR.Enabled = !busy;
             chkMuteMaster.Enabled = !busy;
             chkMuteCapture.Enabled = !busy;
             chkMinimizeToTray.Enabled = !busy;
             chkDrift.Enabled = !busy;
             cmbLatency.Enabled = !busy && !run;
-            nudDelayL.Enabled = !busy && !run;
-            nudDelayR.Enabled = !busy && !run;
+            cmbSpec.Enabled = !busy && !run;
             nudWaterInterval.Enabled = !busy;
             btnStart.Enabled = !busy;
+            for (int ci = 0; ci < cards.Count; ci++)
+            {
+                cards[ci].SetBusy(busy || run);   // 设备/声道/延迟/移除锁定
+                cards[ci].volTrack.Enabled = !busy;
+                cards[ci].chkMute.Enabled = !busy;
+            }
 
             // 数值标签: 仅分流运行中(双向绑定生效)为黑, 其余灰色表示无效
             SetVolumeBindVisual(run);
@@ -562,8 +577,9 @@ namespace StereoSplitter
                 Log("[恢复] 默认输出已切回捕获设备 → 自动重新绑定音量");
 
                 // 捕获 UI 当前值 (Bind 回读会用设备值覆盖, 与启动流程同理)
-                int uiL = volLeft.Value, uiR = volRight.Value, uiM = volMaster.Value;
-                bool uiMl = chkMuteL.Checked, uiMr = chkMuteR.Checked,
+                OutputCardControl cl0 = LeftCard(), cr0 = RightCard();
+                int uiL = cl0 != null ? cl0.volTrack.Value : 100, uiR = cr0 != null ? cr0.volTrack.Value : 100, uiM = volMaster.Value;
+                bool uiMl = cl0 != null && cl0.chkMute.Checked, uiMr = cr0 != null && cr0.chkMute.Checked,
                      uiMm = chkMuteMaster.Checked, uiMc = chkMuteCapture.Checked;
 
                 BindDefaultVolumeSync("[恢复]");
@@ -584,14 +600,11 @@ namespace StereoSplitter
         void RestoreUIValues(int uiL, int uiR, int uiM, bool uiMl, bool uiMr, bool uiMm, bool uiMc)
         {
             volSyncing = true;
-            volLeft.Value = uiL;
-            volRight.Value = uiR;
+            OutputCardControl cl = LeftCard(), cr = RightCard();
+            if (cl != null) { cl.volTrack.Value = uiL; cl.lblVol.Text = uiL + "%"; cl.chkMute.Checked = uiMl; }
+            if (cr != null && cr != cl) { cr.volTrack.Value = uiR; cr.lblVol.Text = uiR + "%"; cr.chkMute.Checked = uiMr; }
             volMaster.Value = uiM;
-            lblVolLeft.Text = uiL + "%";
-            lblVolRight.Text = uiR + "%";
             lblVolMaster.Text = uiM + "%";
-            chkMuteL.Checked = uiMl;
-            chkMuteR.Checked = uiMr;
             chkMuteMaster.Checked = uiMm;
             chkMuteCapture.Checked = uiMc;
             volSyncing = false;
@@ -755,13 +768,19 @@ namespace StereoSplitter
 
         bool BindChannelVolumeSync(string stage)
         {
-            bool okL = BindOneChannel(stage, "左", cmbLeft.SelectedIndex, bindings.BindLeft,
-                LeftVol_OnVolumeNotification, volLeft, lblVolLeft, chkMuteL);
-            bool okR = BindOneChannel(stage, "右", cmbRight.SelectedIndex, bindings.BindRight,
-                RightVol_OnVolumeNotification, volRight, lblVolRight, chkMuteR);
+            OutputCardControl cl = LeftCard(), cr = RightCard();
+            if (cl == null || cr == null)
+            {
+                Log("[错误] " + stage + " 输出卡片不足, 无法绑定左右音量");
+                return false;
+            }
+            bool okL = BindOneChannel(stage, "左", cl.cmbDevice.SelectedIndex, bindings.BindLeft,
+                LeftVol_OnVolumeNotification, cl.volTrack, cl.lblVol, cl.chkMute);
+            bool okR = BindOneChannel(stage, "右", cr.cmbDevice.SelectedIndex, bindings.BindRight,
+                RightVol_OnVolumeNotification, cr.volTrack, cr.lblVol, cr.chkMute);
 
-            if (cmbLeft.SelectedIndex >= 0 && cmbLeft.SelectedIndex == cmbRight.SelectedIndex)
-                Log("[提示] 左右声道选择了同一设备 " + DevInfo(bindings.Left) + "，两滑条联动同一端点");
+            if (cl.cmbDevice.SelectedIndex >= 0 && cl.cmbDevice.SelectedIndex == cr.cmbDevice.SelectedIndex)
+                Log("[提示] 左右输出选择了同一设备 " + DevInfo(bindings.Left) + "，两滑条联动同一端点");
             return okL && okR;
         }
 
@@ -801,13 +820,13 @@ namespace StereoSplitter
 
         void LeftVol_OnVolumeNotification(AudioVolumeNotificationData data)
         {
-            try { BeginInvoke(new Action(() => HandleChannelVolumeNotification(data, bindings == null ? null : bindings.Left, volLeft, lblVolLeft, chkMuteL))); }
+            try { BeginInvoke(new Action(() => { var c = LeftCard(); if (c != null) HandleChannelVolumeNotification(data, bindings == null ? null : bindings.Left, c.volTrack, c.lblVol, c.chkMute); })); }
             catch { }
         }
 
         void RightVol_OnVolumeNotification(AudioVolumeNotificationData data)
         {
-            try { BeginInvoke(new Action(() => HandleChannelVolumeNotification(data, bindings == null ? null : bindings.Right, volRight, lblVolRight, chkMuteR))); }
+            try { BeginInvoke(new Action(() => { var c = RightCard(); if (c != null) HandleChannelVolumeNotification(data, bindings == null ? null : bindings.Right, c.volTrack, c.lblVol, c.chkMute); })); }
             catch { }
         }
 
@@ -865,10 +884,16 @@ namespace StereoSplitter
                 BindDefaultVolumeSync("[配置] 2/4");
 
                 // 3. 左右目标若与默认冲突/无效 → 自动选前两个非默认非虚拟设备
+                OutputCardControl clDev = LeftCard(), crDev = RightCard();
+                if (clDev == null || crDev == null)
+                {
+                    Log("[错误] 配置 3/4 输出卡片不足, 无法确定左右目标。");
+                    return false;
+                }
                 bool conflict =
-                    cmbLeft.SelectedIndex < 0 || cmbRight.SelectedIndex < 0 ||
-                    cmbLeft.SelectedIndex == defIdx || cmbRight.SelectedIndex == defIdx ||
-                    cmbLeft.SelectedIndex == cmbRight.SelectedIndex;
+                    clDev.cmbDevice.SelectedIndex < 0 || crDev.cmbDevice.SelectedIndex < 0 ||
+                    clDev.cmbDevice.SelectedIndex == defIdx || crDev.cmbDevice.SelectedIndex == defIdx ||
+                    clDev.cmbDevice.SelectedIndex == crDev.cmbDevice.SelectedIndex;
 
                 if (conflict)
                 {
@@ -893,8 +918,10 @@ namespace StereoSplitter
                     }
                     if (l >= 0 && r >= 0 && l != r)
                     {
-                        cmbLeft.SelectedIndex = l;
-                        cmbRight.SelectedIndex = r;
+                        clDev.SetDeviceIndex(l);
+                        crDev.SetDeviceIndex(r);
+                        clDev.Lane.DeviceId = DeviceIdAt(l);
+                        crDev.Lane.DeviceId = DeviceIdAt(r);
                         Log("[配置] 3/4 左右目标: 自动改选(冲突/无效) L=[" + l + "] " + Devices[l].FriendlyName +
                             " / R=[" + r + "] " + Devices[r].FriendlyName);
                     }
@@ -906,9 +933,9 @@ namespace StereoSplitter
                 }
                 else
                 {
-                    Log("[配置] 3/4 左右目标: 保持手动选择 L=[" + cmbLeft.SelectedIndex + "] " +
-                        Devices[cmbLeft.SelectedIndex].FriendlyName + " / R=[" + cmbRight.SelectedIndex + "] " +
-                        Devices[cmbRight.SelectedIndex].FriendlyName);
+                    Log("[配置] 3/4 左右目标: 保持手动选择 L=[" + clDev.cmbDevice.SelectedIndex + "] " +
+                        Devices[clDev.cmbDevice.SelectedIndex].FriendlyName + " / R=[" + crDev.cmbDevice.SelectedIndex + "] " +
+                        Devices[crDev.cmbDevice.SelectedIndex].FriendlyName);
                 }
 
                 // 4. 重绑左右音量同步到左右目标设备
@@ -919,7 +946,7 @@ namespace StereoSplitter
                 }
 
                 // 回环检查
-                if (cmbLeft.SelectedIndex == defIdx || cmbRight.SelectedIndex == defIdx)
+                if (clDev.cmbDevice.SelectedIndex == defIdx || crDev.cmbDevice.SelectedIndex == defIdx)
                 {
                     Log("[错误] 回环检查未通过: 捕获输出与左右目标相同。");
                     return false;
@@ -949,8 +976,6 @@ namespace StereoSplitter
 
             chkMinimizeToTray.Checked = GetInt("MinimizeToTray", 0) != 0;
             cmbLatency.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("LatencyProfile", 0)));
-            nudDelayL.Value = Math.Max(0, Math.Min(2000, GetInt("DelayLeft", 0)));
-            nudDelayR.Value = Math.Max(0, Math.Min(2000, GetInt("DelayRight", 0)));
             int wi = GetInt("WaterIntervalSec", 30);
             if (wi != 0) wi = Math.Max(5, Math.Min(3600, wi)); // 0=关闭, 1-4 按 5 秒
             nudWaterInterval.Value = wi;
@@ -964,6 +989,323 @@ namespace StereoSplitter
             volGain.Value = gain;
             lblVolGain.Text = gain + "%";
             pendingGain = gain / 100f;
+
+            // 输出卡片 (规格 + 各路输出)
+            LoadLanes();
+        }
+
+
+        // ==================== 规格与输出卡片 ====================
+
+        /// <summary>当前规格的声道清单 (键, 显示名)。键与 Windows 扬声器位对应。</summary>
+        List<KeyValuePair<string, string>> CurrentSpecChannels()
+        {
+            switch (cmbSpec.SelectedIndex)
+            {
+                case 0: return Pairs(new string[] { "M" }, new string[] { "单声道" });
+                case 2: return Pairs(new string[] { "FL", "FR", "LFE" }, new string[] { "左", "右", "低音" });
+                case 3: return Pairs(new string[] { "FL", "FR", "BL", "BR" }, new string[] { "左前", "右前", "左后", "右后" });
+                case 4: return Pairs(new string[] { "FL", "FR", "C", "LFE", "SL", "SR" }, new string[] { "左前", "右前", "中置", "低音", "左环绕", "右环绕" });
+                default: return Pairs(new string[] { "FL", "FR" }, new string[] { "左", "右" });
+            }
+        }
+
+        static List<KeyValuePair<string, string>> Pairs(string[] keys, string[] names)
+        {
+            var list = new List<KeyValuePair<string, string>>();
+            for (int i = 0; i < keys.Length; i++) list.Add(new KeyValuePair<string, string>(keys[i], names[i]));
+            return list;
+        }
+
+        string SpecText()
+        {
+            string[] names = { "单声道", "立体声", "2.1", "四声道", "5.1" };
+            int i = cmbSpec.SelectedIndex;
+            return (i >= 0 && i < names.Length) ? names[i] : "立体声";
+        }
+
+        string SpecChannelNames()
+        {
+            var chans = CurrentSpecChannels();
+            var names = new List<string>();
+            for (int i = 0; i < chans.Count; i++) names.Add(chans[i].Value);
+            return string.Join("/", names.ToArray());
+        }
+
+        string ChannelNameOf(string key)
+        {
+            var chans = CurrentSpecChannels();
+            for (int i = 0; i < chans.Count; i++) if (chans[i].Key == key) return chans[i].Value;
+            return key;
+        }
+
+        /// <summary>左输出卡片: 规格里的 FL (单声道规格时 M)。</summary>
+        OutputCardControl LeftCard()
+        {
+            for (int i = 0; i < lanes.Count && i < cards.Count; i++) if (lanes[i].ChannelKey == "FL") return cards[i];
+            for (int i = 0; i < lanes.Count && i < cards.Count; i++) if (lanes[i].ChannelKey == "M") return cards[i];
+            return cards.Count > 0 ? cards[0] : null;
+        }
+
+        /// <summary>右输出卡片: FR; 单声道规格时第二张 M 卡; 都没有则与左共用。</summary>
+        OutputCardControl RightCard()
+        {
+            for (int i = 0; i < lanes.Count && i < cards.Count; i++) if (lanes[i].ChannelKey == "FR") return cards[i];
+            int seen = 0;
+            for (int i = 0; i < lanes.Count && i < cards.Count; i++)
+                if (lanes[i].ChannelKey == "M") { seen++; if (seen == 2) return cards[i]; }
+            OutputCardControl l = LeftCard();
+            return l ?? (cards.Count > 1 ? cards[1] : null);
+        }
+
+        string SafeDeviceId(int idx)
+        {
+            return (idx >= 0 && catalog != null) ? catalog.IdAt(idx) : "";
+        }
+
+        string LeftDeviceId()
+        {
+            OutputCardControl c = LeftCard();
+            return c == null ? "" : SafeDeviceId(c.cmbDevice.SelectedIndex);
+        }
+
+        string RightDeviceId()
+        {
+            OutputCardControl c = RightCard();
+            return c == null ? "" : SafeDeviceId(c.cmbDevice.SelectedIndex);
+        }
+
+        string LaneSummary()
+        {
+            var parts = new List<string>();
+            for (int i = 0; i < lanes.Count && i < cards.Count; i++)
+            {
+                string name = "未选";
+                int idx = cards[i].cmbDevice.SelectedIndex;
+                if (idx >= 0 && idx < Devices.Count) name = Devices[idx].FriendlyName;
+                parts.Add(ChannelNameOf(lanes[i].ChannelKey) + "->" + name);
+            }
+            return string.Join(" ", parts.ToArray());
+        }
+
+        /// <summary>把控件当前值写回模型 (存盘/启动前调用)。</summary>
+        void SyncLanesFromCards()
+        {
+            var chans = CurrentSpecChannels();
+            for (int i = 0; i < cards.Count && i < lanes.Count; i++)
+            {
+                cards[i].WriteBackToLane(chans);
+                lanes[i].DeviceId = SafeDeviceId(cards[i].cmbDevice.SelectedIndex);
+            }
+        }
+
+        /// <summary>声道键必须落在当前规格里。force=true 时按顺序重排 (换规格用)。</summary>
+        void ReassignLanesToSpec(bool force)
+        {
+            var chans = CurrentSpecChannels();
+            if (chans.Count == 0) return;
+            for (int i = 0; i < lanes.Count; i++)
+            {
+                bool ok = false;
+                for (int k = 0; k < chans.Count; k++) if (chans[k].Key == lanes[i].ChannelKey) { ok = true; break; }
+                if (force || !ok) lanes[i].ChannelKey = chans[i % chans.Count].Key;
+            }
+        }
+
+        void RebuildCards()
+        {
+            for (int i = 0; i < cards.Count; i++)
+            {
+                cards[i].Changed -= OnCardChanged;
+                cards[i].VolumeScrolled -= OnCardVolumeScrolled;
+                cards[i].RemoveRequested -= OnCardRemoveRequested;
+                cardHost.Controls.Remove(cards[i]);
+                cards[i].Dispose();
+            }
+            cards.Clear();
+
+            var chans = CurrentSpecChannels();
+            var devTexts = new List<string>();
+            for (int i = 0; i < Devices.Count; i++) devTexts.Add("[" + i + "] " + Devices[i].FriendlyName);
+
+            for (int i = 0; i < lanes.Count; i++)
+            {
+                var card = new OutputCardControl(lanes[i]);
+                card.Changed += OnCardChanged;
+                card.VolumeScrolled += OnCardVolumeScrolled;
+                card.RemoveRequested += OnCardRemoveRequested;
+                card.SetDevices(devTexts);
+                card.SetDeviceIndex(catalog == null ? -1 : catalog.IndexOf(lanes[i].DeviceId));
+                card.SetChannels(chans, lanes[i].ChannelKey);
+                card.Width = CardWidth();
+                cardHost.Controls.Add(card);
+                cards.Add(card);
+            }
+            RefreshSpecBadges();
+        }
+
+        /// <summary>卡片宽度 = 卡片区可视宽度 (留出竖滚动条)。</summary>
+        int CardWidth()
+        {
+            if (cardHost == null) return OutputCardControl.CardWidth;
+            int w = cardHost.ClientSize.Width - 24;
+            return w < 380 ? 380 : w;
+        }
+
+        void AddLaneCard(OutputLane preset)
+        {
+            var chans = CurrentSpecChannels();
+            var lane = preset ?? new OutputLane();
+            if (preset == null)
+            {
+                // 新卡片接第一个还没人接的声道; 都有人接则接第一个声道
+                string key = chans.Count > 0 ? chans[0].Key : "FL";
+                for (int i = 0; i < chans.Count; i++)
+                {
+                    bool used = false;
+                    for (int k = 0; k < lanes.Count; k++) if (lanes[k].ChannelKey == chans[i].Key) { used = true; break; }
+                    if (!used) { key = chans[i].Key; break; }
+                }
+                lane.ChannelKey = key;
+            }
+            lanes.Add(lane);
+            RebuildCards();
+            SaveSettings();
+            Log("[输出] 新增一路: " + ChannelNameOf(lane.ChannelKey) + " (共 " + lanes.Count + " 路)");
+        }
+
+        void OnCardChanged(OutputCardControl card)
+        {
+            if (loadingSettings || loadingDevices) return;
+            SyncLanesFromCards();
+            SaveSettings();
+            RefreshSpecBadges();
+        }
+
+        void OnCardVolumeScrolled(OutputCardControl card)
+        {
+            if (volSyncing) return;
+            // 左右输出的音量/静音仍走端点双向绑定; 其余卡片先只保存 (多路内核接入后生效)
+            OutputCardControl cl = LeftCard(), cr = RightCard();
+            if (card == cl && bindings != null && bindings.Left != null && bindings.Left.IsValid)
+            {
+                bindings.Left.WriteVolume(card.volTrack.Value / 100f);
+                if (card.volTrack.Value > 0 && bindings.Left.ReadMuted()) bindings.Left.WriteMute(false);
+            }
+            else if (card == cr && card != cl && bindings != null && bindings.Right != null && bindings.Right.IsValid)
+            {
+                bindings.Right.WriteVolume(card.volTrack.Value / 100f);
+                if (card.volTrack.Value > 0 && bindings.Right.ReadMuted()) bindings.Right.WriteMute(false);
+            }
+            SaveSettings();
+        }
+
+        void OnCardRemoveRequested(OutputCardControl card)
+        {
+            if (loadingSettings) return;
+            int idx = cards.IndexOf(card);
+            if (idx < 0) return;
+            if (lanes.Count <= 1) { Log("[输出] 至少保留一路输出"); return; }
+            string who = ChannelNameOf(lanes[idx].ChannelKey);
+            lanes.RemoveAt(idx);
+            RebuildCards();
+            SaveSettings();
+            Log("[输出] 已移除: " + who + " (剩 " + lanes.Count + " 路)");
+        }
+
+        /// <summary>
+        /// 规格行右侧的声道标注: 有输出的显示蓝色并在名字旁挂数字角标(= 路数), 没输出的灰色。
+        /// </summary>
+        void RefreshSpecBadges()
+        {
+            if (flwSpecChannels == null) return;
+            flwSpecChannels.SuspendLayout();
+            try
+            {
+                flwSpecChannels.Controls.Clear();
+                var chans = CurrentSpecChannels();
+                for (int i = 0; i < chans.Count; i++)
+                {
+                    int n = 0;
+                    for (int k = 0; k < lanes.Count; k++) if (lanes[k].ChannelKey == chans[i].Key) n++;
+                    var name = new Label
+                    {
+                        Text = chans[i].Value,
+                        AutoSize = true,
+                        Margin = new Padding(1, 7, 0, 0),
+                        ForeColor = n > 0 ? Color.SteelBlue : Color.Gray
+                    };
+                    flwSpecChannels.Controls.Add(name);
+                    if (n > 0)
+                    {
+                        var badge = new Label
+                        {
+                            Text = n.ToString(),
+                            AutoSize = false,
+                            Size = new Size(15, 15),
+                            TextAlign = ContentAlignment.MiddleCenter,
+                            BackColor = Color.SteelBlue,
+                            ForeColor = Color.White,
+                            Margin = new Padding(1, 4, 3, 0),
+                            Font = new Font("Microsoft YaHei UI", 7F, FontStyle.Bold)
+                        };
+                        flwSpecChannels.Controls.Add(badge);
+                    }
+                }
+            }
+            finally { flwSpecChannels.ResumeLayout(); }
+        }
+
+        /// <summary>从 ini 装载输出模型: 优先 Out* 新键, 没有则用旧的左右键合成两路。</summary>
+        void LoadLanes()
+        {
+            lanes.Clear();
+            cmbSpec.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("Spec", 1)));
+
+            int count = GetInt("OutCount", 0);
+            if (count > 0)
+            {
+                for (int i = 0; i < count && i < 16; i++)
+                {
+                    string pk = "Out" + i + ".";
+                    lanes.Add(new OutputLane
+                    {
+                        ChannelKey = StrOrDefault(settings.GetStr(pk + "Channel"), "FL"),
+                        DeviceId = settings.GetStr(pk + "DeviceId") ?? "",
+                        DelayMs = Math.Max(0, Math.Min(2000, GetInt(pk + "DelayMs", 0))),
+                        Volume = Math.Max(0, Math.Min(100, GetInt(pk + "Volume", 100))),
+                        Mute = GetInt(pk + "Mute", 0) != 0
+                    });
+                }
+            }
+            else
+            {
+                // 老配置 (DeviceLeft/DeviceRight 那套) → 左右两路
+                lanes.Add(new OutputLane
+                {
+                    ChannelKey = "FL",
+                    DeviceId = GetStr("DeviceLeft") ?? "",
+                    DelayMs = Math.Max(0, Math.Min(2000, GetInt("DelayLeft", 0))),
+                    Volume = Math.Max(0, Math.Min(100, GetInt("VolumeLeft", 100))),
+                    Mute = GetInt("MuteLeft", 0) != 0
+                });
+                lanes.Add(new OutputLane
+                {
+                    ChannelKey = "FR",
+                    DeviceId = GetStr("DeviceRight") ?? "",
+                    DelayMs = Math.Max(0, Math.Min(2000, GetInt("DelayRight", 0))),
+                    Volume = Math.Max(0, Math.Min(100, GetInt("VolumeRight", 100))),
+                    Mute = GetInt("MuteRight", 0) != 0
+                });
+            }
+
+            ReassignLanesToSpec(false);   // 只修正落不进规格的声道键
+            RebuildCards();
+        }
+
+        static string StrOrDefault(string s, string def)
+        {
+            return string.IsNullOrEmpty(s) ? def : s;
         }
 
         int GetInt(string key, int def)
@@ -1020,18 +1362,31 @@ namespace StereoSplitter
             {
                 settings.Put("MinimizeToTray", chkMinimizeToTray.Checked ? "1" : "0");
                 settings.Put("LatencyProfile", Math.Max(0, cmbLatency.SelectedIndex).ToString());
-                settings.Put("DelayLeft", ((int)nudDelayL.Value).ToString());
-                settings.Put("DelayRight", ((int)nudDelayR.Value).ToString());
+                settings.Put("Spec", cmbSpec.SelectedIndex < 0 ? "1" : cmbSpec.SelectedIndex.ToString());
+                SyncLanesFromCards();
+                settings.RemovePrefix("Out");   // 先清干净, 删过的路不留孤儿键
+                settings.Put("OutCount", lanes.Count.ToString());
+                for (int li = 0; li < lanes.Count && li < 16; li++)
+                {
+                    string pk = "Out" + li + ".";
+                    settings.Put(pk + "Channel", lanes[li].ChannelKey);
+                    settings.Put(pk + "DeviceId", lanes[li].DeviceId ?? "");
+                    settings.Put(pk + "DelayMs", lanes[li].DelayMs.ToString());
+                    settings.Put(pk + "Volume", lanes[li].Volume.ToString());
+                    settings.Put(pk + "Mute", lanes[li].Mute ? "1" : "0");
+                }
                 settings.Put("WaterIntervalSec", ((int)nudWaterInterval.Value).ToString());
                 settings.Put("Gain", volGain.Value.ToString());
-                settings.Put("DeviceLeft", DeviceIdAt(cmbLeft.SelectedIndex));
-                settings.Put("DeviceRight", DeviceIdAt(cmbRight.SelectedIndex));
+                // 兼容键: 左右 = FL/FR 输出卡片的设备 (旧 ini 与外部工具仍按这两个键读)
+                settings.Put("DeviceLeft", LeftDeviceId() ?? "");
+                settings.Put("DeviceRight", RightDeviceId() ?? "");
                 settings.Put("DeviceDefault", DeviceIdAt(cmbDefault.SelectedIndex));
-                settings.Put("VolumeLeft", volLeft.Value.ToString());
-                settings.Put("VolumeRight", volRight.Value.ToString());
+                OutputCardControl vcl = LeftCard(), vcr = RightCard();
+                settings.Put("VolumeLeft", (vcl != null ? vcl.volTrack.Value : 100).ToString());
+                settings.Put("VolumeRight", (vcr != null ? vcr.volTrack.Value : 100).ToString());
                 settings.Put("VolumeMaster", volMaster.Value.ToString());
-                settings.Put("MuteLeft", chkMuteL.Checked ? "1" : "0");
-                settings.Put("MuteRight", chkMuteR.Checked ? "1" : "0");
+                settings.Put("MuteLeft", (vcl != null && vcl.chkMute.Checked) ? "1" : "0");
+                settings.Put("MuteRight", (vcr != null && vcr.chkMute.Checked) ? "1" : "0");
                 settings.Put("MuteMaster", chkMuteMaster.Checked ? "1" : "0");
                 settings.Put("MuteCapture", chkMuteCapture.Checked ? "1" : "0");
                 settings.Put("DriftMode", driftMode.ToString());
@@ -1075,32 +1430,6 @@ namespace StereoSplitter
                     chkMuteCapture.Checked = m;
                     any = true;
                 }
-                if (settings.Has("VolumeLeft"))
-                {
-                    int v = Math.Max(0, Math.Min(100, GetInt("VolumeLeft", 100)));
-                    volLeft.Value = v;
-                    lblVolLeft.Text = v + "%";
-                    any = true;
-                }
-                if (settings.Has("MuteLeft"))
-                {
-                    bool m = GetInt("MuteLeft", 0) != 0;
-                    chkMuteL.Checked = m;
-                    any = true;
-                }
-                if (settings.Has("VolumeRight"))
-                {
-                    int v = Math.Max(0, Math.Min(100, GetInt("VolumeRight", 100)));
-                    volRight.Value = v;
-                    lblVolRight.Text = v + "%";
-                    any = true;
-                }
-                if (settings.Has("MuteRight"))
-                {
-                    bool m = GetInt("MuteRight", 0) != 0;
-                    chkMuteR.Checked = m;
-                    any = true;
-                }
             }
             finally
             {
@@ -1108,14 +1437,13 @@ namespace StereoSplitter
             }
 
             // 存量设置音量为0 → 补勾静音 (与拖到0自动静音规则一致)
-            if (volLeft.Value == 0) chkMuteL.Checked = true;
-            if (volRight.Value == 0) chkMuteR.Checked = true;
             if (volMaster.Value == 0) chkMuteMaster.Checked = true;
+            for (int i = 0; i < lanes.Count; i++)
+                if (lanes[i].Volume == 0) lanes[i].Mute = true;
 
             if (any)
                 Log("[初始化] 设置已加载: 主=" + volMaster.Value + "%/" + (chkMuteMaster.Checked ? "静音" : "开") +
-                    " 左=" + volLeft.Value + "%/" + (chkMuteL.Checked ? "静音" : "开") +
-                    " 右=" + volRight.Value + "%/" + (chkMuteR.Checked ? "静音" : "开") +
+                    " 输出 " + lanes.Count + " 路 (" + LaneSummary() + ")" +
                     " 增益=" + volGain.Value + "%" +
                     (chkMuteCapture.Checked ? " 捕获消音=开" : ""));
         }
@@ -1222,8 +1550,9 @@ namespace StereoSplitter
         void SetVolumeBindVisual(bool bound)
         {
             Color c = bound ? SystemColors.ControlText : SystemColors.GrayText;
-            if (lblVolLeft != null) lblVolLeft.ForeColor = c;
-            if (lblVolRight != null) lblVolRight.ForeColor = c;
+            OutputCardControl cl = LeftCard(), cr = RightCard();
+            if (cl != null && cl.lblVol != null) cl.lblVol.ForeColor = c;
+            if (cr != null && cr != cl && cr.lblVol != null) cr.lblVol.ForeColor = c;
             if (lblVolMaster != null) lblVolMaster.ForeColor = c;
         }
 
@@ -1279,10 +1608,13 @@ namespace StereoSplitter
             volSyncing = true;
             try
             {
-                bindings.WriteValues(volMaster.Value, volLeft.Value, volRight.Value,
-                    chkMuteCapture.Checked, chkMuteL.Checked, chkMuteR.Checked);
-                Log("[启动] 按UI值写入端点: 主=" + volMaster.Value + "% 左=" + volLeft.Value +
-                    "% 右=" + volRight.Value + "% (捕获消音=" + (chkMuteCapture.Checked ? "是" : "否") + ")");
+                SyncLanesFromCards();
+                OutputCardControl wcl = LeftCard(), wcr = RightCard();
+                int wl = wcl != null ? wcl.volTrack.Value : 100, wr = wcr != null ? wcr.volTrack.Value : 100;
+                bool wml = wcl != null && wcl.chkMute.Checked, wmr = wcr != null && wcr.chkMute.Checked;
+                bindings.WriteValues(volMaster.Value, wl, wr, chkMuteCapture.Checked, wml, wmr);
+                Log("[启动] 按UI值写入端点: 主=" + volMaster.Value + "% 左=" + wl +
+                    "% 右=" + wr + "% (捕获消音=" + (chkMuteCapture.Checked ? "是" : "否") + ")");
             }
             finally { volSyncing = false; }
         }
@@ -1307,28 +1639,41 @@ namespace StereoSplitter
             {
                 // 重建目录: 展示用实例由 catalog 自行释放 (端点绑定用的是独立实例, 不受影响)
                 catalog.Refresh();
-                cmbLeft.Items.Clear();
-                cmbRight.Items.Clear();
                 cmbDefault.Items.Clear();
 
+                var devTexts = new List<string>();
                 for (int i = 0; i < Devices.Count; i++)
                 {
                     string text = "[" + i + "] " + Devices[i].FriendlyName;
-                    cmbLeft.Items.Add(text);
-                    cmbRight.Items.Add(text);
+                    devTexts.Add(text);
                     cmbDefault.Items.Add(text);
                 }
 
                 int defIdx = catalog.IndexOf(catalog.DefaultRenderId());
                 string defName = catalog.DefaultRenderName();
-                if (cmbLeft.Items.Count > 0) cmbLeft.SelectedIndex = 0;
-                if (cmbRight.Items.Count > 1) cmbRight.SelectedIndex = 1;
                 if (cmbDefault.Items.Count > 0) cmbDefault.SelectedIndex = defIdx >= 0 ? defIdx : 0;
 
                 // 恢复 ini 保存的设备选择 (按设备 ID, 找不到则保留上面的默认)
-                RestoreDeviceSelection("DeviceLeft", cmbLeft, "左");
-                RestoreDeviceSelection("DeviceRight", cmbRight, "右");
                 RestoreDeviceSelection("DeviceDefault", cmbDefault, "捕获输出");
+
+                // 输出卡片: 逐张填充设备下拉并按 Lane.DeviceId 恢复
+                for (int ci = 0; ci < cards.Count && ci < lanes.Count; ci++)
+                {
+                    cards[ci].SetDevices(devTexts);
+                    int idx = catalog.IndexOf(lanes[ci].DeviceId);
+                    if (idx < 0 && lanes[ci].DeviceId != "")
+                    {
+                        Log("[初始化] 输出 " + (ci + 1) + " 的设备已失效: " + lanes[ci].DeviceId);
+                    }
+                    if (idx < 0 && cards[ci].cmbDevice.Items.Count > 0)
+                    {
+                        // 未选/失效 → 默认接前两张卡用 0/1 号设备 (与旧版一致)
+                        idx = ci < 2 ? ci : 0;
+                        if (idx >= cards[ci].cmbDevice.Items.Count) idx = 0;
+                        lanes[ci].DeviceId = DeviceIdAt(idx);
+                    }
+                    cards[ci].SetDeviceIndex(idx);
+                }
 
                 Log("[初始化] 发现 " + Devices.Count + " 个输出设备，默认输出: [" + defIdx + "] " + defName);
             }
@@ -1358,8 +1703,9 @@ namespace StereoSplitter
             SetAppState(AppState.Starting);
 
             // 捕获 UI 当前值 (AutoConfigure 的 Bind 会用设备真值回填覆盖, 须提前存下)
-            int uiL = volLeft.Value, uiR = volRight.Value, uiM = volMaster.Value;
-            bool uiMl = chkMuteL.Checked, uiMr = chkMuteR.Checked,
+            OutputCardControl scl = LeftCard(), scr = RightCard();
+            int uiL = scl != null ? scl.volTrack.Value : 100, uiR = scr != null ? scr.volTrack.Value : 100, uiM = volMaster.Value;
+            bool uiMl = scl != null && scl.chkMute.Checked, uiMr = scr != null && scr.chkMute.Checked,
                  uiMm = chkMuteMaster.Checked, uiMc = chkMuteCapture.Checked;
             snapL = uiL; snapR = uiR; snapM = uiM;
             snapMl = uiMl; snapMr = uiMr; snapMm = uiMm; snapMc = uiMc;
@@ -1381,25 +1727,25 @@ namespace StereoSplitter
                 return;
             }
 
-            if (cmbLeft.SelectedIndex < 0 || cmbRight.SelectedIndex < 0)
+            if (scl == null || scr == null || scl.cmbDevice.SelectedIndex < 0 || scr.cmbDevice.SelectedIndex < 0)
             {
                 StartFailed();
-                MessageBox.Show("请选择左右设备。", "提示");
+                MessageBox.Show("请为左右输出选择设备。", "提示");
                 return;
             }
-            if (cmbLeft.SelectedIndex == cmbRight.SelectedIndex)
+            if (scl.cmbDevice.SelectedIndex == scr.cmbDevice.SelectedIndex)
             {
                 StartFailed();
-                MessageBox.Show("左右设备不能相同。", "提示");
+                MessageBox.Show("左右输出不能选同一设备。", "提示");
                 return;
             }
 
             int defIdx = catalog.IndexOf(catalog.DefaultRenderId());
-            if (defIdx == cmbLeft.SelectedIndex || defIdx == cmbRight.SelectedIndex)
+            if (defIdx == scl.cmbDevice.SelectedIndex || defIdx == scr.cmbDevice.SelectedIndex)
             {
                 var others = new List<string>();
                 for (int i = 0; i < Devices.Count; i++)
-                    if (i != cmbLeft.SelectedIndex && i != cmbRight.SelectedIndex)
+                    if (i != scl.cmbDevice.SelectedIndex && i != scr.cmbDevice.SelectedIndex)
                         others.Add("[" + i + "] " + Devices[i].FriendlyName);
                 StartFailed();
                 MessageBox.Show(
@@ -1417,8 +1763,8 @@ namespace StereoSplitter
 
                 // 预置运行期设备ID: 引擎在后台完成前 runCaptureId 还是空, Starting 期拔出会漏警
                 // (AutoConfigure 已把系统默认设为 cmbDefault 项 → 捕获源即该设备; 引擎完成回调里再以 eng.CaptureId 校正)
-                runLeftId = DeviceIdAt(cmbLeft.SelectedIndex);
-                runRightId = DeviceIdAt(cmbRight.SelectedIndex);
+                runLeftId = DeviceIdAt(scl.cmbDevice.SelectedIndex);
+                runRightId = DeviceIdAt(scr.cmbDevice.SelectedIndex);
                 runCaptureId = DeviceIdAt(cmbDefault.SelectedIndex);
 
                 autoRestartCount = 0;   // 手动启动 → 重新给自动重建机会
@@ -1447,8 +1793,8 @@ namespace StereoSplitter
             {
                 PreMs = LatencyProfiles[prof][0],
                 OutMs = LatencyProfiles[prof][1],
-                DlyL = (int)nudDelayL.Value,
-                DlyR = (int)nudDelayR.Value,
+                DlyL = LeftCard() != null ? (int)LeftCard().nudDelay.Value : 0,
+                DlyR = RightCard() != null ? (int)RightCard().nudDelay.Value : 0,
                 Gain = pendingGain,
                 Master = CurrentMaster(),
                 GainPct = (int)Math.Round(pendingGain * 100),

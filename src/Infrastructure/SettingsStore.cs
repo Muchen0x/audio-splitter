@@ -64,6 +64,20 @@ namespace StereoSplitter.Infrastructure
             Put(key, value.ToString());
         }
 
+        /// <summary>删掉指定前缀的全部键 (清理"删了几路输出后留下的 OutN.* 孤儿键")。</summary>
+        public void RemovePrefix(string prefix)
+        {
+            if (string.IsNullOrEmpty(prefix)) return;
+            for (int i = order.Count - 1; i >= 0; i--)
+            {
+                if (order[i].StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    values.Remove(order[i]);
+                    order.RemoveAt(i);
+                }
+            }
+        }
+
         public string GetStr(string key)
         {
             string s;
