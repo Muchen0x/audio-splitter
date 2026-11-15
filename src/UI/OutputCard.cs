@@ -19,8 +19,11 @@ namespace StereoSplitter
     }
 
     /// <summary>
-    /// 输出卡片: [设备▾] [输出声道▾] [×] / 延迟[n]ms 音量[滑条]n% [静音]。
-    /// 取代旧界面的"左声道设备/右声道设备 + 左右延迟 + 左右音量"三组控件。
+    /// 输出卡片:
+    ///   第一行 [设备▾] [输出声道▾] [延迟][n][ms]
+    ///   第二行 音量 [滑条] n% [静音]
+    ///   最右一列上下居中放 [×] (独立列, 行内控件不进入该列, 不再互相遮挡)。
+    /// 取代旧界面的"左/右声道设备 + 左右延迟 + 左右音量"三组控件。
     /// </summary>
     class OutputCardControl : UserControl
     {
@@ -32,6 +35,8 @@ namespace StereoSplitter
         public readonly Label lblVol;
         public readonly CheckBox chkMute;
         public readonly Button btnRemove;
+
+        readonly Label lblDelay, lblMs, lblVolTitle;
 
         bool syncing;
 
@@ -48,44 +53,40 @@ namespace StereoSplitter
         {
             Lane = lane;
             SetStyle(ControlStyles.OptimizedDoubleBuffer, true);
+            // 先定尺寸再摆子控件; 位置统一由 LayoutControls() 按实际宽度摆放, 不用 Anchor
+            Size = new Size(CardWidth, CardHeight);
 
             cmbDevice = new NoWheelComboBox
             {
-                Location = new Point(8, 6),
-                Width = 250,
                 DropDownWidth = 375,
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
             cmbChannel = new NoWheelComboBox
             {
-                Location = new Point(264, 6),
-                Width = 112,
+                Width = 92,
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
-            btnRemove = new Button
-            {
-                Text = "×",
-                Location = new Point(466, 4),
-                Width = 26,
-                Height = 24,
-                TabStop = false,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right
-            };
-
-            var lblDelay = new Label { Text = "延迟", Location = new Point(10, 38), AutoSize = true };
+            lblDelay = new Label { Text = "延迟", AutoSize = true };
             nudDelay = new NumericUpDown
             {
-                Location = new Point(44, 35),
-                Width = 56,
+                Width = 52,
                 Minimum = 0,
                 Maximum = 2000
             };
-            var lblMs = new Label { Text = "ms", Location = new Point(103, 38), AutoSize = true };
-            var lblVolTitle = new Label { Text = "音量", Location = new Point(136, 38), AutoSize = true };
+            lblMs = new Label { Text = "ms", AutoSize = true };
+            btnRemove = new Button
+            {
+                Text = "×",
+                Width = 26,
+                Height = 24,
+                TabStop = false
+            };
+
+            // 第二行独占: 音量 + 静音
+            lblVolTitle = new Label { Text = "音量", AutoSize = true };
             volTrack = new TrackBar
             {
-                Location = new Point(174, 27),
-                Width = 150,
+                Width = 250,
                 Height = 45,
                 AutoSize = false,
                 Minimum = 0,
@@ -95,29 +96,17 @@ namespace StereoSplitter
                 SmallChange = 5,
                 LargeChange = 20
             };
-            lblVol = new Label
-            {
-                Text = "100%",
-                Location = new Point(328, 38),
-                AutoSize = true
-            };
-            chkMute = new CheckBox { Text = "静音", Location = new Point(372, 36), AutoSize = true };
-
-            var lblRole = new Label
-            {
-                Text = "输出",
-                Location = new Point(418, 38),
-                AutoSize = true,
-                ForeColor = SystemColors.GrayText
-            };
+            lblVol = new Label { Text = "100%", AutoSize = true };
+            chkMute = new CheckBox { Text = "静音", AutoSize = true };
 
             Controls.AddRange(new Control[]
             {
-                cmbDevice, cmbChannel, btnRemove,
-                lblDelay, nudDelay, lblMs, lblVolTitle, volTrack, lblVol, chkMute, lblRole
+                cmbDevice, cmbChannel, lblDelay, nudDelay, lblMs, btnRemove,
+                lblVolTitle, volTrack, lblVol, chkMute
             });
 
-            Size = new Size(500, CardHeight);
+            LayoutControls();
+            Resize += (s, e) => LayoutControls();
 
             cmbDevice.SelectedIndexChanged += (s, e) =>
             {
@@ -160,13 +149,41 @@ namespace StereoSplitter
 
             var tip = new ToolTip();
             tip.SetToolTip(cmbDevice, "这一路输出用哪台设备。");
-            tip.SetToolTip(cmbChannel, "这一路输出规格里的哪个声道。\n角标: 规格行右侧的数字 = 有几路输出接到该声道。");
+            tip.SetToolTip(cmbChannel, "这一路输出规格里的哪个声道。\n角标: 规格行右侧的数字 = 有几路输出接到该声道。\n设备行上的物理声道由内核按规格分配。");
             tip.SetToolTip(nudDelay, "本路延迟补偿 (毫秒)。多台设备距离不同时, 给近的加延迟对齐声场。");
             tip.SetToolTip(volTrack, "本路音量 (写入该设备的端点音量)。双击百分比可复位 100%。");
             tip.SetToolTip(btnRemove, "移除这一路输出");
-            tip.SetToolTip(lblRole, "设备行上的物理声道由内核按规格分配");
 
             SyncFromLane();
+        }
+
+        /// <summary>
+        /// 按当前宽度摆放全部子控件。
+        /// TrackBar(TickStyle.None) 的轨道画在控件顶部+10px 处而非垂直中心,
+        /// 所以标签 Top=track.Top 时文字中心正好落在轨道线上 (标签高约20px)。
+        /// </summary>
+        void LayoutControls()
+        {
+            int w = Width;
+            int xCol = w - 36;   // 右侧 × 专列左界 (×宽26, 右边距6)
+
+            // × 放最右列, 上下居中 (卡片高78, 按钮高24)
+            btnRemove.Location = new Point(w - 32, (CardHeight - 24) / 2);
+
+            // 第一行右起排: ms → 延迟数字框 → 延迟标题 → 输出声道 → 设备
+            lblMs.Location = new Point(xCol - 30, 8);
+            nudDelay.Location = new Point(lblMs.Left - 4 - nudDelay.Width, 5);
+            lblDelay.Location = new Point(nudDelay.Left - 4 - lblDelay.Width, 8);
+            cmbChannel.Location = new Point(lblDelay.Left - 8 - cmbChannel.Width, 5);
+            cmbDevice.Location = new Point(8, 5);
+            cmbDevice.Width = Math.Max(90, cmbChannel.Left - 14);
+
+            // 第二行: 音量标题 → 滑条 → 百分比 → 静音 (标签与轨道中心对齐)
+            const int row2 = 30;
+            lblVolTitle.Location = new Point(10, row2);
+            volTrack.Location = new Point(lblVolTitle.Right + 6, row2);
+            lblVol.Location = new Point(Math.Min(xCol - 118, volTrack.Right + 6), row2);
+            chkMute.Location = new Point(Math.Min(xCol - 62, lblVol.Right + 12), row2 - 2);
         }
 
         /// <summary>用模型值回填控件 (载入/外部改动后调用)。</summary>

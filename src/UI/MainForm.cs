@@ -136,8 +136,8 @@ namespace StereoSplitter
         public MainForm()
         {
             Text = "Stereo Splitter - 双声道分流";
-            Size = new Size(600, 520);
-            MinimumSize = new Size(600, 420);
+            Size = new Size(600, 554);
+            MinimumSize = new Size(600, 454);
             Font = new Font("Microsoft YaHei UI", 9F);
 
             // 上下可拖动面板: 内容区 | 6px灰分隔条 | 日志区 (参照 tk.PanedWindow)
@@ -158,7 +158,8 @@ namespace StereoSplitter
             splitContainer.Panel2.BackColor = SystemColors.Control;
             splitContainer.Panel1.AutoScroll = true;
             // 初始340时日志区=111(客户457); 窗高减10 → 330 保持日志111不变
-            splitContainer.SplitterDistance = 352;
+            // 2026-06 增益独立成行后内容下移34 → 386 保持日志区高度不变
+            splitContainer.SplitterDistance = 386;
             Controls.Add(splitContainer);
 
             var lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
@@ -166,28 +167,31 @@ namespace StereoSplitter
             chkMuteCapture = new CheckBox { Text = "消音", Location = new Point(363, 14), AutoSize = true };
             btnRefresh = new Button { Text = "刷新设备", Location = new Point(417, 11), Width = 72, Height = 23 };
 
-            // 主音量 + 增益 (延迟档位行下方)
-            var lblVM = new Label { Text = "主音量:", Location = new Point(15, 78), AutoSize = true };
-            volMaster = new TrackBar { Location = new Point(78, 70), Width = 170, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10, TickStyle = TickStyle.None };
-            lblVolMaster = new Label { Text = "100%", Location = new Point(252, 78), AutoSize = true };
-            chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(294, 76), AutoSize = true };
-            var lblG = new Label { Text = "增益:", Location = new Point(346, 78), AutoSize = true };
-            volGain = new TrackBar { Location = new Point(388, 70), Width = 90, Height = 34, AutoSize = false, Minimum = 0, Maximum = 300, Value = 100, TickFrequency = 50, TickStyle = TickStyle.None };
-            lblVolGain = new Label { Text = "100%", Location = new Point(482, 78), AutoSize = true };
+            // 增益独占一行 (主音量上方)。TrackBar 轨道画在控件顶部+10px 处,
+            // 标签 Top=track.Top 时文字中心正好落在轨道线上。
+            var lblG = new Label { Text = "增益:", Location = new Point(15, 72), AutoSize = true };
+            volGain = new TrackBar { Location = new Point(78, 72), Width = 200, Height = 34, AutoSize = false, Minimum = 0, Maximum = 300, Value = 100, TickFrequency = 50, TickStyle = TickStyle.None };
+            lblVolGain = new Label { Text = "100%", Location = new Point(282, 72), AutoSize = true };
+
+            // 主音量独占一行 (增益下方)
+            var lblVM = new Label { Text = "主音量:", Location = new Point(15, 106), AutoSize = true };
+            volMaster = new TrackBar { Location = new Point(78, 106), Width = 170, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 10, TickStyle = TickStyle.None };
+            lblVolMaster = new Label { Text = "100%", Location = new Point(252, 106), AutoSize = true };
+            chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(294, 104), AutoSize = true };
 
             // 开始分流
-            btnStart = new Button { Text = "开始分流", Location = new Point(15, 108), Width = 130, Height = 35 };
-            lblDot = new Label { Text = "●", Location = new Point(162, 113), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
-            lblStatus = new Label { Text = "状态: 就绪", Location = new Point(182, 118), AutoSize = true, ForeColor = Color.Gray };
+            btnStart = new Button { Text = "开始分流", Location = new Point(15, 142), Width = 130, Height = 35 };
+            lblDot = new Label { Text = "●", Location = new Point(162, 147), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
+            lblStatus = new Label { Text = "状态: 就绪", Location = new Point(182, 152), AutoSize = true, ForeColor = Color.Gray };
 
             // 规格行: 规格下拉 + 右侧各声道名称(带输出路数角标) + 最右「添加输出」
-            var lblSpec = new Label { Text = "规格:", Location = new Point(15, 155), AutoSize = true };
-            cmbSpec = new NoWheelComboBox { Location = new Point(62, 151), Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
+            var lblSpec = new Label { Text = "规格:", Location = new Point(15, 189), AutoSize = true };
+            cmbSpec = new NoWheelComboBox { Location = new Point(62, 185), Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
             cmbSpec.Items.AddRange(new object[] { "单声道", "立体声", "2.1", "四声道", "5.1" });
             cmbSpec.SelectedIndex = 1;
             flwSpecChannels = new FlowLayoutPanel
             {
-                Location = new Point(166, 148),
+                Location = new Point(166, 182),
                 Size = new Size(310, 30),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
@@ -197,7 +201,7 @@ namespace StereoSplitter
             var btnAddOutput = new Button
             {
                 Text = "添加输出",
-                Location = new Point(482, 150),
+                Location = new Point(482, 184),
                 Width = 92,
                 Height = 26,
                 Anchor = AnchorStyles.Top | AnchorStyles.Right
@@ -206,7 +210,7 @@ namespace StereoSplitter
             // 输出卡片区 (可增删, 超出高度滚动)
             cardHost = new FlowLayoutPanel
             {
-                Location = new Point(15, 182),
+                Location = new Point(15, 216),
                 Size = new Size(530, 166),
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
