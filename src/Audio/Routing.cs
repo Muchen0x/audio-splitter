@@ -485,10 +485,13 @@ namespace StereoSplitter
                 if (endpointChannels != null)
                 {
                     int actual = endpointChannels(s.DeviceId);
-                    if (actual > 0 && actual != s.OutChannels)
+                    // 只能收窄, 不能放宽: OutChannels 是"这一路用几个物理声道", 不是端点总声道数。
+                    // 左右分离就是拿 2ch 音箱的 1 个声道 (单声道送进去会被系统铺到两只喇叭),
+                    // 若改成 2ch, 未绑定的 p1 会静音 → 听感少一半。
+                    if (actual > 0 && s.OutChannels > actual)
                     {
                         issues.Add(new RoutingIssue(IssueSev.Warn, s.Key,
-                            s.Label + " 的声道数已按端点实际值从 " + s.OutChannels + " 调整为 " + actual));
+                            s.Label + " 的声道数已从 " + s.OutChannels + " 收窄到端点实际值 " + actual));
                         s.OutChannels = actual;
                     }
                 }
