@@ -23,7 +23,6 @@ namespace StereoSplitter
         FlowLayoutPanel cardHost;
         FlowLayoutPanel flwSpecChannels;
         bool fittingWidths;      // FitCardWidths 重入保护
-        const int CardSidePad = 6;   // cardHost 左右 Padding, 与 CardWidth() 配套
         static readonly int[][] LatencyProfiles = new int[][] {
             new int[] { 100, 50 },
             new int[] { 50, 30 },
@@ -139,18 +138,24 @@ namespace StereoSplitter
         {
             Text = "Stereo Splitter - 双声道分流";
             Size = new Size(600, 554);
-            MinimumSize = new Size(600, 454);
+            // 最小高度按布局反推: 内容区至少留到"规格行 + 一整张卡片"(约 284) +
+            // 6px 分隔条 + 日志区最小 110 → 客户区需 ~400, 再加标题栏/边框。
+            MinimumSize = new Size(600, 480);
             Font = new Font("Microsoft YaHei UI", 9F);
 
             // 上下可拖动面板: 内容区 | 6px灰分隔条 | 日志区 (参照 tk.PanedWindow)
+            // FixedPanel=Panel2: 窗口变矮时先收缩上面的内容区, 日志区高度保持不变
+            // (以前是 Panel1 固定 → 变矮时日志直接被压扁)。
+            // Panel1MinSize: 至少留住"规格行 + 一整张卡片", 再小就没有意义了;
+            // 卡片区自己带纵向滚动, 所以 Panel1 不需要 AutoScroll。
             splitContainer = new NoFocusSplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
                 SplitterWidth = 6,
                 BackColor = Color.FromArgb(0x88, 0x88, 0x88),
-                FixedPanel = FixedPanel.Panel1,
-                Panel1MinSize = 0,
+                FixedPanel = FixedPanel.Panel2,
+                Panel1MinSize = 284,
                 Panel2MinSize = 110,
                 Size = new Size(500, 500),
                 TabStop = false
@@ -158,7 +163,9 @@ namespace StereoSplitter
             // 显式恢复浅色面板, 阻断 BackColor(#888) 传播 → #888 只作用于分隔条
             splitContainer.Panel1.BackColor = SystemColors.Control;
             splitContainer.Panel2.BackColor = SystemColors.Control;
-            splitContainer.Panel1.AutoScroll = true;
+            // Panel1 自己不能滚: 否则窗口一缩, 整个内容区先冒出滚动条 (还带横向),
+            // 而不是卡片区内部滚动。
+            splitContainer.Panel1.AutoScroll = false;
             // 初始340时日志区=111(客户457); 窗高减10 → 330 保持日志111不变
             // 2026-06 增益独立成行后内容下移34 → 386 保持日志区高度不变
             splitContainer.SplitterDistance = 386;
@@ -209,16 +216,17 @@ namespace StereoSplitter
                 Anchor = AnchorStyles.Top | AnchorStyles.Right
             };
 
-            // 输出卡片区 (可增删, 超出高度滚动)
-            // Padding 给卡片留出左右/上下呼吸位; 卡片自身的圆角外框由 OutputCard 画。
+            // 输出卡片区 (可增删, 内容超出时只有纵向滚动)
+            // 宽度顶到面板右缘 (与「添加输出」右边缘对齐), 竖滚动条才会贴着右边显示;
+            // 左右不留 Padding: 卡片宽度 = 可视宽度, 数学上不可能超出 → 不会出现横向滚动条。
             cardHost = new FlowLayoutPanel
             {
                 Location = new Point(15, 216),
-                Size = new Size(530, 166),
+                Size = new Size(559, 166),
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
                 AutoScroll = true,
-                Padding = new Padding(CardSidePad, 4, CardSidePad, 6),
+                Padding = new Padding(0, 4, 0, 6),
                 Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
             };
 
@@ -255,16 +263,17 @@ namespace StereoSplitter
             };
 
             // 水位监控组: 日志面板标题行右侧, 清除日志按钮左边 (间隔0=关闭监控)
-            var lblWater = new Label { Text = "水位监控:", Location = new Point(209, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            var lblWaterIv = new Label { Text = "间隔", Location = new Point(275, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            nudWaterInterval = new NoWheelNumeric { Location = new Point(313, 5), Width = 60, Minimum = 0, Maximum = 3600, Value = 30, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            var lblWaterSec = new Label { Text = "秒", Location = new Point(377, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            // 整组靠右: 右缘与「清除日志」按钮一致 (按钮右边 10px 距面板边), 右侧不留空条。
+            var lblWater = new Label { Text = "水位监控:", Location = new Point(293, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            var lblWaterIv = new Label { Text = "间隔", Location = new Point(359, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            nudWaterInterval = new NoWheelNumeric { Location = new Point(397, 5), Width = 60, Minimum = 0, Maximum = 3600, Value = 30, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            var lblWaterSec = new Label { Text = "秒", Location = new Point(461, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
 
             var lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true, Font = new Font("Microsoft YaHei UI", 10F) };
             btnClearLog = new Button
             {
                 Text = "清除日志",
-                Location = new Point(405, 4),
+                Location = new Point(489, 4),
                 Width = 85,
                 Height = 22,
                 Anchor = AnchorStyles.Top | AnchorStyles.Right
@@ -273,14 +282,15 @@ namespace StereoSplitter
             txtLog = new TextBox
             {
                 Location = new Point(15, 30),
-                Size = new Size(475, 202),
+                // 尺寸由 LayoutLogPanel() 按面板实际大小算: 右缘距面板边 10px (竖滚动条贴边),
+                // 下缘留 8px。以前用固定 Size + Anchor, 初始面板高度和设计值不同, 底部被裁掉一截。
+                Size = new Size(559, 90),
                 Multiline = true,
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
                 BorderStyle = BorderStyle.Fixed3D,
                 BackColor = Color.FromArgb(250, 250, 250),
-                Font = new Font("Consolas", 9F),
-                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+                Font = new Font("Consolas", 9F)
             };
             var cmsLog = new ContextMenuStrip();
             cmsLog.Items.Add("复制", null, (s, e) => txtLog.Copy());
@@ -290,6 +300,9 @@ namespace StereoSplitter
 
             splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart, lblSpec, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
+            // 日志框按面板实时尺寸摆放 (拖分隔条/改窗口都要跟), 竖滚动条才会一直贴着右边
+            splitContainer.Panel2.Resize += (s, e) => LayoutLogPanel();
+            LayoutLogPanel();
 
             btnStart.Click += BtnStart_Click;
             btnRefresh.Click += (s, e) => RefreshDevicesClick();
@@ -1173,12 +1186,27 @@ namespace StereoSplitter
             RefreshSpecBadges();
         }
 
-        /// <summary>卡片宽度 = 卡片区可视宽度 - 左右 Padding (ClientSize 已扣掉竖滚动条)。</summary>
+        /// <summary>
+        /// 日志框按日志面板的实时尺寸摆放: 左边距 15, 右边距 10 (文本框自己的竖滚动条
+        /// 就贴在面板右缘), 下面距 8。拖分隔条改日志区高度时同步跟随。
+        /// </summary>
+        void LayoutLogPanel()
+        {
+            if (txtLog == null || splitContainer == null) return;
+            Size cs = splitContainer.Panel2.ClientSize;
+            int w = Math.Max(120, cs.Width - 15 - 10);
+            int h = Math.Max(40, cs.Height - 30 - 8);
+            txtLog.SetBounds(15, 30, w, h);
+        }
+
+        /// <summary>
+        /// 卡片宽度 = 卡片区可视宽度 (ClientSize 已扣掉竖滚动条)。
+        /// 不再给下限: 一旦卡片比可视区宽就会冒出横向滚动条, 宁可挤也不横滚。
+        /// </summary>
         int CardWidth()
         {
             if (cardHost == null) return OutputCardControl.CardWidth;
-            int w = cardHost.ClientSize.Width - CardSidePad * 2;
-            return w < 380 ? 380 : w;
+            return cardHost.ClientSize.Width;
         }
 
         /// <summary>
