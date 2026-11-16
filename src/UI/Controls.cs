@@ -83,4 +83,29 @@ namespace StereoSplitter
             base.WndProc(ref m);
         }
     }
+
+    /// <summary>自绘用的公共绘制工具。</summary>
+    static class UiDraw
+    {
+        /// <summary>圆角矩形路径 (radius 会被夹到不超过半高/半宽)。</summary>
+        public static System.Drawing.Drawing2D.GraphicsPath RoundRect(Rectangle r, int radius)
+        {
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            int max = Math.Min(r.Width, r.Height) / 2;
+            int d = Math.Min(radius, max) * 2;
+            if (d <= 0)
+            {
+                path.AddRectangle(r);
+            }
+            else
+            {
+                path.AddArc(r.X, r.Y, d, d, 180, 90);
+                path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+                path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+                path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+                path.CloseFigure();
+            }
+            return path;
+        }
+    }
 }

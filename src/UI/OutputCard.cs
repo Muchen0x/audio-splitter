@@ -31,7 +31,7 @@ namespace StereoSplitter
         public readonly NoWheelComboBox cmbDevice;
         public readonly NoWheelComboBox cmbChannel;
         public readonly NumericUpDown nudDelay;
-        public readonly TrackBar volTrack;
+        public readonly VolumeSlider volTrack;
         public readonly Label lblVol;
         public readonly CheckBox chkMute;
         public readonly Button btnRemove;
@@ -46,7 +46,7 @@ namespace StereoSplitter
         public event Action<OutputCardControl> VolumeScrolled;
         public event Action<OutputCardControl> RemoveRequested;
 
-        public const int CardHeight = 78;
+        public const int CardHeight = 56;
         public const int CardWidth = 500;
 
         /// <summary>卡片之间的竖向间隙 (与 MainForm 里卡片的 Margin.Bottom 对应)。</summary>
@@ -103,17 +103,15 @@ namespace StereoSplitter
                 Height = 20,
                 TextAlign = ContentAlignment.MiddleLeft
             };
-            volTrack = new TrackBar
+            volTrack = new VolumeSlider
             {
                 Width = 250,
-                Height = 45,
-                AutoSize = false,
+                Height = 20,
                 Minimum = 0,
                 Maximum = 100,
                 Value = 100,
-                TickStyle = TickStyle.None,
                 SmallChange = 5,
-                LargeChange = 5   // 点击每次 5%, 与主音量一致
+                LargeChange = 5   // 点击每次 5%, 与主音量一致 (左侧已滑过部分填蓝)
             };
             lblVol = new Label
             {
@@ -159,7 +157,8 @@ namespace StereoSplitter
                 if (syncing) return;
                 Fire();
             };
-            // TrackBar.Scroll 只在鼠标拖动时触发, 键盘调整只发 ValueChanged
+            // VolumeSlider 任何值变化都发 ValueChanged (拖动/点击/键盘/程序赋值),
+            // 与原来的 TrackBar 一致; 拖动中的热更新走 VolumeScrolled。
             volTrack.ValueChanged += (s, e) =>
             {
                 if (syncing) return;
@@ -195,8 +194,8 @@ namespace StereoSplitter
 
         /// <summary>
         /// 按当前宽度摆放全部子控件。
-        /// TrackBar(TickStyle.None) 的轨道画在控件顶部+10px 处而非垂直中心,
-        /// 所以标签 Top=track.Top 时文字中心正好落在轨道线上 (标签高约20px)。
+        /// VolumeSlider 的轨道画在控件垂直中心, 所以标签 Top=滑条.Top 时 (标签高 20)
+        /// 文字中心正好落在轨道线上。
         /// </summary>
         void LayoutControls()
         {
@@ -213,6 +212,7 @@ namespace StereoSplitter
             cmbDevice.Width = Math.Max(90, cmbChannel.Left - 14);
 
             // 第二行: 音量标题 → 滑条(拉满可用宽度) → 百分比 → 静音 (标签与轨道中心对齐)
+            // 卡片高 56 = 上边距4 + 第一行21 + 间隔5 + 第二行20 + 下边距6, 下方不再留空。
             const int row2 = 30;
             lblVolTitle.Location = new Point(10, row2);
             int volX = lblVolTitle.Right + 6;
@@ -236,25 +236,13 @@ namespace StereoSplitter
                 g.FillRectangle(outsideBrush, ClientRectangle);
 
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (var path = RoundedRect(rect, CornerRadius))
+            using (var path = UiDraw.RoundRect(rect, CornerRadius))
             {
                 using (var fill = new SolidBrush(BackColor))
                     g.FillPath(fill, path);
                 using (var pen = new Pen(BorderColor))
                     g.DrawPath(pen, path);
             }
-        }
-
-        static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle r, int radius)
-        {
-            int d = radius * 2;
-            var path = new System.Drawing.Drawing2D.GraphicsPath();
-            path.AddArc(r.X, r.Y, d, d, 180, 90);
-            path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-            path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-            path.CloseFigure();
-            return path;
         }
 
         /// <summary>用模型值回填控件 (载入/外部改动后调用)。</summary>

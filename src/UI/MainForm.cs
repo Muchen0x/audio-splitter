@@ -35,7 +35,7 @@ namespace StereoSplitter
         System.Windows.Forms.Timer saveDebounce;
         System.Windows.Forms.Timer watchTimer;   // 看门狗: 2 秒一看输出线程活性
         System.Windows.Forms.Timer powerTimer;   // 唤醒后延迟重建 (端点恢复要几百毫秒)
-        TrackBar volMaster, volGain;
+        VolumeSlider volMaster, volGain;
         Label lblVolMaster, lblVolGain;
         Label lblDot, lblStatus;
         Button btnStart;
@@ -169,15 +169,15 @@ namespace StereoSplitter
             chkMuteCapture = new CheckBox { Text = "消音", Location = new Point(363, 14), AutoSize = true };
             btnRefresh = new Button { Text = "刷新设备", Location = new Point(417, 11), Width = 72, Height = 23 };
 
-            // 增益独占一行 (主音量上方)。TrackBar 轨道画在控件顶部+10px 处,
-            // 标签 Top=track.Top 时文字中心正好落在轨道线上。
+            // 增益独占一行 (主音量上方)。自绘滑条轨道垂直居中, 标签 Top=滑条.Top 时
+            // 文字中心落在轨道线上 (滑条高 20, 中心 10px, 与原 TrackBar 视觉位置一致)。
             var lblG = new Label { Text = "增益:", Location = new Point(15, 72), AutoSize = true };
-            volGain = new TrackBar { Location = new Point(78, 72), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 300, Value = 100, TickFrequency = 50, TickStyle = TickStyle.None };
+            volGain = new VolumeSlider { Location = new Point(78, 72), Width = 300, Minimum = 0, Maximum = 300, Value = 100 };
             lblVolGain = new Label { Text = "100%", Location = new Point(382, 72), AutoSize = true };
 
             // 主音量独占一行 (增益下方)。SmallChange/LargeChange=5: 点击/方向键每次 5%, 与输出卡片音量一致
             var lblVM = new Label { Text = "主音量:", Location = new Point(15, 106), AutoSize = true };
-            volMaster = new TrackBar { Location = new Point(78, 106), Width = 300, Height = 34, AutoSize = false, Minimum = 0, Maximum = 100, Value = 100, SmallChange = 5, LargeChange = 5, TickFrequency = 10, TickStyle = TickStyle.None };
+            volMaster = new VolumeSlider { Location = new Point(78, 106), Width = 300, Minimum = 0, Maximum = 100, Value = 100, SmallChange = 5, LargeChange = 5 };
             lblVolMaster = new Label { Text = "100%", Location = new Point(382, 106), AutoSize = true };
             chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(424, 104), AutoSize = true };
 
@@ -619,7 +619,7 @@ namespace StereoSplitter
         }
 
         // 左右声道滑条共用: UI 标签/自动静音 + 写入端点音量 (逐行等价于原两份重复实现)
-        void OnChannelScroll(TrackBar slider, Label lbl, CheckBox chkMute, EndpointVolumeBinding b, string channel)
+        void OnChannelScroll(VolumeSlider slider, Label lbl, CheckBox chkMute, EndpointVolumeBinding b, string channel)
         {
             lbl.Text = slider.Value + "%";
             // 音量到0自动勾选静音; 拖离0自动取消 (主动操作优先于勾选状态)
@@ -795,7 +795,7 @@ namespace StereoSplitter
         bool BindOneChannel(string stage, string channel, int idx,
             Func<string, Action<AudioVolumeNotificationData>, EndpointVolumeBinding> bind,
             Action<AudioVolumeNotificationData> handler,
-            TrackBar slider, Label lbl, CheckBox chkMute)
+            VolumeSlider slider, Label lbl, CheckBox chkMute)
         {
             if (idx < 0 || idx >= Devices.Count)
             {
@@ -840,7 +840,7 @@ namespace StereoSplitter
 
         // 左右声道通知共用: 设备值 → UI (仅 UI, volSyncing 内不写端点)
         void HandleChannelVolumeNotification(AudioVolumeNotificationData data, EndpointVolumeBinding b,
-            TrackBar slider, Label lbl, CheckBox chkMute)
+            VolumeSlider slider, Label lbl, CheckBox chkMute)
         {
             if (volSyncing || b == null || !b.IsValid) return;
             volSyncing = true;
