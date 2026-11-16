@@ -82,8 +82,17 @@ namespace StereoSplitter
                 TabStop = false
             };
 
-            // 第二行独占: 音量 + 静音
-            lblVolTitle = new Label { Text = "音量", AutoSize = true };
+            // 第二行独占: 音量 + 静音。
+            // 标题/百分比/复选框都用固定宽度(AutoSize=false): 滑条宽度公式不再依赖
+            // 字体测量值和当前文字("100%" vs "5%"), 所有卡片的滑条长度必然一致。
+            lblVolTitle = new Label
+            {
+                Text = "音量",
+                AutoSize = false,
+                Width = 32,
+                Height = 20,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
             volTrack = new TrackBar
             {
                 Width = 250,
@@ -96,8 +105,21 @@ namespace StereoSplitter
                 SmallChange = 5,
                 LargeChange = 5   // 点击每次 5%, 与主音量一致
             };
-            lblVol = new Label { Text = "100%", AutoSize = true };
-            chkMute = new CheckBox { Text = "静音", AutoSize = true };
+            lblVol = new Label
+            {
+                Text = "100%",
+                AutoSize = false,
+                Width = 42,
+                Height = 20,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            chkMute = new CheckBox
+            {
+                Text = "静音",
+                AutoSize = false,
+                Width = 62,
+                Height = 20
+            };
 
             Controls.AddRange(new Control[]
             {
@@ -107,6 +129,10 @@ namespace StereoSplitter
 
             LayoutControls();
             Resize += (s, e) => LayoutControls();
+            // 字体要等挂到父容器后才继承到位; 就位后重算一次, 避免首张卡片
+            // 按默认字体的测量值算布局、和后续重建的卡片不一致
+            ParentChanged += (s, e) => LayoutControls();
+            FontChanged += (s, e) => LayoutControls();
 
             cmbDevice.SelectedIndexChanged += (s, e) =>
             {
