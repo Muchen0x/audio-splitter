@@ -1,0 +1,44 @@
+name: build
+
+on:
+  push:
+    branches: [main, merge-kernel]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build (Release)
+        run: dotnet build StereoSplitter.csproj -c Release --nologo
+
+      - name: Route selftest (16 assertions, exit code gate)
+        shell: pwsh
+        run: |
+          & ./bin/Release/net48/SplitterGUI.exe --selftest
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::selftest failed (exit $LASTEXITCODE)"
+            if (Test-Path ./bin/Release/net48/log/selftest-routing.txt) {
+              Get-Content ./bin/Release/net48/log/selftest-routing.txt | ForEach-Object { Write-Host $_ }
+            }
+            exit $LASTEXITCODE
+          }
+          Write-Host "selftest passed"
+
+      - name: Verify embedded NAudio (single-file distribution must not break)
+        shell: pwsh
+        run: |
+          $exe = "./bin/Release/net48/SplitterGUI.exe"
+          if (-not (Test-Path $exe)) { Write-Host "::error::exe missing"; exit 1 }
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($exe))
+          if (-not $text.Contains("NAudio.Core.dll")) {
+            Write-Host "::error::NAudio.Core.dll resource name missing - single-file fallback broken"
+            exit 1
+          }
+          Write-Host "embedded NAudio resource present"
