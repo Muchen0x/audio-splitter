@@ -138,17 +138,34 @@ namespace StereoSplitter.Devices
             catch (Exception ex) { Fail(ex); }
         }
 
-        /// <summary>只有被我们改过静音才还原, 避免覆盖用户原本的静音设置。</summary>
+        /// <summary>
+        /// 还原静音: 当前值与基线不同才写 (相同则不碰, 避免无意义的设备改动)。
+        /// 判据用"当前 != 基线"而不是 MuteApplied 旗标 —— 用户/系统在运行期间改过静音时,
+        /// 旗标是 false, 但那恰恰是需要还原的情形。
+        /// </summary>
         public void RestoreMuteIfApplied()
         {
-            if (!IsValid || !MuteApplied) return;
+            if (!IsValid) return;
             try
             {
-                vol.Mute = MuteEntered;
-                LastMuteWeWrote = MuteEntered;
+                if (vol.Mute != MuteEntered) vol.Mute = MuteEntered;
+                LastMuteWeWrote = vol.Mute;
                 MuteApplied = false;
             }
             catch (Exception ex) { Fail(ex); }
+        }
+
+        /// <summary>
+        /// 沿用外部记录下来的"进入时原值"作为还原基线 (不自取当前值)。
+        /// 用于: 运行中重绑 / 上一次还原没被设备接受时重试 —— 否则基线会被
+        /// 我们自己写过的值污染, 变成"把 20% 还原成 20%"。
+        /// </summary>
+        public void AdoptBaseline(float volume, bool mute)
+        {
+            VolumeEntered = volume;
+            MuteEntered = mute;
+            LastMuteWeWrote = mute;
+            MuteApplied = false;
         }
 
         /// <summary>

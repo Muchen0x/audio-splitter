@@ -52,6 +52,18 @@ namespace StereoSplitter
                 return;
             }
 
+            // 端点音量探针 (只读, 不碰音频链路):
+            //   SplitterGUI.exe --volprobe → 打印各输出设备当前音量/静音 + ini 里的 UI 值
+            // 用途: 停止分流后核对"音量到底还原了没有", 结果同时写 log/volume-probe.txt
+            if (argv != null && argv.Length > 0 &&
+                string.Equals(argv[0], "--volprobe", StringComparison.OrdinalIgnoreCase))
+            {
+                try { AttachConsole(ATTACH_PARENT_PROCESS); } catch { }
+                Environment.ExitCode = StereoSplitter.Infrastructure.VolumeProbe.Run(
+                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log"));
+                return;
+            }
+
             // 单文件发布: 同目录无 NAudio dll 时从嵌入资源加载
             // (同目录有 dll 时 .NET probing 优先, 开发环境行为不变)
             AppDomain.CurrentDomain.AssemblyResolve += (sender, args) =>

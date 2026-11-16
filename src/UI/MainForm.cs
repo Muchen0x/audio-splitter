@@ -817,7 +817,7 @@ namespace StereoSplitter
 
                 int v = (int)Math.Round(b.ReadVolume() * 100);
                 Log(stage + " " + role + " 音量绑定 → [" + FindIdxById(lane.DeviceId) + "] " + b.DeviceName +
-                    " (设备值 " + v + "%" + (b.ReadMuted() ? ", 静音" : "") + "，启动时按 UI 值写入)");
+                    " (设备值 " + v + "%" + (b.ReadMuted() ? ", 静音" : "") + "，启动时按 UI 值写入，停止时还原回此值)");
             }
 
             // 同设备多卡: 这些路的音量只能进混音层, 明确告诉用户为什么没绑设备
@@ -1275,6 +1275,8 @@ namespace StereoSplitter
             RebuildCards();
             SaveSettings();
             Log("[输出] 新增一路: " + ChannelNameOf(lane.ChannelKey) + " (共 " + lanes.Count + " 路)");
+            // 运行中加卡: 该设备可能从"独占"变成"多路共用", 音量归属要跟着改 (绑端点 ⇄ 混音增益)
+            if (running) SyncEndpointBindingsWhileRunning();
         }
 
         void OnCardChanged(OutputCardControl card)
@@ -1283,6 +1285,8 @@ namespace StereoSplitter
             SyncLanesFromCards();
             SaveSettings();
             RefreshSpecBadges();
+            // 换设备/加卡/删卡: 先把被弃设备的音量还原, 再按新集合绑端点 (否则旧设备永久停在分流音量)
+            if (running) SyncEndpointBindingsWhileRunning();
             // 独占设备的卡片: 静音写设备端点 (与音量同一套双向绑定/还原基线); 其余卡片走混音增益
             if (running && bindings != null && !volSyncing)
             {
@@ -1325,6 +1329,8 @@ namespace StereoSplitter
             RebuildCards();
             SaveSettings();
             Log("[输出] 已移除: " + who + " (剩 " + lanes.Count + " 路)");
+            // 运行中删卡: 若该设备不再有任何卡, 它的端点音量必须立刻还原
+            if (running) SyncEndpointBindingsWhileRunning();
         }
 
         /// <summary>
@@ -1658,6 +1664,44 @@ namespace StereoSplitter
             bindings.UnbindAll(true);
             // 中性措辞: 本方法被停止/启动失败/外部切默认三处共用, "[停止]" 会误导外部切换场景
             Log("[解绑] 双向音量绑定已解除");
+            if (bindings.PendingRestoreCount > 0)
+                Log("[警告] 有 " + bindings.PendingRestoreCount +
+                    " 台设备的音量未能还原（设备拒绝写入），基线已保留，下次停止时会再试");
+        }
+
+        /// <summary>
+        /// 运行中输出设备集合变了 (卡片换设备 / 加卡 / 删卡): 立即还原被弃设备的音量并绑定新设备。
+        /// <para>不这么做的话, 换设备前那台设备会永久停在分流的音量上 —— 没人再还原它。</para>
+        /// </summary>
+        void SyncEndpointBindingsWhileRunning()
+        {
+            if (bindings == null || volSyncing) return;
+            SyncLanesFromCards();
+            var wanted = LaneRouting.ResolveEndpointLanes(lanes);
+
+            // 期望集合 vs 已绑集合 双向比对
+            bool same = true;
+            for (int i = 0; i < wanted.Count; i++)
+                if (bindings.SinkOf(wanted[i].DeviceId) == null) { same = false; break; }
+            if (same)
+            {
+                int boundCount = 0;
+                foreach (var b in bindings.Sinks())
+                {
+                    boundCount++;
+                    bool stillWanted = false;
+                    for (int i = 0; i < wanted.Count; i++)
+                        if (wanted[i].DeviceId == b.DeviceId) { stillWanted = true; break; }
+                    if (!stillWanted) { same = false; break; }
+                }
+                if (boundCount == 0 && wanted.Count > 0) same = false;
+            }
+            if (same) return;
+
+            Log("[变更] 输出设备已变，同步端点绑定（被弃设备的音量立即还原）");
+            BindEndpointVolumeSync("[变更]");
+            WriteUIValuesToDevice();
+            SetVolumeBindVisual(true);
         }
 
         // 数值标签有效/无效视觉: 深色 = 音量由设备端点承载(双向绑定生效), 灰色 = 走混音增益/未绑定

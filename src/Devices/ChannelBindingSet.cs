@@ -13,6 +13,10 @@ namespace StereoSplitter.Devices
     /// 音量只能进混音矩阵 (见 LaneRouting.ResolveEndpointLanes)。</para>
     ///
     /// <para>键是 deviceId: 同一设备重复 BindSink 会复用同一个绑定对象, 不会重复订阅通知。</para>
+    ///
+    /// <para>还原基线 (<see cref="baselines"/>) 独立于绑定对象存在: 记录的是"本次分流开始时该设备
+    /// 的音量/静音", 只有**还原被设备接受**之后才删除。这样即使中途重绑、或者设备拒绝写入,
+    /// 停止时用的仍是真正的原始值, 而不是我们自己写进去的值 (否则会把 20% 还原成 20%)。</para>
     /// </summary>
     sealed class ChannelBindingSet : IDisposable
     {
@@ -22,6 +26,18 @@ namespace StereoSplitter.Devices
         readonly Dictionary<string, EndpointVolumeBinding> sinks =
             new Dictionary<string, EndpointVolumeBinding>(StringComparer.Ordinal);
         readonly List<string> sinkOrder = new List<string>();
+
+        // deviceId → 本次分流开始时的音量/静音 (还原目标)
+        sealed class Baseline
+        {
+            public float Volume;
+            public bool Mute;
+        }
+        readonly Dictionary<string, Baseline> baselines =
+            new Dictionary<string, Baseline>(StringComparer.Ordinal);
+
+        /// <summary>还有多少台设备的音量没有还原成功 (残留基线)。</summary>
+        public int PendingRestoreCount { get { return baselines.Count; } }
 
         public EndpointVolumeBinding Master { get; private set; }
 
@@ -59,8 +75,8 @@ namespace StereoSplitter.Devices
 
             if (current != null)
             {
-                current.RestoreVolume();
-                current.RestoreMuteIfApplied();
+                // 旧对象已失效 → 先把写过的音量还原回去再释放 (失效时 IsValid=false, 内部会跳过)
+                RestoreWithLog(current);
                 current.Dispose();
                 sinks.Remove(deviceId);
                 sinkOrder.Remove(deviceId);
@@ -80,6 +96,7 @@ namespace StereoSplitter.Devices
                 return null;
             }
 
+            AdoptOrRecordBaseline(binding);
             binding.Subscribe(onNotify);
             sinks[deviceId] = binding;
             sinkOrder.Add(deviceId);
@@ -130,6 +147,59 @@ namespace StereoSplitter.Devices
         // ---------------- 内部 ----------------
 
         /// <summary>
+        /// 首次绑定时记录"进入时原值"; 已记录过则沿用旧基线 (不取当前值, 否则会被我们写过的值污染)。
+        /// </summary>
+        void AdoptOrRecordBaseline(EndpointVolumeBinding binding)
+        {
+            if (binding == null || !binding.IsValid) return;
+            Baseline bl;
+            if (baselines.TryGetValue(binding.DeviceId, out bl))
+            {
+                binding.AdoptBaseline(bl.Volume, bl.Mute);
+                return;
+            }
+            baselines[binding.DeviceId] = new Baseline { Volume = binding.VolumeEntered, Mute = binding.MuteEntered };
+        }
+
+        /// <summary>
+        /// 还原一个端点的音量/静音并回读确认。
+        /// 回读与目标不一致 → 记警告并**保留基线**, 下一次停止/重绑会再试一次
+        /// (有些 USB 音箱/DAC 会把音量量化到离散档位, 一次写不进并不代表值丢了)。
+        /// </summary>
+        void RestoreWithLog(EndpointVolumeBinding b)
+        {
+            if (b == null || !b.IsValid) return;
+
+            int beforeVol = Pct(b.ReadVolume());
+            bool beforeMute = b.ReadMuted();
+            int wantVol = Pct(b.VolumeEntered);
+            bool wantMute = b.MuteEntered;
+
+            b.RestoreVolume();
+            b.RestoreMuteIfApplied();
+
+            int afterVol = Pct(b.ReadVolume());
+            bool afterMute = b.ReadMuted();
+            bool ok = Math.Abs(afterVol - wantVol) <= 1 && afterMute == wantMute;
+
+            string line = "[还原] " + b.Role + " " + b.DeviceName + ": 音量 " +
+                beforeVol + "% → " + afterVol + "%" + (afterMute ? "（静音）" : "（未静音）");
+            if (!ok)
+            {
+                log(line + "  ← 目标 " + wantVol + "%" + (wantMute ? "（静音）" : "") +
+                    "；设备未接受该写入（驱动侧量化/只读），已留存基线，下次停止时重试");
+                return;
+            }
+            log(line);
+            baselines.Remove(b.DeviceId);
+        }
+
+        static int Pct(float scalar)
+        {
+            return Math.Max(0, Math.Min(100, (int)Math.Round(scalar * 100)));
+        }
+
+        /// <summary>
         /// 绑定一个端点: 同设备且仍有效 → 复用; 换设备 → 先还原旧设备静音再释放; 空 ID → 解绑。
         /// </summary>
         EndpointVolumeBinding Rebind(EndpointVolumeBinding current, string deviceId, string role,
@@ -140,8 +210,8 @@ namespace StereoSplitter.Devices
 
             if (current != null)
             {
-                // 换绑: 旧端点如果是被我们静音的, 先恢复, 避免残留
-                current.RestoreMuteIfApplied();
+                // 换绑: 旧端点写过的音量/静音先还原, 否则那台设备会永久停在"分流时的音量"
+                RestoreWithLog(current);
                 current.Dispose();
                 current = null;
             }
@@ -162,6 +232,7 @@ namespace StereoSplitter.Devices
                 return null;
             }
 
+            AdoptOrRecordBaseline(binding);
             binding.Subscribe(onNotify);
             return binding;
         }
@@ -176,14 +247,10 @@ namespace StereoSplitter.Devices
             UnbindSinks(restore);
         }
 
-        static void UnbindOne(EndpointVolumeBinding b, bool restore)
+        void UnbindOne(EndpointVolumeBinding b, bool restore)
         {
             if (b == null) return;
-            if (restore)
-            {
-                b.RestoreVolume();
-                b.RestoreMuteIfApplied();
-            }
+            if (restore) RestoreWithLog(b);
             b.Dispose();
         }
 
