@@ -135,15 +135,16 @@ namespace StereoSplitter
             get { int r = Math.Min(Height, 20) / 2 - 3; return r < 5 ? 5 : r; }
         }
 
-        /// <summary>是否位于开启了 AutoScroll 的容器内 (卡片区就是)。</summary>
-        bool InAutoScrollHost()
+        /// <summary>这次焦点是不是鼠标点出来的 (鼠标焦点要立刻退回去, 不留框)。</summary>
+        bool mouseFocus;
+
+        protected override void OnGotFocus(EventArgs e)
         {
-            for (Control p = Parent; p != null; p = p.Parent)
-            {
-                var sc = p as ScrollableControl;
-                if (sc != null && sc.AutoScroll) return true;
-            }
-            return false;
+            base.OnGotFocus(e);
+            if (!mouseFocus) return;
+            // 兜底: 就算基类在 MouseDown 时抢了焦点, 也延后一拍还给窗体
+            try { BeginInvoke((Action)(() => { UiFocus.ParkOnForm(this); mouseFocus = false; })); }
+            catch { }
         }
 
         /// <summary>
@@ -218,6 +219,9 @@ namespace StereoSplitter
                 Math.Max(1, TrackRight - TrackLeft + 1), trackH);
             Color backColor = Enabled ? TrackBack : DisabledTrack;
             Color fillColor = Enabled ? (hoverThumb || dragging ? AccentHot : Accent) : DisabledFill;
+            // 键盘焦点提示: 只加深已滑过段与滑块外圈, 不画任何矩形框
+            // (以前这里画一圈浅蓝圆角边框, 鼠标点一下就留一个蓝框, 很扎眼)
+            if (Focused && Enabled) fillColor = AccentHot;
 
             using (var path = UiDraw.RoundRect(trackRect, trackH / 2))
             using (var b = new SolidBrush(backColor))
@@ -240,23 +244,16 @@ namespace StereoSplitter
             using (var pen = new Pen(fillColor, 2f))
                 g.DrawEllipse(pen, thumb);
 
-            // 键盘焦点提示 (鼠标用户看不到, Tab 进来才显示)
-            if (Focused && Enabled)
-            {
-                using (var pen = new Pen(Color.FromArgb(140, Accent), 1f))
-                using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), 6))
-                    g.DrawPath(pen, path);
-            }
+            // 键盘焦点提示靠上面的 fillColor 加深, 不额外画框
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
             if (!Enabled) return;
-            // 处在 AutoScroll 容器里时不抢焦点: 子控件一拿焦点, 容器就会把"整个控件可见"
-            // 滚一下, 卡片列表会跳动几像素。键盘仍可用 Tab 进入本控件。
-            // 主音量/增益不在滚动容器里, 按标准行为点击即获得焦点。
-            if (!InAutoScrollHost()) Focus();
+            // 鼠标点击一律不抢焦点: 滑条聚焦只会换来一圈蓝框, 而拖动/点击本来就不需要焦点
+            // (键盘仍可 Tab 进入, 方向键照常可用)。
+            mouseFocus = true;
             int cx = ValueToX(value);
             var thumb = new Rectangle(cx - ThumbRadius, Height / 2 - ThumbRadius, ThumbRadius * 2, ThumbRadius * 2);
             if (thumb.Contains(e.Location))
@@ -298,6 +295,12 @@ namespace StereoSplitter
             base.OnMouseUp(e);
             dragging = false;
             Capture = false;
+            if (mouseFocus)
+            {
+                // 这一轮点击结束, 复位标志: 之后再 Tab 进来才不会被误判成鼠标焦点
+                try { BeginInvoke((Action)(() => mouseFocus = false)); }
+                catch { mouseFocus = false; }
+            }
         }
 
         protected override void OnMouseLeave(EventArgs e)

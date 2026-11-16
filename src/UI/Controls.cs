@@ -175,10 +175,9 @@ namespace StereoSplitter
         static bool IsInputLike(Control c)
         {
             if (c is TextBoxBase) return true;   // 日志框: 点进去要能选文字/复制
-            if (c is ComboBox) return true;
+            if (c is ComboBox) return true;      // 下拉框: 展开要用焦点, 收起后自己还焦点
             if (c is UpDownBase) return true;
             if (c is ButtonBase) return true;
-            if (c is VolumeSlider) return true;
             if (c is ListBox) return true;
             return false;
         }
@@ -190,6 +189,16 @@ namespace StereoSplitter
         {
             base.OnHandleCreated(e);
             FocusCue.HideNow(this);
+        }
+
+        protected override void OnDropDownClosed(EventArgs e)
+        {
+            base.OnDropDownClosed(e);
+            // 收起下拉后立刻把焦点交回窗体: 下拉框留着焦点, 系统主题会给它描一圈
+            // 蓝色聚焦边框 (点两下 = 展开一次再收起, 那一圈就留下了)。
+            // 延后一拍: 让"收起的这次点击"先走完, 再改焦点。
+            try { BeginInvoke((Action)(() => UiFocus.ParkOnForm(this))); }
+            catch { }
         }
 
         protected override void WndProc(ref Message m)
