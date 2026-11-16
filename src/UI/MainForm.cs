@@ -174,7 +174,7 @@ namespace StereoSplitter
 
         public MainForm()
         {
-            Text = "Stereo Splitter - 双声道分流";
+            Text = "Audio Splitter - 多路音频分流";
             // 图标: 取 exe 内嵌的 app.ico (标题栏/任务栏/托盘共用同一个)
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             // 窗体本身双缓冲: 缩放/拖动分隔条时背景不会先刷成白的再画控件 (整窗闪一下的来源)
@@ -514,7 +514,7 @@ namespace StereoSplitter
             // 数值标签: 仅分流运行中(双向绑定生效)为黑, 其余灰色表示无效
             SetVolumeBindVisual(running);
 
-            if (trayIcon != null) trayIcon.Text = "Stereo Splitter - " + txt;
+            if (trayIcon != null) trayIcon.Text = "Audio Splitter - " + txt;
 
             // 水位监控仅运行时按间隔跑, Ready/Stopped 或间隔0=不跑 (防空转)
             SyncWaterTimer();
@@ -2168,7 +2168,7 @@ namespace StereoSplitter
 
             trayIcon = new NotifyIcon();
             trayIcon.Icon = this.Icon != null ? this.Icon : SystemIcons.Application;
-            trayIcon.Text = "Stereo Splitter - 就绪";
+            trayIcon.Text = "Audio Splitter - 就绪";
             trayIcon.ContextMenuStrip = menu;
             trayIcon.Visible = true;
             trayIcon.MouseDoubleClick += (s, e) => { if (e.Button == MouseButtons.Left) RestoreFromTray(); };
@@ -2181,7 +2181,7 @@ namespace StereoSplitter
             if (!trayTipShown)
             {
                 trayTipShown = true;
-                try { trayIcon.ShowBalloonTip(3000, "Stereo Splitter", "已最小化到托盘，双击图标恢复窗口", ToolTipIcon.Info); }
+                try { trayIcon.ShowBalloonTip(3000, "Audio Splitter", "已最小化到托盘，双击图标恢复窗口", ToolTipIcon.Info); }
                 catch { }
             }
         }

@@ -16,8 +16,8 @@
     <Version>1.0.0</Version>
     <FileVersion>1.0.0.0</FileVersion>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <Product>Stereo Splitter</Product>
-    <Company>Stereo Splitter</Company>
+    <Product>Audio Splitter</Product>
+    <Company>Audio Splitter</Company>
     <Copyright>Copyright © 2026</Copyright>
   </PropertyGroup>
 

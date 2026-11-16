@@ -42,7 +42,7 @@ namespace StereoSplitter.Infrastructure
                     string msg = "程序遇到未处理的错误。";
                     if (path != null) msg += "\n\n日志已保存到:\n" + path;
                     if (ex != null) msg += "\n\n" + ex.Message;
-                    MessageBox.Show(msg, "Stereo Splitter", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show(msg, "Audio Splitter", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
                 catch { }
             }
