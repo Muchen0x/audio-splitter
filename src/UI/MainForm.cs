@@ -26,6 +26,11 @@ namespace StereoSplitter
         FlowLayoutPanel flwSpecChannels;
         bool fittingWidths;      // FitCardWidths 重入保护
         int gridLogCols = -1;    // 上次记过日志的列数 (只在列数变化时打, 拖动窗口不刷屏)
+        // 上次真正摆过的栅格参数: 完全一致时跳过重排 (缩放窗口时每帧都会被叫到好几次)
+        int lastCardCols = -1, lastCardW = -1, lastRightGap = -1, lastCardCount = -1;
+        Size lastLogPanelSize = Size.Empty;   // 日志面板上次的尺寸 (没变就不重摆日志框)
+        int lastVolPanelW = -1;              // 音量行上次的面板宽度
+        int lastSplitH = -1;                 // 分隔容器上次的高度 (判断"窗口在变矮")
         static readonly int[][] LatencyProfiles = new int[][] {
             new int[] { 100, 50 },
             new int[] { 50, 30 },
@@ -81,6 +86,27 @@ namespace StereoSplitter
         static extern IntPtr SetFocus(IntPtr hWnd);
         [System.Runtime.InteropServices.DllImport("kernel32.dll")]
         static extern uint GetCurrentThreadId();
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct SCROLLINFO
+        {
+            public int cbSize, fMask, nMin, nMax, nPage, nPos, nTrackPos;
+        }
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool GetScrollInfo(IntPtr hWnd, int nBar, ref SCROLLINFO si);
+        const int SB_VERT = 1;
+        const int SIF_RANGE = 0x1, SIF_PAGE = 0x2, SIF_POS = 0x4;
+
+        /// <summary>日志框现在是不是贴在最后一行 (用户没往上翻看历史)。</summary>
+        bool LogAtBottom()
+        {
+            if (txtLog == null || !txtLog.IsHandleCreated) return true;
+            var si = new SCROLLINFO();
+            si.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(SCROLLINFO));
+            si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+            if (!GetScrollInfo(txtLog.Handle, SB_VERT, ref si)) return true;
+            return si.nPos + si.nPage >= si.nMax;
+        }
 
         const int SW_RESTORE = 9;
 
@@ -149,6 +175,9 @@ namespace StereoSplitter
         public MainForm()
         {
             Text = "Stereo Splitter - 双声道分流";
+            // 窗体本身双缓冲: 缩放/拖动分隔条时背景不会先刷成白的再画控件 (整窗闪一下的来源)
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+            DoubleBuffered = true;
             Size = new Size(600, 554);
             // 最小高度按布局反推: 内容区至少留到"规格行 + 一整张卡片"(约 284) +
             // 6px 分隔条 + 日志区最小 110 → 客户区需 ~400, 再加标题栏/边框。
@@ -164,8 +193,8 @@ namespace StereoSplitter
             // 上下可拖动面板: 内容区 | 6px灰分隔条 | 日志区 (参照 tk.PanedWindow)
             // FixedPanel=Panel2: 窗口变矮时先收缩上面的内容区, 日志区高度保持不变
             // (以前是 Panel1 固定 → 变矮时日志直接被压扁)。
-            // Panel1MinSize: 至少留住"规格行 + 一整张卡片", 再小就没有意义了;
-            // 卡片区自己带纵向滚动, 所以 Panel1 不需要 AutoScroll。
+            // Panel1MinSize=0: **分隔条拖动不再设上限**, 日志区可以一路拉到顶 (想看长日志时不用受 284 限制);
+            // 窗口整体变矮的情况由 KeepContentOnShrink() 兜底, 不会把内容区缩没。
             splitContainer = new NoFocusSplitContainer
             {
                 Dock = DockStyle.Fill,
@@ -173,7 +202,7 @@ namespace StereoSplitter
                 SplitterWidth = 6,
                 BackColor = Color.FromArgb(0x88, 0x88, 0x88),
                 FixedPanel = FixedPanel.Panel2,
-                Panel1MinSize = 284,
+                Panel1MinSize = 0,
                 Panel2MinSize = 110,
                 Size = new Size(500, 500),
                 TabStop = false
@@ -187,6 +216,8 @@ namespace StereoSplitter
             // 初始340时日志区=111(客户457); 窗高减10 → 330 保持日志111不变
             // 2026-06 增益独立成行后内容下移34 → 386 保持日志区高度不变
             splitContainer.SplitterDistance = 386;
+            // 窗口整体变矮时把内容区拽回来 (分隔条拖动本身不受限, 见 KeepContentOnShrink)
+            splitContainer.SizeChanged += (s, e) => KeepContentOnShrink();
             Controls.Add(splitContainer);
 
             var lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
@@ -239,7 +270,7 @@ namespace StereoSplitter
             // 宽度顶到面板右缘 (与「添加输出」右边缘对齐), 竖滚动条才会贴着右边显示。
             // 布局: 从左到右铺卡片, 铺满换行 —— 列数按「卡片基准宽度」的整数倍跳档
             // (见 ComputeCardGrid), 所以窗口变宽是"多一列", 而不是把单张卡片拉成一根长条。
-            cardHost = new FlowLayoutPanel
+            cardHost = new BufferedFlowPanel
             {
                 Location = new Point(15, 216),
                 Size = new Size(559, 166),
@@ -1407,11 +1438,35 @@ namespace StereoSplitter
             }
             // 逐个加入过程中滚动条可能刚好切换, 统一再拉一次;
             // 滚动条的最终显隐要等布局跑完, 故再用 BeginInvoke 兜一次。
+            lastCardCols = -1;                      // 卡片是新控件: 强制重排一次
             FitCardWidths();
             if (IsHandleCreated && !IsDisposed)
                 BeginInvoke((Action)FitCardWidths);
             ApplyUiLock();          // 新建的卡片要继承当前锁定状态(运行中/启动中)
             RefreshSpecBadges();
+        }
+
+        /// <summary>
+        /// 分隔条拖动不设上限 (`Panel1MinSize = 0`), 日志区可以一路拉到顶;
+        /// 但**窗口整体变矮**时不能把内容区缩没: 一旦内容区被压到 284 以下 (界面上只剩日志),
+        /// 就把它拽回 284。只在"高度变小"时触发, 用户主动往上拖分隔条不受这条规则干扰。
+        /// </summary>
+        void KeepContentOnShrink()
+        {
+            if (splitContainer == null) return;
+            int h = splitContainer.Height;
+            bool shrinking = lastSplitH > 0 && h < lastSplitH;
+            lastSplitH = h;
+            if (!shrinking) return;
+
+            const int minContent = 284;
+            int dist = splitContainer.SplitterDistance;
+            if (dist >= minContent) return;
+            int maxDist = h - splitContainer.Panel2MinSize - splitContainer.SplitterWidth;
+            if (maxDist <= dist) return;                 // 窗口矮到连内容区都放不下: 只能这样
+            int want = Math.Min(minContent, maxDist);
+            if (want <= dist) return;
+            try { splitContainer.SplitterDistance = want; } catch { }
         }
 
         /// <summary>
@@ -1422,6 +1477,10 @@ namespace StereoSplitter
         {
             if (txtLog == null || splitContainer == null) return;
             Size cs = splitContainer.Panel2.ClientSize;
+            // 尺寸没变就别再 SetBounds: 拖分隔条时这个回调每帧都来,
+            // 每次都改一次 bounds 会连带整块日志框重排重画。
+            if (cs == lastLogPanelSize) return;
+            lastLogPanelSize = cs;
             int w = Math.Max(120, cs.Width - 15 - 10);
             int h = Math.Max(40, cs.Height - 30 - 8);
             txtLog.SetBounds(15, 30, w, h);
@@ -1439,6 +1498,9 @@ namespace StereoSplitter
             if (host == null) return;
 
             int panelW = host.ClientSize.Width;
+            // 宽度没变 (改高度/拖分隔条也会走到这里) → 摆出来的结果不会变, 直接跳过
+            if (panelW == lastVolPanelW) return;
+            lastVolPanelW = panelW;
             const int leftEdge = 78;    // 滑条左端 = "增益:"/"主音量:" 标签右缘
             const int rightEdge = 10;   // 右端留白, 与卡片区/日志框右缘一致
             int muteW = chkMuteMaster.Width;
@@ -1611,6 +1673,21 @@ namespace StereoSplitter
             // 正好顶出一根横向滚动条 (实测 600/1000/1200 宽都出现过)。
             // 多列必须留, 否则 FlowLayoutPanel 的换行判断会提前一张就折行。
             int rightGap = cols > 1 ? CardGapX : 0;
+
+            // 缩放窗口时 Resize 与 ClientSizeChanged 会连着来好几次, 下面这轮
+            // SuspendLayout/ResumeLayout 是**每个子控件全量重排**, 一帧里重复跑就是缩放卡顿的主因。
+            // 列数/宽度/间距都没变(改高度、滚动条开关都会走到这儿) → 直接跳过重排。
+            if (cols == lastCardCols && w == lastCardW && rightGap == lastRightGap
+                && cards.Count == lastCardCount)
+            {
+                DropStaleHScroll();
+                return;
+            }
+            lastCardCols = cols;
+            lastCardW = w;
+            lastRightGap = rightGap;
+            lastCardCount = cards.Count;
+
             var margin = new Padding(0, 0, rightGap, OutputCardControl.CardGap);
 
             // 我们在 panel 自己的一次布局里改子控件尺寸 (ClientSizeChanged 就是在布局中发的),
@@ -3125,17 +3202,25 @@ namespace StereoSplitter
             // UI: 单条 8192 截断 + 条目间空行 + 自动滚底
             string ui = line;
             if (ui.Length > 8192) ui = ui.Substring(0, 8192) + "\n...(日志过长已截断)";
+            // 先看用户在不在底部: 正在往上翻历史时不要每次都把他拽回末尾
+            // (ScrollToCaret 是整块重排 + 重画, 日志刷得快时也是主要开销之一)
+            bool atBottom = LogAtBottom();
             txtLog.AppendText(ui + "\r\n\r\n");
             // 总量上限: 超 30 万字符截到 15 万, 防长时间运行文本无限增长 (文件不截断)
             int total = txtLog.TextLength;
+            bool trimmed = false;
             if (total > 300000)
             {
                 // 直接删除头部超量字符, 避免 txtLog.Text 整串复制+Substring 的两次大分配
                 txtLog.Select(0, total - 150000);
                 txtLog.SelectedText = "";
+                trimmed = true;
             }
-            txtLog.SelectionStart = txtLog.TextLength;
-            txtLog.ScrollToCaret();
+            if (atBottom || trimmed)
+            {
+                txtLog.SelectionStart = txtLog.TextLength;
+                txtLog.ScrollToCaret();
+            }
 
             // 文件持久化 (写原文, 不截断)
             if (sessionLog != null) sessionLog.Write(stamp, level, msg);

@@ -91,6 +91,21 @@ namespace StereoSplitter
         }
     }
 
+    /// <summary>
+    /// 双缓冲的 FlowLayoutPanel (卡片区)。
+    /// <para>原生 FlowLayoutPanel 的 AutoScroll 在滚动/缩放时是一格一格擦背景再画子控件,
+    /// 卡片一多就能看到整片闪白; 开双缓冲后整帧一次性贴上去, 滚动和缩放明显顺。</para>
+    /// </summary>
+    class BufferedFlowPanel : FlowLayoutPanel
+    {
+        public BufferedFlowPanel()
+        {
+            // DoubleBuffered 是 protected, 只能在子类里开
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        }
+    }
+
     /// <summary>点完不留虚线焦点框的按钮。</summary>
     class NoCueButton : Button
     {
