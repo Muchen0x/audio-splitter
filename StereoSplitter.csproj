@@ -9,6 +9,7 @@
     <Deterministic>true</Deterministic>
     <Platforms>AnyCPU</Platforms>
     <Prefer32Bit>false</Prefer32Bit>
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <PropertyGroup>

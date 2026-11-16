@@ -175,6 +175,8 @@ namespace StereoSplitter
         public MainForm()
         {
             Text = "Stereo Splitter - 双声道分流";
+            // 图标: 取 exe 内嵌的 app.ico (标题栏/任务栏/托盘共用同一个)
+            try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             // 窗体本身双缓冲: 缩放/拖动分隔条时背景不会先刷成白的再画控件 (整窗闪一下的来源)
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
             DoubleBuffered = true;
