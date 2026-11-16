@@ -51,11 +51,6 @@ namespace StereoSplitter
         }
 
 
-        static string StrOrDefault(string s, string def)
-        {
-            return string.IsNullOrEmpty(s) ? def : s;
-        }
-
         int GetInt(string key, int def)
         {
             return settings.GetInt(key, def);
@@ -112,28 +107,8 @@ namespace StereoSplitter
                 settings.Put("LatencyProfile", Math.Max(0, cmbLatency.SelectedIndex).ToString());
                 settings.Put("Spec", cmbSpec.SelectedIndex < 0 ? "1" : cmbSpec.SelectedIndex.ToString());
                 SyncLanesFromCards();
-                settings.RemovePrefix("Out");   // 先清干净, 删过的卡/行不留孤儿键
-                settings.Put("OutCount", models.Count.ToString());
-                for (int li = 0; li < models.Count && li < 16; li++)
-                {
-                    OutputCardModel m = models[li];
-                    string pk = "Out" + li + ".";
-                    // Channel 仍是"卡片声道": 单声道写声道键, 多声道写哨兵 (旧版本读到哨兵会退回第一行)
-                    settings.Put(pk + "Channel",
-                        m.Multi ? LaneRouting.MultiKey : (m.Slots.Count > 0 ? m.Slots[0].ChannelKey : "FL"));
-                    settings.Put(pk + "DeviceId", m.DeviceId ?? "");
-                    settings.Put(pk + "DelayMs", m.DelayMs.ToString());
-                    settings.Put(pk + "Volume", m.Volume.ToString());
-                    settings.Put(pk + "Mute", m.Mute ? "1" : "0");
-                    settings.Put(pk + "Multi", m.Multi ? "1" : "0");
-                    settings.Put(pk + "ChCount", m.Slots.Count.ToString());
-                    for (int s = 0; s < m.Slots.Count && s < 8; s++)
-                    {
-                        string ck = pk + "Ch" + s + ".";
-                        settings.Put(ck + "Channel", m.Slots[s].ChannelKey ?? "");
-                        settings.Put(ck + "Volume", m.Slots[s].Volume.ToString());
-                    }
-                }
+                // Out* 键的编解码收敛在 LaneSettingsCodec (纯数据, 不触控件)
+                Infrastructure.LaneSettingsCodec.Encode(settings, models);
                 settings.Put("WaterIntervalSec", ((int)nudWaterInterval.Value).ToString());
                 settings.Put("Gain", volGain.Value.ToString());
                 // 兼容键: 左右 = FL/FR 输出卡片的设备 (旧 ini 与外部工具仍按这两个键读)

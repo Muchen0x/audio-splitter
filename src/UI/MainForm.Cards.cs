@@ -835,79 +835,13 @@ namespace StereoSplitter
             finally { flwSpecChannels.ResumeLayout(); }
         }
 
-        /// <summary>从 ini 装载输出模型: 优先 Out* 新键, 没有则用旧的左右键合成两路。</summary>
+        /// <summary>从 ini 装载输出模型: 编解码在 LaneSettingsCodec (纯数据), 这里只做控件与卡片联动。</summary>
         void LoadLanes()
         {
             models.Clear();
             cmbSpec.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("Spec", 1)));
 
-            int count = GetInt("OutCount", 0);
-            if (count > 0)
-            {
-                for (int i = 0; i < count && i < 16; i++)
-                {
-                    string pk = "Out" + i + ".";
-                    var m = new OutputCardModel
-                    {
-                        DeviceId = settings.GetStr(pk + "DeviceId") ?? "",
-                        DelayMs = Math.Max(0, Math.Min(2000, GetInt(pk + "DelayMs", 0))),
-                        Volume = Math.Max(0, Math.Min(100, GetInt(pk + "Volume", 100))),
-                        Mute = GetInt(pk + "Mute", 0) != 0
-                    };
-                    string channel = StrOrDefault(settings.GetStr(pk + "Channel"), "FL");
-                    bool multi = GetInt(pk + "Multi", 0) != 0 || channel == LaneRouting.MultiKey;
-
-                    int n = Math.Max(0, Math.Min(8, GetInt(pk + "ChCount", 0)));
-                    for (int s = 0; s < n; s++)
-                    {
-                        string ck = pk + "Ch" + s + ".";
-                        m.Slots.Add(new ChannelSlot
-                        {
-                            ChannelKey = settings.GetStr(ck + "Channel") ?? "",
-                            Volume = Math.Max(0, Math.Min(100, GetInt(ck + "Volume", 100)))
-                        });
-                    }
-
-                    if (multi)
-                    {
-                        m.Multi = true;                 // 行数由 NormalizeModels 按设备声道数补齐
-                        if (m.Slots.Count == 0) m.Slots.Add(new ChannelSlot { ChannelKey = "FL", Volume = 100 });
-                    }
-                    else
-                    {
-                        // 旧 ini (没有 Multi/Ch*): 一路 = 一张单声道卡片, 同设备的会在 Normalize 里合并
-                        m.Slots.Add(new ChannelSlot
-                        {
-                            ChannelKey = channel,
-                            Volume = Math.Max(0, Math.Min(100, GetInt(pk + "Volume", 100)))
-                        });
-                    }
-                    models.Add(m);
-                }
-            }
-            else
-            {
-                // 老配置 (DeviceLeft/DeviceRight 那套) → 左右两张卡片
-                var l = new OutputCardModel
-                {
-                    DeviceId = GetStr("DeviceLeft") ?? "",
-                    DelayMs = Math.Max(0, Math.Min(2000, GetInt("DelayLeft", 0))),
-                    Volume = Math.Max(0, Math.Min(100, GetInt("VolumeLeft", 100))),
-                    Mute = GetInt("MuteLeft", 0) != 0
-                };
-                l.Slots.Add(new ChannelSlot { ChannelKey = "FL", Volume = l.Volume });
-                models.Add(l);
-
-                var r = new OutputCardModel
-                {
-                    DeviceId = GetStr("DeviceRight") ?? "",
-                    DelayMs = Math.Max(0, Math.Min(2000, GetInt("DelayRight", 0))),
-                    Volume = Math.Max(0, Math.Min(100, GetInt("VolumeRight", 100))),
-                    Mute = GetInt("MuteRight", 0) != 0
-                };
-                r.Slots.Add(new ChannelSlot { ChannelKey = "FR", Volume = r.Volume });
-                models.Add(r);
-            }
+            Infrastructure.LaneSettingsCodec.Decode(settings, models);
 
             ReassignLanesToSpec(false);   // 只修正落不进规格的声道键
             // 这里**不合并**: 构造期 catalog 还没建, 读不到端点音量, 合并出来的主音量会是 100%
