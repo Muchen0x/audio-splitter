@@ -23,6 +23,7 @@ namespace StereoSplitter
         FlowLayoutPanel cardHost;
         FlowLayoutPanel flwSpecChannels;
         bool fittingWidths;      // FitCardWidths 重入保护
+        const int CardSidePad = 6;   // cardHost 左右 Padding, 与 CardWidth() 配套
         static readonly int[][] LatencyProfiles = new int[][] {
             new int[] { 100, 50 },
             new int[] { 50, 30 },
@@ -209,6 +210,7 @@ namespace StereoSplitter
             };
 
             // 输出卡片区 (可增删, 超出高度滚动)
+            // Padding 给卡片留出左右/上下呼吸位; 卡片自身的圆角外框由 OutputCard 画。
             cardHost = new FlowLayoutPanel
             {
                 Location = new Point(15, 216),
@@ -216,6 +218,7 @@ namespace StereoSplitter
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
                 AutoScroll = true,
+                Padding = new Padding(CardSidePad, 4, CardSidePad, 6),
                 Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
             };
 
@@ -1156,6 +1159,8 @@ namespace StereoSplitter
                 card.SetDevices(devTexts);
                 card.SetDeviceIndex(catalog == null ? -1 : catalog.IndexOf(lanes[i].DeviceId));
                 card.SetChannels(chans, lanes[i].ChannelKey);
+                // 卡片自带圆角外框, 竖向靠紧 (间隙 = Margin.Bottom), 左右由 cardHost.Padding 撑开
+                card.Margin = new Padding(0, 0, 0, OutputCardControl.CardGap);
                 card.Width = CardWidth();
                 cardHost.Controls.Add(card);
                 cards.Add(card);
@@ -1168,11 +1173,11 @@ namespace StereoSplitter
             RefreshSpecBadges();
         }
 
-        /// <summary>卡片宽度 = 卡片区可视宽度 (留出竖滚动条)。</summary>
+        /// <summary>卡片宽度 = 卡片区可视宽度 - 左右 Padding (ClientSize 已扣掉竖滚动条)。</summary>
         int CardWidth()
         {
             if (cardHost == null) return OutputCardControl.CardWidth;
-            int w = cardHost.ClientSize.Width - 24;
+            int w = cardHost.ClientSize.Width - CardSidePad * 2;
             return w < 380 ? 380 : w;
         }
 

@@ -49,10 +49,20 @@ namespace StereoSplitter
         public const int CardHeight = 78;
         public const int CardWidth = 500;
 
+        /// <summary>卡片之间的竖向间隙 (与 MainForm 里卡片的 Margin.Bottom 对应)。</summary>
+        public const int CardGap = 4;
+
+        static readonly Color BorderColor = Color.FromArgb(203, 208, 216);
+        const int CornerRadius = 6;
+
         public OutputCardControl(OutputLane lane)
         {
             Lane = lane;
             SetStyle(ControlStyles.OptimizedDoubleBuffer, true);
+            SetStyle(ControlStyles.ResizeRedraw, true);
+            SetStyle(ControlStyles.AllPaintingInWmPaint, true);
+            // 卡片底色用白, 边框由 OnPaint 画圆角矩形 (子控件透明背景也跟着变白)
+            BackColor = Color.White;
             // 先定尺寸再摆子控件; 位置统一由 LayoutControls() 按实际宽度摆放, 不用 Anchor
             Size = new Size(CardWidth, CardHeight);
 
@@ -210,6 +220,41 @@ namespace StereoSplitter
             volTrack.Width = Math.Max(120, w - volX - (8 + lblVol.Width + 12 + chkMute.Width + 8));
             lblVol.Location = new Point(volTrack.Right + 8, row2);
             chkMute.Location = new Point(lblVol.Right + 12, row2 - 2);
+        }
+
+        /// <summary>
+        /// 卡片外框: 圆角矩形描边, 圆角外的小方块用容器底色补齐 (否则四个角会露白)。
+        /// 先铺容器底色, 再填圆角白底, 最后描边; 子控件在此之后自行绘制。
+        /// </summary>
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            Color outside = Parent != null ? Parent.BackColor : BackColor;
+            using (var outsideBrush = new SolidBrush(outside))
+                g.FillRectangle(outsideBrush, ClientRectangle);
+
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (var path = RoundedRect(rect, CornerRadius))
+            {
+                using (var fill = new SolidBrush(BackColor))
+                    g.FillPath(fill, path);
+                using (var pen = new Pen(BorderColor))
+                    g.DrawPath(pen, path);
+            }
+        }
+
+        static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle r, int radius)
+        {
+            int d = radius * 2;
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            path.AddArc(r.X, r.Y, d, d, 180, 90);
+            path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
         }
 
         /// <summary>用模型值回填控件 (载入/外部改动后调用)。</summary>
