@@ -22,6 +22,7 @@ namespace StereoSplitter
         readonly List<OutputCardControl> cards = new List<OutputCardControl>();
         FlowLayoutPanel cardHost;
         FlowLayoutPanel flwSpecChannels;
+        bool fittingWidths;      // FitCardWidths 重入保护
         static readonly int[][] LatencyProfiles = new int[][] {
             new int[] { 100, 50 },
             new int[] { 50, 30 },
@@ -234,11 +235,11 @@ namespace StereoSplitter
             chkDrift = new CheckBox { Text = "校正", AutoSize = true, Checked = true };
             chkDrift.Location = new Point(chkMinimizeToTray.Right + 8, chkMinimizeToTray.Top);
 
-            cardHost.Resize += (s2, e2) =>
-            {
-                int w = CardWidth();
-                for (int ci = 0; ci < cards.Count; ci++) cards[ci].Width = w;
-            };
+            // 卡片宽度跟随容器可视宽度。AutoScroll 的竖滚动条出现/消失只改
+            // ClientSize 不改 Size (不触发 Resize), 所以两个事件都要挂:
+            // 否则卡片的宽度会取决于创建那一刻滚动条在不在 (差 17px 对不齐)。
+            cardHost.Resize += (s2, e2) => FitCardWidths();
+            cardHost.ClientSizeChanged += (s2, e2) => FitCardWidths();
             btnAddOutput.Click += (s2, e2) => AddLaneCard(null);
             cmbSpec.SelectedIndexChanged += (s2, e2) =>
             {
@@ -1145,6 +1146,11 @@ namespace StereoSplitter
                 cardHost.Controls.Add(card);
                 cards.Add(card);
             }
+            // 逐个加入过程中滚动条可能刚好切换, 统一再拉一次;
+            // 滚动条的最终显隐要等布局跑完, 故再用 BeginInvoke 兜一次。
+            FitCardWidths();
+            if (IsHandleCreated && !IsDisposed)
+                BeginInvoke((Action)FitCardWidths);
             RefreshSpecBadges();
         }
 
@@ -1154,6 +1160,26 @@ namespace StereoSplitter
             if (cardHost == null) return OutputCardControl.CardWidth;
             int w = cardHost.ClientSize.Width - 24;
             return w < 380 ? 380 : w;
+        }
+
+        /// <summary>
+        /// 把所有卡片拉成同一宽度。
+        /// 单张卡片各自算宽度不可靠: 卡片是逐个加进 FlowLayoutPanel 的,
+        /// 滚动条可能在中途出现/消失, 后建的卡片量到的可视宽度就比前面的大
+        /// 一个滚动条宽 (17px), 于是滑条长度对不齐。
+        /// </summary>
+        void FitCardWidths()
+        {
+            if (cards == null || cards.Count == 0) return;
+            if (fittingWidths) return;      // 改宽度会触发容器重新布局, 防递归
+            fittingWidths = true;
+            try
+            {
+                int w = CardWidth();
+                for (int i = 0; i < cards.Count; i++)
+                    if (cards[i].Width != w) cards[i].Width = w;
+            }
+            finally { fittingWidths = false; }
         }
 
         void AddLaneCard(OutputLane preset)
