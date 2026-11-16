@@ -26,26 +26,35 @@ namespace StereoSplitter
 
         public const int WM_MOUSEWHEEL = 0x020A;
 
+        /// <summary>
+        /// 把滚轮转给最近一个「开了 AutoScroll 且当前真的能滚」的容器。
+        /// <para>找到就滚它并返回 true; 找不到返回 false (调用方自行决定怎么处理)。</para>
+        /// </summary>
+        public static bool ForwardToScroller(Control self, Message m)
+        {
+            for (Control p = self.Parent; p != null; p = p.Parent)
+            {
+                if (!p.IsHandleCreated) continue;
+                ScrollableControl sc = p as ScrollableControl;
+                if (sc != null && sc.AutoScroll && sc.VerticalScroll.Visible)
+                {
+                    SendMessage(p.Handle, m.Msg, m.WParam, m.LParam);
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /// <summary>把滚轮转给最近的「AutoScroll 且能滚」的容器; 找不到就交给直接父窗口继续冒泡。</summary>
         public static void Forward(Control self, Message m)
         {
-            Control p = self.Parent;
+            if (ForwardToScroller(self, m)) return;
+
             Control nearest = null;
-            while (p != null)
-            {
-                if (p.IsHandleCreated)
-                {
-                    ScrollableControl sc = p as ScrollableControl;
-                    if (sc != null && sc.AutoScroll && sc.VerticalScroll.Visible)
-                    {
-                        SendMessage(p.Handle, m.Msg, m.WParam, m.LParam);
-                        return;
-                    }
-                    if (nearest == null) nearest = p;
-                }
-                p = p.Parent;
-            }
-            if (nearest != null && nearest.IsHandleCreated)
+            for (Control p = self.Parent; p != null; p = p.Parent)
+                if (p.IsHandleCreated) { nearest = p; break; }
+
+            if (nearest != null)
                 SendMessage(nearest.Handle, m.Msg, m.WParam, m.LParam);   // 交给父窗口按默认规则冒泡
         }
     }
@@ -137,42 +146,35 @@ namespace StereoSplitter
     }
 
     /// <summary>
-    /// 把鼠标滚轮转给光标下的音量滑条。
-    /// WM_MOUSEWHEEL 只发给"当前拥有焦点的窗口", 而卡片里的滑条刻意不抢焦点
-    /// (一抢焦点 AutoScroll 容器就会滚动一下, 卡片列表会抖), 所以焦点不在滑条上时
-    /// 滑条根本收不到滚轮消息 —— 这里按光标位置自己找控件, 命中就改值并吃掉消息
-    /// (否则卡片区会跟着滚), 没命中就不管, 滚动行为与以前完全一样。
+    /// 光标停在音量滑条上时的滚轮去向。
+    /// <para>滑条刻意不抢焦点 (一抢焦点 AutoScroll 容器就会滚一下, 卡片列表会抖),
+    /// 所以它收不到 WM_MOUSEWHEEL —— 这里按光标位置自己找控件。</para>
+    /// <para>规则: **卡片列表正在滚动时, 滚轮只滚列表, 绝不改音量** —— 拖着列表往下划,
+    /// 鼠标扫过某张卡片的音量条时音量不会莫名其妙跳 5%; 列表没东西可滚时(不显示竖滚动条)
+    /// 才回落到原来的滚轮调音量, 免得白滚一场。</para>
     /// </summary>
     class VolumeWheelRouter : IMessageFilter
     {
         const int WM_MOUSEWHEEL = 0x020A;
 
-        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-        struct POINT { public int X; public int Y; }
-
-        [System.Runtime.InteropServices.DllImport("user32.dll")]
-        static extern IntPtr WindowFromPoint(POINT pt);
-
         public bool PreFilterMessage(ref Message m)
         {
             if (m.Msg != WM_MOUSEWHEEL) return false;
 
-            Point screen = Cursor.Position;
-            var hitPoint = new POINT { X = screen.X, Y = screen.Y };
-            Control hit = Control.FromChildHandle(WindowFromPoint(hitPoint));
-            if (hit == null) return false;
+            // 命中判定用消息自带的屏幕坐标 (就是滚轮真正发生的位置), 比读光标更可靠:
+            // 光标可能被别的程序挪走, 而这条消息的坐标是投递那一刻定下的。
+            long lp = m.LParam.ToInt64();
+            Point at = new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
+            VolumeSlider slider = VolumeSlider.HitTestScreen(at);
+            if (slider == null) slider = VolumeSlider.HitTestScreen(Cursor.Position);
+            if (slider == null) return false;
 
-            // 从命中的窗口往上找: 滑条本身没有子控件, 直接命中就是它
-            for (Control c = hit; c != null; c = c.Parent)
-            {
-                var slider = c as VolumeSlider;
-                if (slider == null) continue;
-                if (!slider.Visible || !slider.Enabled) return false;
-                int delta = (short)((m.WParam.ToInt64() >> 16) & 0xFFFF);
-                slider.ApplyWheelDelta(delta);
-                return true;
-            }
-            return false;
+            // 卡片列表能滚 → 这一格滚列表, 滑条值不动 (吞掉消息, 免得又滚一次)
+            if (WheelRouting.ForwardToScroller(slider, m)) return true;
+
+            // 列表没得滚 → 保持原行为: 滚轮调这一格音量
+            int delta = (short)((m.WParam.ToInt64() >> 16) & 0xFFFF);
+            return slider.ApplyWheelDelta(delta);
         }
     }
 

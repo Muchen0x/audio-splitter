@@ -155,8 +155,8 @@ namespace StereoSplitter
             MinimumSize = new Size(600, 480);
             Font = new Font("Microsoft YaHei UI", 9F);
 
-            // 滚轮路由: 光标停在音量条上就调音量 (每格 5%), 而不是滚卡片列表。
-            // 卡片里的滑条不抢焦点, 收不到 WM_MOUSEWHEEL, 只能按光标位置转过去。
+            // 滚轮去向: 卡片列表正在滚的时候, 光标扫过音量条也只滚列表、不改音量
+            // (拖着列表往下翻, 音量不能莫名其妙跳 5%); 列表没得滚时滚轮才调音量。
             Application.AddMessageFilter(new VolumeWheelRouter());
 
             // 上下可拖动面板: 内容区 | 6px灰分隔条 | 日志区 (参照 tk.PanedWindow)
@@ -1381,7 +1381,7 @@ namespace StereoSplitter
             // 新建卡片先按"当前卡片数"该有的栅格摆好, 免得先按满宽建再被 FitCardWidths 挤一次
             int gridCols, gridW;
             ComputeCardGrid(models.Count, out gridCols, out gridW);
-            var gridMargin = new Padding(0, 0, CardGapX, OutputCardControl.CardGap);
+            var gridMargin = new Padding(0, 0, gridCols > 1 ? CardGapX : 0, OutputCardControl.CardGap);
 
             for (int i = 0; i < models.Count; i++)
             {
@@ -1519,7 +1519,17 @@ namespace StereoSplitter
             {
                 int cols, w;
                 ComputeCardGrid(cards.Count, out cols, out w);
-                var margin = new Padding(0, 0, CardGapX, OutputCardControl.CardGap);
+
+                int avail = cardHost.ClientSize.Width - cardHost.Padding.Horizontal;
+                // 兜底: 卡片绝不比可视区宽 (宽到连最小卡片宽都排不下时才听任横向滚动,
+                // 宁可横滚也不能把第一行的设备/声道/延迟挤成重叠)
+                if (avail >= CardMinW && w > avail) w = avail;
+
+                // 单列不留右侧间距: 那段 10px 会被算进内容宽度, 宽度已 = 可视宽时
+                // 正好顶出一根横向滚动条 (实测 600/1000/1200 宽都出现过)。
+                // 多列必须留, 否则 FlowLayoutPanel 的换行判断会提前一张就折行。
+                int rightGap = cols > 1 ? CardGapX : 0;
+                var margin = new Padding(0, 0, rightGap, OutputCardControl.CardGap);
                 for (int i = 0; i < cards.Count; i++)
                 {
                     // 先摆间距再改宽: 换列发生在容器重新布局时, 间距必须已经就位

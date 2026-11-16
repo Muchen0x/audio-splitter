@@ -36,6 +36,39 @@ namespace StereoSplitter
         /// <summary>用户拖动/点击/键盘改变值时触发 (程序改 Value 不触发)。</summary>
         public event EventHandler Scroll;
 
+        /// <summary>
+        /// 当前活着的滑条 (按屏幕矩形做命中判定)。
+        /// <para>不用 WindowFromPoint: 光标下可能压着别的进程的小窗 (桌面小工具、输入法候选、
+        /// 屏幕录制浮条……), 命中会落到那个窗口上, 结果滑条既收不到滚轮、也不会被识别成滑条,
+        /// 表现为"鼠标明明在音量条上滚, 却什么都不发生"。按自己的矩形判定不受任何遮挡干扰。</para>
+        /// </summary>
+        static readonly System.Collections.Generic.List<VolumeSlider> live =
+            new System.Collections.Generic.List<VolumeSlider>();
+
+        /// <summary>屏幕坐标命中的滑条 (取最后创建的那个, 即 Z 序最上)。找不到返回 null。</summary>
+        public static VolumeSlider HitTestScreen(Point screenPoint)
+        {
+            for (int i = live.Count - 1; i >= 0; i--)
+            {
+                VolumeSlider s = live[i];
+                if (s == null || s.IsDisposed || !s.Visible || !s.Enabled) continue;
+                if (s.RectangleToScreen(s.ClientRectangle).Contains(screenPoint)) return s;
+            }
+            return null;
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            if (!live.Contains(this)) live.Add(this);
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            live.Remove(this);
+            base.OnHandleDestroyed(e);
+        }
+
         public VolumeSlider()
         {
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
