@@ -14,7 +14,7 @@ namespace StereoSplitter
         public string ChannelKey = "FL";   // 规格里的声道键: M/FL/FR/C/LFE/SL/SR/BL/BR
         public string DeviceId = "";
         public int DelayMs;
-        public int Volume = 100;           // 0..100, 写端点音量
+        public int Volume = 100;           // 0..100; 独占设备时写端点音量, 同设备多卡时进混音增益
         public bool Mute;
     }
 
@@ -187,7 +187,7 @@ namespace StereoSplitter
             tip.SetToolTip(cmbDevice, "这一路输出用哪台设备。\n同一台设备可以承载多路（内核按设备合并成一条输出流，按卡片上下顺序分配物理声道）。");
             tip.SetToolTip(cmbChannel, "这一路输出规格里的哪个声道。\n角标: 规格行右侧的数字 = 有几路输出接到该声道。");
             tip.SetToolTip(nudDelay, "本路延迟补偿 (毫秒)。多台设备距离不同时, 给近的加延迟对齐声场。\n同一台设备只有一条延迟线: 该设备上的多张卡片取最小值, 不一致时日志会提示。");
-            tip.SetToolTip(volTrack, "本路音量。左/右两张端点卡片写入设备端点音量(与系统音量双向同步),\n其余各路在混音层生效(与同设备的其它路互不干扰)。双击百分比可复位 100%。");
+            tip.SetToolTip(volTrack, "本路音量。独占一台设备的卡写设备端点音量(与系统音量双向同步, 停止时还原);\n同一台设备上有多张卡时, 这些卡在混音层生效(端点音量是设备级单值, 多路共用会互相覆盖)。\n双击百分比可复位 100%。");
             tip.SetToolTip(btnRemove, "移除这一路输出");
 
             SyncFromLane();

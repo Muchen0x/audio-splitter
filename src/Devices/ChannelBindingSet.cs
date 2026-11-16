@@ -1,26 +1,36 @@
 using System;
+using System.Collections.Generic;
 using NAudio.CoreAudioApi;
 
 namespace StereoSplitter.Devices
 {
     /// <summary>
-    /// 主/左/右三条端点绑定的统一编排。
-    /// 三处绑定逻辑完全同构, 旧实现里重复了三遍 (BindDefaultVolumeSync / BindOneChannel / UnbindAllVolumeSync),
-    /// 这里收成一个 Rebind。
+    /// 主端点 + 各输出设备端点的统一编排。
+    ///
+    /// <para>为什么输出侧按**设备**而不是按"左/右声道"绑定: Windows 的端点音量本身就是
+    /// 设备级的一个值 (MasterVolumeLevelScalar), 一台设备只有一个。所以能被 UI 双向绑定、
+    /// 能在停止时还原的, 只能是"该设备唯一那张卡片"; 同一台设备挂多张卡片时, 那些卡片的
+    /// 音量只能进混音矩阵 (见 LaneRouting.ResolveEndpointLanes)。</para>
+    ///
+    /// <para>键是 deviceId: 同一设备重复 BindSink 会复用同一个绑定对象, 不会重复订阅通知。</para>
     /// </summary>
     sealed class ChannelBindingSet : IDisposable
     {
         readonly DeviceCatalog catalog;
         readonly Action<string> log;
+        // deviceId → 端点绑定 (顺序按插入顺序, 便于日志稳定输出)
+        readonly Dictionary<string, EndpointVolumeBinding> sinks =
+            new Dictionary<string, EndpointVolumeBinding>(StringComparer.Ordinal);
+        readonly List<string> sinkOrder = new List<string>();
 
         public EndpointVolumeBinding Master { get; private set; }
-        public EndpointVolumeBinding Left { get; private set; }
-        public EndpointVolumeBinding Right { get; private set; }
 
         public bool AnyBound
         {
-            get { return Master != null || Left != null || Right != null; }
+            get { return Master != null || sinks.Count > 0; }
         }
+
+        public int SinkCount { get { return sinks.Count; } }
 
         public ChannelBindingSet(DeviceCatalog catalog, Action<string> log)
         {
@@ -28,23 +38,96 @@ namespace StereoSplitter.Devices
             this.log = log;
         }
 
+        // ---------------- 主端点 (捕获源) ----------------
+
         public EndpointVolumeBinding BindMaster(string deviceId, Action<AudioVolumeNotificationData> onNotify)
         {
             Master = Rebind(Master, deviceId, "主", onNotify);
             return Master;
         }
 
-        public EndpointVolumeBinding BindLeft(string deviceId, Action<AudioVolumeNotificationData> onNotify)
+        // ---------------- 输出端点 (按设备) ----------------
+
+        /// <summary>绑定一台输出设备的端点。同一设备已绑定且有效 → 直接复用。</summary>
+        public EndpointVolumeBinding BindSink(string deviceId, string role, Action<AudioVolumeNotificationData> onNotify)
         {
-            Left = Rebind(Left, deviceId, "左", onNotify);
-            return Left;
+            if (string.IsNullOrEmpty(deviceId)) return null;
+
+            EndpointVolumeBinding current;
+            if (sinks.TryGetValue(deviceId, out current) && current != null && current.IsValid)
+                return current;
+
+            if (current != null)
+            {
+                current.RestoreVolume();
+                current.RestoreMuteIfApplied();
+                current.Dispose();
+                sinks.Remove(deviceId);
+                sinkOrder.Remove(deviceId);
+            }
+
+            MMDevice dev = catalog.Open(deviceId);
+            if (dev == null)
+            {
+                log("[错误] 无法打开" + role + "端点设备: " + catalog.NameOf(deviceId) + " (ID 已失效, 建议刷新设备)");
+                return null;
+            }
+
+            var binding = new EndpointVolumeBinding(dev, role, log);
+            if (!binding.IsValid)
+            {
+                binding.Dispose();
+                return null;
+            }
+
+            binding.Subscribe(onNotify);
+            sinks[deviceId] = binding;
+            sinkOrder.Add(deviceId);
+            return binding;
         }
 
-        public EndpointVolumeBinding BindRight(string deviceId, Action<AudioVolumeNotificationData> onNotify)
+        /// <summary>取某设备的输出端点绑定 (未绑定 → null)。</summary>
+        public EndpointVolumeBinding SinkOf(string deviceId)
         {
-            Right = Rebind(Right, deviceId, "右", onNotify);
-            return Right;
+            if (string.IsNullOrEmpty(deviceId)) return null;
+            EndpointVolumeBinding b;
+            return sinks.TryGetValue(deviceId, out b) ? b : null;
         }
+
+        /// <summary>按插入顺序返回全部输出端点绑定。</summary>
+        public IEnumerable<EndpointVolumeBinding> Sinks()
+        {
+            for (int i = 0; i < sinkOrder.Count; i++)
+            {
+                EndpointVolumeBinding b;
+                if (sinks.TryGetValue(sinkOrder[i], out b) && b != null) yield return b;
+            }
+        }
+
+        /// <summary>解除全部输出端点绑定 (主端点不动)。restore=true 时还原音量/静音。</summary>
+        public void UnbindSinks(bool restore)
+        {
+            for (int i = 0; i < sinkOrder.Count; i++)
+            {
+                EndpointVolumeBinding b;
+                if (sinks.TryGetValue(sinkOrder[i], out b)) UnbindOne(b, restore);
+            }
+            sinks.Clear();
+            sinkOrder.Clear();
+        }
+
+        // ---------------- 写入 ----------------
+
+        /// <summary>按 UI 权威值写入主端点 (主音量 + 捕获消音)。</summary>
+        public void WriteMaster(int masterPercent, bool captureMute)
+        {
+            if (Master == null) return;
+            Master.WriteVolume(masterPercent / 100f);
+            // 主静音只作用于采样层, 不写捕获端点的 Mute; 捕获端点只认 chkMuteCapture
+            if (Master.ReadMuted() != captureMute) Master.WriteMute(captureMute);
+        }
+
+        // ---------------- 内部 ----------------
 
         /// <summary>
         /// 绑定一个端点: 同设备且仍有效 → 复用; 换设备 → 先还原旧设备静音再释放; 空 ID → 解绑。
@@ -90,10 +173,7 @@ namespace StereoSplitter.Devices
         {
             UnbindOne(Master, restore);
             Master = null;
-            UnbindOne(Left, restore);
-            Left = null;
-            UnbindOne(Right, restore);
-            Right = null;
+            UnbindSinks(restore);
         }
 
         static void UnbindOne(EndpointVolumeBinding b, bool restore)
@@ -105,20 +185,6 @@ namespace StereoSplitter.Devices
                 b.RestoreMuteIfApplied();
             }
             b.Dispose();
-        }
-
-        /// <summary>按 UI 权威值写入三个端点 (启动/重绑后调用)。</summary>
-        public void WriteValues(int masterPercent, int leftPercent, int rightPercent,
-            bool captureMute, bool leftMute, bool rightMute)
-        {
-            if (Master != null) Master.WriteVolume(masterPercent / 100f);
-            if (Left != null) Left.WriteVolume(leftPercent / 100f);
-            if (Right != null) Right.WriteVolume(rightPercent / 100f);
-
-            // 主静音只作用于采样层, 不写捕获端点的 Mute; 捕获端点只认 chkMuteCapture
-            if (Master != null && Master.ReadMuted() != captureMute) Master.WriteMute(captureMute);
-            if (Left != null && Left.ReadMuted() != leftMute) Left.WriteMute(leftMute);
-            if (Right != null && Right.ReadMuted() != rightMute) Right.WriteMute(rightMute);
         }
 
         public void Dispose()

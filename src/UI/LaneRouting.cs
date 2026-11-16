@@ -16,8 +16,9 @@ namespace StereoSplitter
     ///     环绕各取各的源声道；源不够时才按前置派生（与 RoutingModel 模板同一套系数）。
     ///  3. **延迟是设备级**: 内核每路一条延迟线，所以同一设备的多张卡片只有一个延迟
     ///     （取最小，宁可少补也不多补），不一致时记一条警告由调用方打印。
-    ///  4. **音量分两处**: 左右两张"端点卡片"的音量仍写设备端点（与设备音量双向同步，行为不变）；
-    ///     其余卡片的音量乘进混音矩阵的绑定增益 —— 端点音量是共享的，多路同设备时必然打架。
+    ///  4. **音量按设备归属**: 一台设备只挂一张卡 → 该卡音量写设备端点（与系统音量条双向同步、
+    ///     停止时还原）；同一台设备挂多张卡 → 这些卡的音量乘进混音矩阵的绑定增益。
+    ///     依据是 Windows 端点音量本身就是设备级的一个值，多路共设备时写端点必然互相覆盖。
     ///  5. **时钟组**: 立体声/单声道规格下所有设备共享一个校正比例（送的是同一对相关声，
     ///     各自独立算 ratio 会偏音）；多声道规格下每台设备独立成组，否则个体水位发散会让
     ///     设备间对齐随时间漂移（见 docs/多设备声道路由设计.md §5.5）。
@@ -52,14 +53,68 @@ namespace StereoSplitter
         }
 
         /// <summary>
+        /// 音量"归设备端点"的那几张卡片 = 独占一台设备的卡片。
+        /// <para>规则: 按 DeviceId 分组, 组内只有 1 张卡 → 该卡走端点; 组内 ≥2 张 → 谁都不走端点。</para>
+        /// <para>为什么不能多张卡共享端点: Windows 端点音量是设备级单值, 两张卡各写各的会互相覆盖
+        /// （旧实现里"左右选同一设备"时就是两滑条抢一个端点），所以同设备多卡只能走混音增益。</para>
+        /// </summary>
+        public static List<OutputLane> ResolveEndpointLanes(IList<OutputLane> lanes)
+        {
+            return ResolveEndpointLanes(lanes, null);
+        }
+
+        /// <param name="skipDevices">端点打不开的设备 (如没有音量控制的 HDMI): 其卡片退回混音增益。</param>
+        public static List<OutputLane> ResolveEndpointLanes(IList<OutputLane> lanes, ICollection<string> skipDevices)
+        {
+            var result = new List<OutputLane>();
+            if (lanes == null || lanes.Count == 0) return result;
+
+            var count = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (int i = 0; i < lanes.Count; i++)
+            {
+                string d = lanes[i].DeviceId ?? "";
+                if (d.Length == 0) continue;
+                int n;
+                count.TryGetValue(d, out n);
+                count[d] = n + 1;
+            }
+            for (int i = 0; i < lanes.Count; i++)
+            {
+                string d = lanes[i].DeviceId ?? "";
+                if (d.Length == 0) continue;
+                if (skipDevices != null && skipDevices.Contains(d)) continue;
+                if (count[d] == 1) result.Add(lanes[i]);
+            }
+            return result;
+        }
+
+        /// <summary>该卡片是否独占其设备（= 音量/静音写设备端点）。</summary>
+        public static bool IsEndpointLane(IList<OutputLane> lanes, OutputLane lane)
+        {
+            if (lane == null) return false;
+            string d = lane.DeviceId ?? "";
+            if (d.Length == 0) return false;
+            int n = 0;
+            for (int i = 0; i < lanes.Count; i++)
+                if ((lanes[i].DeviceId ?? "") == d) n++;
+            return n == 1;
+        }
+
+        /// <summary>
         /// 卡片 → 内核模型。
         /// <para>srcCh: 捕获源声道数（0 = 还不知道，按立体声上混；启动后拿到真值应重建一次并热替换）。</para>
-        /// <para>endpointVolA/B: 音量走设备端点的两张卡片（左右主输出），可为 null。</para>
+        /// <para>音量归属由 <see cref="ResolveEndpointLanes"/> 内部决定, 调用方不必传。</para>
         /// <para>delayConflict: 同一设备上出现不同延迟时置 true（调用方据此打一条警告）。</para>
         /// </summary>
         public static RoutingModel Build(IList<OutputLane> lanes, int specIndex, int srcCh,
-            OutputLane endpointVolA, OutputLane endpointVolB, Func<string, string> deviceNameOf,
-            out bool delayConflict)
+            Func<string, string> deviceNameOf, out bool delayConflict)
+        {
+            return Build(lanes, specIndex, srcCh, deviceNameOf, null, out delayConflict);
+        }
+
+        /// <param name="skipDevices">端点音量不可用的设备: 其卡片按混音增益处理, 不再双份衰减。</param>
+        public static RoutingModel Build(IList<OutputLane> lanes, int specIndex, int srcCh,
+            Func<string, string> deviceNameOf, ICollection<string> skipDevices, out bool delayConflict)
         {
             delayConflict = false;
             var model = new RoutingModel
@@ -83,6 +138,9 @@ namespace StereoSplitter
             }
 
             if (lanes == null || lanes.Count == 0) return model;
+
+            // 音量归属: 独占一台设备的卡片走端点, 同设备多卡走混音增益 (见 ResolveEndpointLanes)
+            var endpointLanes = ResolveEndpointLanes(lanes, skipDevices);
 
             // ---- 按设备分组 → 每台设备一路 sink ----
             var sinkOfDevice = new Dictionary<string, SinkSpec>(StringComparer.Ordinal);
@@ -128,8 +186,9 @@ namespace StereoSplitter
                 physCount[dev] = phys + 1;
                 sink.OutChannels = physCount[dev];
 
-                // 音量/静音: 端点卡片由设备音量负责（这里必须 1.0，否则双份衰减）；其余进矩阵
-                bool endpointVolume = ReferenceEquals(lane, endpointVolA) || ReferenceEquals(lane, endpointVolB);
+                // 音量/静音: 独占该设备的卡片由端点音量负责（矩阵必须 1.0，否则双份衰减）；
+                // 同设备多卡进矩阵（端点音量是设备级单值，多路写会互相覆盖）
+                bool endpointVolume = endpointLanes.Count > 0 && endpointLanes.Contains(lane);
                 float gain = 1f;
                 if (!endpointVolume)
                 {

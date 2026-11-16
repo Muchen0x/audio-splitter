@@ -35,6 +35,7 @@ namespace StereoSplitter
             CaseMono();
             CaseStereoFromSurroundSource();
             CaseVolumeAndMute();
+            CaseEndpointBindingByDevice();
             CaseDelayConflict();
             CaseValidateWarnings();
             CaseIniRoundTrip();
@@ -67,7 +68,7 @@ namespace StereoSplitter
                 Lane("FR", "devB", 30, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 1, 0, lanes[0], lanes[1], null, out conflict);
+            var m = LaneRouting.Build(lanes, 1, 0, null, out conflict);
 
             Check("2 路", m.SinkSpecs.Count == 2);
             Check("每路 1ch", m.SinkSpecs[0].OutChannels == 1 && m.SinkSpecs[1].OutChannels == 1);
@@ -90,7 +91,7 @@ namespace StereoSplitter
                 Lane("FR", "devA", 0, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 1, 0, lanes[0], lanes[1], null, out conflict);
+            var m = LaneRouting.Build(lanes, 1, 0, null, out conflict);
 
             Check("合成 1 路", m.SinkSpecs.Count == 1);
             Check("2ch", m.SinkSpecs[0].OutChannels == 2);
@@ -113,7 +114,7 @@ namespace StereoSplitter
                 Lane("SR", "devC", 0, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 6, lanes[0], lanes[1], null, out conflict);
+            var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
 
             Check("3 路", m.SinkSpecs.Count == 3);
             Check("每路 2ch", m.SinkSpecs[0].OutChannels == 2 && m.SinkSpecs[2].OutChannels == 2);
@@ -136,7 +137,7 @@ namespace StereoSplitter
             string[] keys = { "FL", "FR", "C", "LFE", "SL", "SR" };
             for (int i = 0; i < keys.Length; i++) lanes.Add(Lane(keys[i], "devA", 0, 100));
             bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 6, lanes[0], lanes[1], null, out conflict);
+            var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
 
             Check("1 路 6ch", m.SinkSpecs.Count == 1 && m.SinkSpecs[0].OutChannels == 6);
             var c = m.Compile(m.SinkSpecs, 6);
@@ -158,7 +159,7 @@ namespace StereoSplitter
                 Lane("LFE", "devB", 0, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 2, 2, lanes[0], lanes[1], null, out conflict);
+            var m = LaneRouting.Build(lanes, 2, 2, null, out conflict);
 
             Check("2 路", m.SinkSpecs.Count == 2);
             Check("devB 1ch", m.SinkSpecs[1].OutChannels == 1);
@@ -172,7 +173,7 @@ namespace StereoSplitter
             Begin("单声道 / 单路");
             var lanes = new List<OutputLane> { Lane("M", "devA", 0, 100) };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 0, 2, lanes[0], null, null, out conflict);
+            var m = LaneRouting.Build(lanes, 0, 2, null, out conflict);
             var c = m.Compile(m.SinkSpecs, 2);
             Check("M = 0.5 L + 0.5 R",
                 Math.Abs(c.SinkMatrix[0][0, 0] - 0.5f) < 1e-6f && Math.Abs(c.SinkMatrix[0][0, 1] - 0.5f) < 1e-6f);
@@ -188,7 +189,7 @@ namespace StereoSplitter
                 Lane("C", "devB", 0, 100), Lane("LFE", "devB", 0, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 2, lanes[0], lanes[1], null, out conflict);
+            var m = LaneRouting.Build(lanes, 4, 2, null, out conflict);
             var c = m.Compile(m.SinkSpecs, 2);
             Check("中置 = 0.5 L + 0.5 R",
                 Math.Abs(c.SinkMatrix[1][0, 0] - 0.5f) < 1e-6f && Math.Abs(c.SinkMatrix[1][0, 1] - 0.5f) < 1e-6f);
@@ -196,7 +197,7 @@ namespace StereoSplitter
                 Math.Abs(c.SinkMatrix[1][1, 0] - 0.35f) < 1e-6f);
         }
 
-        /// <summary>音量: 端点卡走设备音量 (矩阵必须 1.0 防双衰减), 其余卡进矩阵。</summary>
+        /// <summary>音量: 独占设备的卡走设备端点 (矩阵必须 1.0 防双衰减), 同设备多卡进矩阵。</summary>
         static void CaseVolumeAndMute()
         {
             Begin("音量归属 (端点 vs 混音增益)");
@@ -209,11 +210,45 @@ namespace StereoSplitter
             };
             lanes[3].Mute = true;
             bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 6, lanes[0], lanes[1], null, out conflict);
+            var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
             var c = m.Compile(m.SinkSpecs, 6);
-            Check("端点卡 FL 矩阵 = 1.0 (音量交给设备端点)", Math.Abs(c.SinkMatrix[0][0, 0] - 1f) < 1e-6f);
-            Check("非端点卡 中置 = 0.5", Math.Abs(c.SinkMatrix[2][0, 2] - 0.5f) < 1e-6f);
+            Check("独占设备的卡 FL 矩阵 = 1.0 (音量交给设备端点)", Math.Abs(c.SinkMatrix[0][0, 0] - 1f) < 1e-6f);
+            Check("同设备多卡 中置 = 0.5 (进混音增益)", Math.Abs(c.SinkMatrix[2][0, 2] - 0.5f) < 1e-6f);
             Check("静音卡 低音 = 0", Math.Abs(c.SinkMatrix[2][1, 3]) < 1e-6f);
+        }
+
+        /// <summary>
+        /// 音量归属规则: 按设备分组, 独占一台设备的卡才绑端点。
+        /// 这条规则错了会静默出错 —— 要么多路抢同一个端点互相覆盖, 要么该绑的没绑。
+        /// </summary>
+        static void CaseEndpointBindingByDevice()
+        {
+            Begin("音量绑定归属 (按设备)");
+
+            // 三台设备各一张卡 → 三张都绑端点
+            var oneEach = new List<OutputLane>
+            {
+                Lane("FL", "devA", 0, 40), Lane("FR", "devB", 0, 40), Lane("LFE", "devC", 0, 40)
+            };
+            Check("一台设备一张卡 → 3 张全绑端点", LaneRouting.ResolveEndpointLanes(oneEach).Count == 3);
+
+            // 一台设备两张卡 → 这两张都不绑 (写同一个端点会互相覆盖), 另一台的仍然绑
+            var shared = new List<OutputLane>
+            {
+                Lane("FL", "devA", 0, 40), Lane("FR", "devA", 0, 40), Lane("LFE", "devB", 0, 40)
+            };
+            var eps = LaneRouting.ResolveEndpointLanes(shared);
+            Check("同设备两卡 → 只有低音那张绑端点", eps.Count == 1 && ReferenceEquals(eps[0], shared[2]));
+
+            bool conflict;
+            var m = LaneRouting.Build(shared, 2, 2, null, out conflict);
+            Check("同设备两卡 → 增益 0.4/0.4",
+                Math.Abs(m.Bindings[0].Gain - 0.4f) < 1e-6f && Math.Abs(m.Bindings[1].Gain - 0.4f) < 1e-6f);
+            Check("独占设备卡 → 矩阵增益 1.0", Math.Abs(m.Bindings[2].Gain - 1f) < 1e-6f);
+
+            // 设备还没选的卡不参与端点绑定 (启动前 AutoConfigure 会补)
+            var noDev = new List<OutputLane> { Lane("M", "", 0, 40) };
+            Check("空设备不绑端点", LaneRouting.ResolveEndpointLanes(noDev).Count == 0);
         }
 
         /// <summary>立体声规格接三台设备 (如双单声道并播): 全部共享一个 ratio 才不会偏音。</summary>
@@ -229,7 +264,7 @@ namespace StereoSplitter
                 Lane("FL", "devC", 40, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 1, 0, lanes[0], lanes[1], null, out conflict);
+            var m = LaneRouting.Build(lanes, 1, 0, null, out conflict);
             Check("3 路", m.SinkSpecs.Count == 3);
             Check("全部 g0",
                 m.SinkSpecs[0].ClockGroupId == "g0" && m.SinkSpecs[1].ClockGroupId == "g0" &&
@@ -246,7 +281,7 @@ namespace StereoSplitter
                 Lane("FR", "devA", 40, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 1, 2, lanes[0], lanes[1], null, out conflict);
+            var m = LaneRouting.Build(lanes, 1, 2, null, out conflict);
             Check("报冲突", conflict);
             Check("取最小 0ms", m.SinkSpecs[0].DelayMs == 0);
         }
@@ -261,7 +296,7 @@ namespace StereoSplitter
                 Lane("FR", "devB", 0, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 6, lanes[0], lanes[1], null, out conflict);
+            var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
             var issues = m.Validate(6, m.EnabledSinks());
             bool anyError = false, anyWarn = false;
             for (int i = 0; i < issues.Count; i++)
@@ -284,7 +319,7 @@ namespace StereoSplitter
                 Lane("SL", "devC", 40, 80), Lane("SR", "devC", 40, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 6, lanes[0], lanes[1], null, out conflict);
+            var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
 
             string dir = Path.Combine(Path.GetTempPath(), "ss-selftest-" + Guid.NewGuid().ToString("N"));
             string file = Path.Combine(dir, "test.ini");

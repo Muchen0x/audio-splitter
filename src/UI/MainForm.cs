@@ -99,15 +99,18 @@ namespace StereoSplitter
         RoutingModel runModel;
         // 已警告过的断开设备 (设备状态事件可能连发, 同一设备只警告一次)
         HashSet<string> warnedLostIds = new HashSet<string>();
-        // 启动前 UI 快照 (AutoConfigure 的 Bind 会用设备真值回填覆盖控件, 启动失败时恢复权威值)
-        int snapL, snapR, snapM;
-        bool snapMl, snapMr, snapMm, snapMc;
+        // 启动前 UI 快照 (主音量绑定会回读设备真值覆盖控件, 启动失败时恢复权威值)
+        // 卡片音量不走端点回读 (端点由"独占设备"的那张卡负责, 写端点时 UI 本就是权威源), 故无需快照
+        int snapM;
+        bool snapMm, snapMc;
         bool hasSnap = false;
 
         // 设备目录: 内部实例仅供展示, 不参与端点操作 (见 DeviceCatalog 注释)
         DeviceCatalog catalog;
-        // 主/左/右端点绑定: 各自持有独立 MMDevice, 可安全释放
+        // 捕获源端点 + 各输出设备端点: 各自持有独立 MMDevice, 可安全释放
         ChannelBindingSet bindings;
+        // 端点音量不可用的设备 (端点没有音量接口/被独占): 这些设备的卡片退回混音增益
+        readonly HashSet<string> noEndpointVolumeDevices = new HashSet<string>();
 
         static readonly IReadOnlyList<EndpointInfo> NoDevices = new List<EndpointInfo>();
         IReadOnlyList<EndpointInfo> Devices
@@ -610,18 +613,16 @@ namespace StereoSplitter
             {
                 Log("[恢复] 默认输出已切回捕获设备 → 自动重新绑定音量");
 
-                // 捕获 UI 当前值 (Bind 回读会用设备值覆盖, 与启动流程同理)
-                OutputCardControl cl0 = LeftCard(), cr0 = RightCard();
-                int uiL = cl0 != null ? cl0.volTrack.Value : 100, uiR = cr0 != null ? cr0.volTrack.Value : 100, uiM = volMaster.Value;
-                bool uiMl = cl0 != null && cl0.chkMute.Checked, uiMr = cr0 != null && cr0.chkMute.Checked,
-                     uiMm = chkMuteMaster.Checked, uiMc = chkMuteCapture.Checked;
+                // 捕获主音量 UI 当前值 (Bind 回读会用设备值覆盖)
+                int uiM = volMaster.Value;
+                bool uiMm = chkMuteMaster.Checked, uiMc = chkMuteCapture.Checked;
 
                 BindDefaultVolumeSync("[恢复]");
-                bool ok = BindChannelVolumeSync("[恢复]");
-                RestoreUIValues(uiL, uiR, uiM, uiMl, uiMr, uiMm, uiMc); // UI 覆盖回来
+                bool ok = BindEndpointVolumeSync("[恢复]");
+                RestoreUIValues(uiM, uiMm, uiMc); // UI 覆盖回来
                 SetVolumeBindVisual(bindings.Master != null && ok);
                 WriteUIValuesToDevice(); // 恢复后的 UI 值写回设备
-                Log("[恢复] 重绑完成: 主=" + DevInfo(bindings.Master) + " / 左=" + DevInfo(bindings.Left) + " / 右=" + DevInfo(bindings.Right));
+                Log("[恢复] 重绑完成: 主=" + DevInfo(bindings.Master) + SinkSummary());
             }
             catch (Exception ex)
             {
@@ -631,32 +632,14 @@ namespace StereoSplitter
         }
 
         // Bind 回读会用设备值覆盖控件 → 恢复 UI 权威值 (volSyncing 包裹防写端点)
-        void RestoreUIValues(int uiL, int uiR, int uiM, bool uiMl, bool uiMr, bool uiMm, bool uiMc)
+        void RestoreUIValues(int uiM, bool uiMm, bool uiMc)
         {
             volSyncing = true;
-            OutputCardControl cl = LeftCard(), cr = RightCard();
-            if (cl != null) { cl.volTrack.Value = uiL; cl.lblVol.Text = uiL + "%"; cl.chkMute.Checked = uiMl; }
-            if (cr != null && cr != cl) { cr.volTrack.Value = uiR; cr.lblVol.Text = uiR + "%"; cr.chkMute.Checked = uiMr; }
             volMaster.Value = uiM;
             lblVolMaster.Text = uiM + "%";
             chkMuteMaster.Checked = uiMm;
             chkMuteCapture.Checked = uiMc;
             volSyncing = false;
-        }
-
-        // 左右声道滑条共用: UI 标签/自动静音 + 写入端点音量 (逐行等价于原两份重复实现)
-        void OnChannelScroll(VolumeSlider slider, Label lbl, CheckBox chkMute, EndpointVolumeBinding b, string channel)
-        {
-            lbl.Text = slider.Value + "%";
-            // 音量到0自动勾选静音; 拖离0自动取消 (主动操作优先于勾选状态)
-            if (chkMute.Checked != (slider.Value == 0)) chkMute.Checked = slider.Value == 0;
-            // 双向同步: 写入设备端点音量
-            if (!volSyncing && b != null && b.IsValid)
-            {
-                b.WriteVolume(slider.Value / 100f);
-                if (slider.Value > 0 && b.ReadMuted()) b.WriteMute(false);
-            }
-            SaveSettings();
         }
 
         void RecordRestoreTarget()
@@ -750,7 +733,7 @@ namespace StereoSplitter
                 BeginInvoke(new Action(delegate
                 {
                     SetVolumeBindVisual(false);
-                    Log("[警告] " + b.Role + "声道端点绑定已失效 (" + b.DeviceName + ")，数字标签已置灰，请停止分流并刷新设备");
+                    Log("[警告] 「" + b.Role + "」端点绑定已失效 (" + b.DeviceName + ")，该路数字标签已置灰，请停止分流并刷新设备");
                 }));
             }
             catch { }
@@ -800,90 +783,121 @@ namespace StereoSplitter
             catch { }
         }
 
-        bool BindChannelVolumeSync(string stage)
+        /// <summary>
+        /// 绑定各输出设备的端点音量 (音量/静音双向同步 + 停止时还原)。
+        /// <para>只绑"独占一台设备"的卡片: 同设备多卡时端点音量是共享的, 谁写谁覆盖,
+        /// 那些卡的音量改走混音增益 (见 LaneRouting.ResolveEndpointLanes)。</para>
+        /// </summary>
+        bool BindEndpointVolumeSync(string stage)
         {
-            OutputCardControl cl = LeftCard(), cr = RightCard();
-            if (cl == null || cr == null)
+            SyncLanesFromCards();
+            noEndpointVolumeDevices.Clear();
+            var wanted = LaneRouting.ResolveEndpointLanes(lanes);
+
+            // 设备集合可能已变 (换设备/删卡) → 先按旧基线还原并释放, 再按新集合重绑;
+            // 同一设备仍在 → BindSink 复用原对象, 还原基线不会被冲掉
+            bindings.UnbindSinks(true);
+
+            for (int i = 0; i < wanted.Count; i++)
             {
-                Log("[错误] " + stage + " 输出卡片不足, 无法绑定左右音量");
-                return false;
+                OutputLane lane = wanted[i];
+                string role = ChannelNameOf(lane.ChannelKey);
+                var b = bindings.BindSink(lane.DeviceId, role, SinkNotify(lane.DeviceId));
+                if (b == null)
+                {
+                    // 端点打不开(端点无音量接口/被独占)不该拖垮整个启动: 这一路退回混音增益,
+                    // 音量照常可调, 只是不写设备端点、停止时也无需还原
+                    noEndpointVolumeDevices.Add(lane.DeviceId);
+                    Log("[警告] " + stage + " " + role + " 端点音量不可用: " + FindNameById(lane.DeviceId) +
+                        " (该路音量改在混音层生效，不写设备端点)");
+                    continue;
+                }
+                b.Invalidated -= OnBindingInvalidated;
+                b.Invalidated += OnBindingInvalidated;
+
+                int v = (int)Math.Round(b.ReadVolume() * 100);
+                Log(stage + " " + role + " 音量绑定 → [" + FindIdxById(lane.DeviceId) + "] " + b.DeviceName +
+                    " (设备值 " + v + "%" + (b.ReadMuted() ? ", 静音" : "") + "，启动时按 UI 值写入)");
             }
-            bool okL = BindOneChannel(stage, "左", cl.cmbDevice.SelectedIndex, bindings.BindLeft,
-                LeftVol_OnVolumeNotification, cl.volTrack, cl.lblVol, cl.chkMute);
-            bool okR = BindOneChannel(stage, "右", cr.cmbDevice.SelectedIndex, bindings.BindRight,
-                RightVol_OnVolumeNotification, cr.volTrack, cr.lblVol, cr.chkMute);
 
-            if (cl.cmbDevice.SelectedIndex >= 0 && cl.cmbDevice.SelectedIndex == cr.cmbDevice.SelectedIndex)
-                Log("[提示] 左右输出选择了同一设备 " + DevInfo(bindings.Left) + "，两滑条联动同一端点");
-            return okL && okR;
-        }
-
-        bool BindOneChannel(string stage, string channel, int idx,
-            Func<string, Action<AudioVolumeNotificationData>, EndpointVolumeBinding> bind,
-            Action<AudioVolumeNotificationData> handler,
-            VolumeSlider slider, Label lbl, CheckBox chkMute)
-        {
-            if (idx < 0 || idx >= Devices.Count)
+            // 同设备多卡: 这些路的音量只能进混音层, 明确告诉用户为什么没绑设备
+            var shared = new List<string>();
+            for (int i = 0; i < lanes.Count; i++)
             {
-                bind(null, null);
-                return true;
+                string dev = lanes[i].DeviceId ?? "";
+                if (dev.Length == 0) continue;
+                int n = 0;
+                for (int k = 0; k < lanes.Count; k++) if ((lanes[k].DeviceId ?? "") == dev) n++;
+                if (n < 2) continue;
+                string line = FindNameById(dev) + " (" + n + " 路)";
+                if (!shared.Contains(line)) shared.Add(line);
             }
-
-            var d = Devices[idx];
-            var b = bind(d.ID, handler);
-            if (b == null)
-            {
-                Log("[错误] " + stage + " " + channel + "声道音量绑定失败: 无法打开端点 " + d.FriendlyName);
-                return false;
-            }
-            b.Invalidated -= OnBindingInvalidated;
-            b.Invalidated += OnBindingInvalidated;
-
-            volSyncing = true;
-            int v = (int)Math.Round(b.ReadVolume() * 100);
-            slider.Value = Math.Max(0, Math.Min(100, v));
-            lbl.Text = v + "%";
-            bool muted = b.ReadMuted();
-            chkMute.Checked = muted;
-            volSyncing = false;
-
-            Log(stage + " " + channel + "声道音量绑定 → [" + idx + "] " + d.FriendlyName +
-                " (设备值 " + v + "%" + (muted ? ", 静音" : "") + "，启动时按 UI 值写入)");
+            if (shared.Count > 0)
+                Log("[提示] " + string.Join(" / ", shared.ToArray()) +
+                    " 上有多路共用一台设备，这些路的音量在混音层生效（设备端点音量本是该设备所有路共享的）");
             return true;
         }
 
-        void LeftVol_OnVolumeNotification(AudioVolumeNotificationData data)
+        /// <summary>给某设备端点挂通知: 设备音量变化 → 回填该设备那张卡片的滑条。</summary>
+        Action<AudioVolumeNotificationData> SinkNotify(string deviceId)
         {
-            try { BeginInvoke(new Action(() => { var c = LeftCard(); if (c != null) HandleChannelVolumeNotification(data, bindings == null ? null : bindings.Left, c.volTrack, c.lblVol, c.chkMute); })); }
-            catch { }
+            return delegate(AudioVolumeNotificationData data)
+            {
+                try { BeginInvoke(new Action(delegate { HandleSinkVolumeNotification(deviceId, data); })); }
+                catch { }
+            };
         }
 
-        void RightVol_OnVolumeNotification(AudioVolumeNotificationData data)
+        // 设备值 → 卡片 UI (仅 UI, volSyncing 内不写端点)
+        void HandleSinkVolumeNotification(string deviceId, AudioVolumeNotificationData data)
         {
-            try { BeginInvoke(new Action(() => { var c = RightCard(); if (c != null) HandleChannelVolumeNotification(data, bindings == null ? null : bindings.Right, c.volTrack, c.lblVol, c.chkMute); })); }
-            catch { }
-        }
+            if (volSyncing || bindings == null) return;
+            var b = bindings.SinkOf(deviceId);
+            if (b == null || !b.IsValid) return;
+            OutputCardControl card = CardOfDevice(deviceId);
+            if (card == null) return;
 
-        // 左右声道通知共用: 设备值 → UI (仅 UI, volSyncing 内不写端点)
-        void HandleChannelVolumeNotification(AudioVolumeNotificationData data, EndpointVolumeBinding b,
-            VolumeSlider slider, Label lbl, CheckBox chkMute)
-        {
-            if (volSyncing || b == null || !b.IsValid) return;
             volSyncing = true;
             try
             {
                 int v = Math.Max(0, Math.Min(100, (int)Math.Round(data.MasterVolume * 100)));
-                if (slider.Value != v)
+                if (card.volTrack.Value != v)
                 {
-                    slider.Value = v;
-                    lbl.Text = v + "%";
-                    SaveSettings();
+                    card.volTrack.Value = v;
+                    card.lblVol.Text = v + "%";
                 }
                 // 与主音量同构: 音量0=静音不变式 + 外部静音跟随 (仅 UI, volSyncing 内不写端点)
                 bool want = (v == 0) || data.Muted;
-                if (chkMute.Checked != want) chkMute.Checked = want;
+                if (card.chkMute.Checked != want) card.chkMute.Checked = want;
+                SyncLanesFromCards();
+                SaveSettings();
             }
             finally { volSyncing = false; }
+        }
+
+        /// <summary>某设备上那张卡 (独占设备 → 唯一; 未找到 → null)。</summary>
+        OutputCardControl CardOfDevice(string deviceId)
+        {
+            if (string.IsNullOrEmpty(deviceId)) return null;
+            for (int i = 0; i < cards.Count && i < lanes.Count; i++)
+                if ((lanes[i].DeviceId ?? "") == deviceId) return cards[i];
+            return null;
+        }
+
+        /// <summary>某卡片对应的 lane (卡片由 lanes 重建, 两者一一对应)。</summary>
+        OutputLane LaneOf(OutputCardControl card)
+        {
+            int i = cards.IndexOf(card);
+            return (i >= 0 && i < lanes.Count) ? lanes[i] : null;
+        }
+
+        /// <summary>各输出设备端点绑定的摘要 (日志用)。</summary>
+        string SinkSummary()
+        {
+            if (bindings == null) return "";
+            var parts = new List<string>();
+            foreach (var b in bindings.Sinks()) parts.Add(b.Role + "=" + DevInfo(b));
+            return parts.Count == 0 ? " / 输出=(未绑定)" : " / " + string.Join(" / ", parts.ToArray());
         }
 
         bool AutoConfigure()
@@ -926,11 +940,6 @@ namespace StereoSplitter
                     Log("[错误] 配置 3/4 没有输出卡片。");
                     return false;
                 }
-                if (LeftCard() == null || RightCard() == null)
-                {
-                    Log("[错误] 配置 3/4 输出卡片不足, 无法确定左右目标 (需要 FL/FR 或两张单声道卡片)。");
-                    return false;
-                }
                 var cand = new List<int>();
                 for (int i = 0; i < Devices.Count; i++) if (i != defIdx && !Devices[i].IsVirtual) cand.Add(i);
                 for (int i = 0; i < Devices.Count; i++) if (i != defIdx && Devices[i].IsVirtual) cand.Add(i);
@@ -965,10 +974,10 @@ namespace StereoSplitter
                 if (filled == 0)
                     Log("[配置] 3/4 输出目标: 保持手动选择 (" + LaneSummary() + ")");
 
-                // 4. 重绑左右音量同步到左右目标设备
-                if (!BindChannelVolumeSync("[配置] 4/4"))
+                // 4. 重绑各输出设备的端点音量 (独占设备的卡片才绑, 见 BindEndpointVolumeSync)
+                if (!BindEndpointVolumeSync("[配置] 4/4"))
                 {
-                    Log("[错误] 配置 4/4 左右音量绑定失败，中止启动。");
+                    Log("[错误] 配置 4/4 输出音量绑定失败，中止启动。");
                     return false;
                 }
 
@@ -1274,14 +1283,16 @@ namespace StereoSplitter
             SyncLanesFromCards();
             SaveSettings();
             RefreshSpecBadges();
-            // 端点卡片的静音写在设备端点上 (与音量同一套双向绑定/还原基线); 其余卡片走混音增益
+            // 独占设备的卡片: 静音写设备端点 (与音量同一套双向绑定/还原基线); 其余卡片走混音增益
             if (running && bindings != null && !volSyncing)
             {
-                OutputCardControl cl = LeftCard(), cr = RightCard();
-                if (card == cl && bindings.Left != null && bindings.Left.IsValid)
-                    bindings.Left.WriteMute(card.chkMute.Checked);
-                else if (card == cr && card != cl && bindings.Right != null && bindings.Right.IsValid)
-                    bindings.Right.WriteMute(card.chkMute.Checked);
+                OutputLane lane = LaneOf(card);
+                if (lane != null && LaneRouting.IsEndpointLane(lanes, lane))
+                {
+                    var b = bindings.SinkOf(lane.DeviceId);
+                    if (b != null && b.IsValid && b.ReadMuted() != card.chkMute.Checked)
+                        b.WriteMute(card.chkMute.Checked);
+                }
             }
             if (running) ApplyRoutingHot("卡片改动", false);
         }
@@ -1289,23 +1300,17 @@ namespace StereoSplitter
         void OnCardVolumeScrolled(OutputCardControl card)
         {
             if (volSyncing) return;
-            // 端点卡片(左/右)的音量/静音走设备端点双向绑定; 其余卡片的音量进混音增益
-            OutputCardControl cl = LeftCard(), cr = RightCard();
-            bool endpoint = false;
-            if (card == cl && bindings != null && bindings.Left != null && bindings.Left.IsValid)
+            // 独占该设备的卡片: 音量写设备端点 (双向绑定); 同设备多卡: 音量进混音增益
+            OutputLane lane = LaneOf(card);
+            var b = (lane != null && bindings != null) ? bindings.SinkOf(lane.DeviceId) : null;
+            bool endpoint = b != null && b.IsValid && LaneRouting.IsEndpointLane(lanes, lane);
+            if (endpoint)
             {
-                endpoint = true;
-                bindings.Left.WriteVolume(card.volTrack.Value / 100f);
-                if (card.volTrack.Value > 0 && bindings.Left.ReadMuted()) bindings.Left.WriteMute(false);
-            }
-            else if (card == cr && card != cl && bindings != null && bindings.Right != null && bindings.Right.IsValid)
-            {
-                endpoint = true;
-                bindings.Right.WriteVolume(card.volTrack.Value / 100f);
-                if (card.volTrack.Value > 0 && bindings.Right.ReadMuted()) bindings.Right.WriteMute(false);
+                b.WriteVolume(card.volTrack.Value / 100f);
+                if (card.volTrack.Value > 0 && b.ReadMuted()) b.WriteMute(false);
             }
             // 拖动中的热更新: 只改增益, 不记日志 (一次拖动几十次事件, 记了就是刷屏)
-            if (running && !endpoint) ApplyRoutingHot("音量", true);
+            else if (running) ApplyRoutingHot("音量", true);
             SaveSettings();
         }
 
@@ -1655,14 +1660,22 @@ namespace StereoSplitter
             Log("[解绑] 双向音量绑定已解除");
         }
 
-        // 数值标签有效/无效视觉 (仅 Running 即绑定生效时为黑)
+        // 数值标签有效/无效视觉: 深色 = 音量由设备端点承载(双向绑定生效), 灰色 = 走混音增益/未绑定
         void SetVolumeBindVisual(bool bound)
         {
-            Color c = bound ? SystemColors.ControlText : SystemColors.GrayText;
-            OutputCardControl cl = LeftCard(), cr = RightCard();
-            if (cl != null && cl.lblVol != null) cl.lblVol.ForeColor = c;
-            if (cr != null && cr != cl && cr.lblVol != null) cr.lblVol.ForeColor = c;
-            if (lblVolMaster != null) lblVolMaster.ForeColor = c;
+            for (int i = 0; i < cards.Count; i++)
+            {
+                if (cards[i].lblVol == null) continue;
+                bool ep = bound && i < lanes.Count && LaneRouting.IsEndpointLane(lanes, lanes[i]);
+                if (ep && bindings != null)
+                {
+                    // 端点绑定可能已失效 / 该设备当初就没绑上 → 也算"不生效"
+                    var b = bindings.SinkOf(lanes[i].DeviceId);
+                    ep = b != null && b.IsValid;
+                }
+                cards[i].lblVol.ForeColor = ep ? SystemColors.ControlText : SystemColors.GrayText;
+            }
+            if (lblVolMaster != null) lblVolMaster.ForeColor = bound ? SystemColors.ControlText : SystemColors.GrayText;
         }
 
         // 启动失败: 回滚系统默认输出 + 解绑(含恢复捕获静音) + Failed 状态
@@ -1671,7 +1684,7 @@ namespace StereoSplitter
             // 启动失败 → 恢复启动前 UI 权威快照 (Bind 回填的设备真值不留在控件/ini 里)
             if (hasSnap)
             {
-                RestoreUIValues(snapL, snapR, snapM, snapMl, snapMr, snapMm, snapMc);
+                RestoreUIValues(snapM, snapMm, snapMc);
                 SaveSettings();
                 hasSnap = false;
             }
@@ -1718,12 +1731,24 @@ namespace StereoSplitter
             try
             {
                 SyncLanesFromCards();
-                OutputCardControl wcl = LeftCard(), wcr = RightCard();
-                int wl = wcl != null ? wcl.volTrack.Value : 100, wr = wcr != null ? wcr.volTrack.Value : 100;
-                bool wml = wcl != null && wcl.chkMute.Checked, wmr = wcr != null && wcr.chkMute.Checked;
-                bindings.WriteValues(volMaster.Value, wl, wr, chkMuteCapture.Checked, wml, wmr);
-                Log("[启动] 按UI值写入端点: 主=" + volMaster.Value + "% 左=" + wl +
-                    "% 右=" + wr + "% (捕获消音=" + (chkMuteCapture.Checked ? "是" : "否") + ")");
+                bindings.WriteMaster(volMaster.Value, chkMuteCapture.Checked);
+
+                var eps = LaneRouting.ResolveEndpointLanes(lanes);
+                var parts = new List<string>();
+                parts.Add("主=" + volMaster.Value + "%");
+                for (int i = 0; i < eps.Count; i++)
+                {
+                    OutputLane lane = eps[i];
+                    string role = ChannelNameOf(lane.ChannelKey);
+                    var b = bindings.SinkOf(lane.DeviceId);
+                    if (b == null || !b.IsValid) { parts.Add(role + "=(未绑定)"); continue; }
+                    int vol = Math.Max(0, Math.Min(100, lane.Volume));
+                    b.WriteVolume(vol / 100f);
+                    if (b.ReadMuted() != lane.Mute) b.WriteMute(lane.Mute);
+                    parts.Add(role + "=" + vol + "%" + (lane.Mute ? "(静音)" : ""));
+                }
+                Log("[启动] 按UI值写入端点: " + string.Join(" ", parts.ToArray()) +
+                    " (捕获消音=" + (chkMuteCapture.Checked ? "是" : "否") + ")");
             }
             finally { volSyncing = false; }
         }
@@ -1811,13 +1836,10 @@ namespace StereoSplitter
 
             SetAppState(AppState.Starting);
 
-            // 捕获 UI 当前值 (AutoConfigure 的 Bind 会用设备真值回填覆盖, 须提前存下)
-            OutputCardControl scl = LeftCard(), scr = RightCard();
-            int uiL = scl != null ? scl.volTrack.Value : 100, uiR = scr != null ? scr.volTrack.Value : 100, uiM = volMaster.Value;
-            bool uiMl = scl != null && scl.chkMute.Checked, uiMr = scr != null && scr.chkMute.Checked,
-                 uiMm = chkMuteMaster.Checked, uiMc = chkMuteCapture.Checked;
-            snapL = uiL; snapR = uiR; snapM = uiM;
-            snapMl = uiMl; snapMr = uiMr; snapMm = uiMm; snapMc = uiMc;
+            // 捕获主音量 UI 当前值 (AutoConfigure 的 Bind 会用设备真值回填覆盖, 须提前存下)
+            snapM = volMaster.Value;
+            snapMm = chkMuteMaster.Checked;
+            snapMc = chkMuteCapture.Checked;
             hasSnap = true;
 
             // 点击开始时自动配置: 设默认输出 + 绑定音量 + 自动选左右 + 回环检查
@@ -1836,7 +1858,7 @@ namespace StereoSplitter
                 return;
             }
 
-            if (scl == null || scr == null)
+            if (lanes.Count == 0 || cards.Count == 0)
             {
                 StartFailed();
                 MessageBox.Show("没有可用的输出卡片，请先添加至少一路输出。", "提示");
@@ -1876,7 +1898,7 @@ namespace StereoSplitter
             try
             {
                 // 恢复被 Bind 回填覆盖的 UI 值, 以 UI 为唯一权威源写入端点
-                RestoreUIValues(uiL, uiR, uiM, uiMl, uiMr, uiMm, uiMc);
+                RestoreUIValues(snapM, snapMm, snapMc);
                 WriteUIValuesToDevice();
 
                 // 预置运行期设备ID: 引擎在后台完成前 runCaptureId 还是空, Starting 期拔出会漏警
@@ -1937,10 +1959,8 @@ namespace StereoSplitter
             SyncLanesFromCards();       // 控件是权威源
             bool conflict;
             var model = LaneRouting.Build(lanes, cmbSpec.SelectedIndex, srcCh,
-                LeftCard() == null ? null : LeftCard().Lane,
-                RightCard() == null ? null : RightCard().Lane,
                 delegate (string id) { return catalog == null ? "" : catalog.NameOf(id); },
-                out conflict);
+                noEndpointVolumeDevices, out conflict);
             if (conflict && logDelayConflict)
                 Log("[提示] 同一设备上的多路延迟不一致，已按最小值生效（内核每台设备只有一条延迟线）");
             return model;
@@ -2089,7 +2109,7 @@ namespace StereoSplitter
                         runSinceTick = Environment.TickCount;
                         SetAppState(AppState.Running);
                         ApplyVolumes();
-                        Log("[启动] 端点绑定: 主=" + DevInfo(bindings.Master) + " / 左=" + DevInfo(bindings.Left) + " / 右=" + DevInfo(bindings.Right));
+                        Log("[启动] 端点绑定: 主=" + DevInfo(bindings.Master) + SinkSummary());
                         Log("[启动] 分流已启动 " + eng.SinkCount + " 路 (增益 " + p.GainPct + "%)" +
                             (outcome == AudioEngine.StartOutcome.NoAudioYet ? "，等待音频数据" : ""));
                         // 捕获格式只有启动后才知道: 拿到真实声道数就重建一次模型并热替换矩阵,
