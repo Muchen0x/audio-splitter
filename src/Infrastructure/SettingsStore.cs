@@ -64,6 +64,22 @@ namespace StereoSplitter.Infrastructure
             Put(key, value.ToString());
         }
 
+        /// <summary>删一个键 (值 + 顺序)。返回是否真的存在过。
+        /// 路由配置整表重写时用它逐键清理 (ini 是"只覆盖不删除"的表, 不删就留孤儿键)。</summary>
+        public bool Remove(string key)
+        {
+            if (key == null) return false;
+            bool had = values.Remove(key);
+            if (had) order.Remove(key);
+            return had;
+        }
+
+        /// <summary>当前全部键的快照 (遍历中允许删除)。</summary>
+        public List<string> SnapshotKeys()
+        {
+            return new List<string>(order);
+        }
+
         /// <summary>删掉指定前缀的全部键 (清理"删了几路输出后留下的 OutN.* 孤儿键")。</summary>
         public void RemovePrefix(string prefix)
         {

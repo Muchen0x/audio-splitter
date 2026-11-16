@@ -1,48 +1,48 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.Drawing;
-using System.IO;
-using System.Reflection;
 using System.Threading;
-using System.Windows.Forms;
 using NAudio.Wave;
 using NAudio.CoreAudioApi;
-using NAudio.CoreAudioApi.Interfaces;
 using StereoSplitter.Devices;
 
 namespace StereoSplitter
 {
+    /// <summary>
+    /// 音频引擎 (P1 起为 N 路): 一路 loopback 捕获 → 每路一条 延迟线/缓冲/校正/WasapiOut。
+    ///
+    /// 公开接口保持与两路时代完全一致 (Start 旧签名、Left*/Right* 属性、BufferStatus 文本),
+    /// 这样 UI 不用跟着改 —— P1 的验收标准就是"旧 ini 启动, 两路听感与日志与 HEAD 一致"。
+    /// 多路由 RoutingModel 描述, 由它编译出每路的混音矩阵。
+    /// </summary>
     class AudioEngine : IDisposable
     {
         WasapiLoopbackCapture loopback;
-        WasapiOut leftOut, rightOut;
-        BufferedWaveProvider leftBuf, rightBuf;
-        DriftCorrectingProvider leftProvider, rightProvider;
-        MMDevice leftDev, rightDev, captureDev;
+        MMDevice captureDev;
         // 设备 ID: MMDevice 在 Start 所在线程(后台)自建, 不跨线程传递 (NAudio #214)
         readonly string leftDevId, rightDevId;
         readonly int driftMode, fixedPpm;
         Action<string> log;
         volatile int sampleRate;
-        DelayLine leftLine, rightLine;
+        volatile int captureChannels;   // 运行中重编译矩阵要用
+
+        /// <summary>捕获源的实际声道数 (启动后才有值; 0 = 还没启动)。UI 建模板时优先用它,
+        /// 拿不到就查端点格式 —— 模板必须知道源有几个声道, 否则真 5.1 源会被当成立体声上混。</summary>
+        public int CaptureChannels { get { return captureChannels; } }
+
+        readonly List<SinkSpec> specs = new List<SinkSpec>();
+        readonly List<SinkRuntime> sinks = new List<SinkRuntime>();
+        RoutingModel routing;
+
         bool splitErrLogged = false;
-        // 起播时捕获源无数据 → 首帧到达时补一条"就绪"日志 (NoAudioYet 场景)
         volatile bool silentStartup = false;
         int firstDataLogged = 0;
-        // 采集回调置位, 预缓冲等待用它替代 20ms 忙等轮询
         AutoResetEvent dataReady;
-        // 输出缓冲溢出告警限流 (DiscardOnBufferOverflow 会静默丢块, 不记就等于丢音无迹可查)
-        int lastOverflowWarnTick;
 
         // 捕获端固定开销估算 (WASAPI loopback 自身缓冲), 只用于界面选项与启动日志里的"总预估"
         internal const int CaptureLatencyEstimateMs = 10;
 
         // 时钟环稳态目标 (ms): 档位越小目标越低, 上限 100ms。
         // 安全余量分三档: 校正环稳态摆动 std 8ms + 块锯齿 18ms = ±42ms 极端 (3σ)。
-        //   pre/out >= 50: +25 (标准/低延迟), 最低水位 33-58ms vs 阈值 11-15ms, 安全
-        //   pre/out >= 25: +30 (极低), 最低水位 13ms vs 阈值 8.25ms, 余 5ms
-        //   else:          +40 (超低/极限), 极限 45ms 最低 3ms 接近阈值 6.75ms
         public static int DriftTargetMs(int preMs, int outMs)
         {
             int margin = (preMs >= 50 || outMs >= 50) ? 25 :
@@ -56,12 +56,10 @@ namespace StereoSplitter
             return CaptureLatencyEstimateMs + DriftTargetMs(preMs, outMs) + outMs;
         }
 
-        // ---- 告警去重: 左右两路 provider 各自限流, 同一现象必然打两条 ----
+        // ---- 告警去重: 多路 provider 各自限流, 同一现象必然打多条 ----
         readonly object logGate = new object();
         readonly Dictionary<string, int> logCategoryTick = new Dictionary<string, int>();
 
-        /// <summary>按告警类别 1.5s 去重: 左右两路同时触发同一类告警时只留第一条。
-        /// 只用于 provider, 启动/停止等一次性日志仍走原 log, 避免被吞。</summary>
         void LogThrottled(string msg)
         {
             if (msg == null || log == null) return;
@@ -78,11 +76,15 @@ namespace StereoSplitter
         }
 
         /// <summary>"[左] [警告] 缓冲水位偏低: 调节水位 28ms …" → "[警告] 缓冲水位偏低"。
-        /// 开头的声道标记必须跳过 —— 左右标签不同, 计入类别键会让去重完全失效。</summary>
+        /// 开头的路标记必须跳过 —— 路标签不同, 计入类别键会让去重完全失效。</summary>
         static string CategoryKey(string msg)
         {
             int start = 0;
-            if (msg.Length > 3 && msg[0] == '[' && msg[2] == ']') start = 3;   // "[左]" / "[右]"
+            if (msg.Length > 3 && msg[0] == '[')
+            {
+                int close = msg.IndexOf(']');
+                if (close > 0 && close < 12) start = close + 1;
+            }
             int n = start;
             while (n < msg.Length && n < start + 40)
             {
@@ -93,18 +95,15 @@ namespace StereoSplitter
             return msg.Substring(start, n - start).TrimEnd();
         }
 
-        // 长期运行看门狗: 输出/捕获线程会因设备休眠、被独占、拔插而"悄悄停止",
-        // 不订阅这些事件时界面会一直显示"运行中"却早已无声 (实测有过 71 分钟)
-        volatile bool stopping;             // 主动 Stop 期间这些事件也会触发 → 屏蔽
-        bool disposed;                      // Dispose 幂等守卫
-        int stallNotified;                  // Stalled 只上报一次 (左右常同时停)
-        int lastCaptureTick;                // 最近一次收到捕获数据的 TickCount (0 = 尚未收到)
+        // 长期运行看门狗: 输出/捕获线程会因设备休眠、被独占、拔插而"悄悄停止"
+        volatile bool stopping;
+        bool disposed;
+        int stallNotified;
+        int lastCaptureTick;
         /// <summary>链路意外中断 (参数为人话原因)。在音频线程触发, 订阅方须自行回 UI 线程。</summary>
         public event Action<AudioEngine, string> Stalled;
 
         // 起播余量: 覆盖输出端起播时对缓冲的预拉取。
-        // 实测(蓝牙音箱)起播后峰值抽走约 80ms; USB 有线音箱应更小, 取 80ms 匹配。
-        // 多填的这部分由起播瞬态消耗, 稳态由时钟环回落到 driftTargetMs, 不增加稳态延迟。
         const int PrePullGuardMs = 80;
 
         public AudioEngine(string leftDevId, string rightDevId, Action<string> log, int driftMode, int fixedPpm)
@@ -116,7 +115,12 @@ namespace StereoSplitter
             this.fixedPpm = fixedPpm;
         }
 
-        // Start 实际捕获的设备 ID (取启动时的系统默认输出, 可能与点开始时的选择不同)
+        /// <summary>N 路入口: 设备全部写在 RoutingModel 里, 不再需要左右 ID (两路兼容入口仍可传)。</summary>
+        public AudioEngine(Action<string> log, int driftMode, int fixedPpm)
+            : this(null, null, log, driftMode, fixedPpm)
+        {
+        }
+
         public string CaptureId
         {
             get
@@ -125,55 +129,36 @@ namespace StereoSplitter
             }
         }
 
-        /// <summary>最近一次收到捕获数据的时刻 (Environment.TickCount), 0 = 起播后尚未收到。</summary>
-        public int LastCaptureTick
+        public int LastCaptureTick { get { return lastCaptureTick; } }
+
+        /// <summary>当前路数 (P1 为 2, P3 起可变)。</summary>
+        public int SinkCount { get { return sinks.Count; } }
+
+        /// <summary>按路取运行时 (越界返回 null), 供将来的 UI 列表使用。</summary>
+        public SinkRuntime SinkAt(int index)
         {
-            get { return lastCaptureTick; }
+            return index >= 0 && index < sinks.Count ? sinks[index] : null;
         }
 
-        /// <summary>输出线程累计渲染样本数。看门狗用它判断输出线程是否还在被调用:
-        /// 比看水位可靠 —— 水位在连通时也可能短暂不动, 而渲染计数冻结必然是停摆。
-        /// 必须左右分开看: 只看总和的话, 一侧停摆另一侧照常涨, 总和仍在增长 → 单只音箱
-        /// 休眠/被独占这种"无声但界面正常"的故障永远检不出来。</summary>
-        public long LeftRenderedSamples
+        DriftCorrectingProvider ProviderAt(int i)
         {
-            get { return leftProvider == null ? 0 : leftProvider.RenderedSamples; }
+            return i >= 0 && i < sinks.Count ? sinks[i].Provider : null;
         }
 
-        public long RightRenderedSamples
-        {
-            get { return rightProvider == null ? 0 : rightProvider.RenderedSamples; }
-        }
+        public long LeftRenderedSamples { get { var p = ProviderAt(0); return p == null ? 0 : p.RenderedSamples; } }
+        public long RightRenderedSamples { get { var p = ProviderAt(1); return p == null ? 0 : p.RenderedSamples; } }
+        public int LeftBufferMs { get { var p = ProviderAt(0); return p == null ? 0 : p.BufferedMs; } }
+        public int RightBufferMs { get { var p = ProviderAt(1); return p == null ? 0 : p.BufferedMs; } }
+        public int LeftRegulatedMs { get { var p = ProviderAt(0); return p == null ? 0 : p.RegulatedMs; } }
+        public int RightRegulatedMs { get { var p = ProviderAt(1); return p == null ? 0 : p.RegulatedMs; } }
 
-        /// <summary>单侧当前瞬时水位 (ms), 仅供看门狗日志描述现场。</summary>
-        public int LeftBufferMs
-        {
-            get { return leftProvider == null ? 0 : leftProvider.BufferedMs; }
-        }
-
-        public int RightBufferMs
-        {
-            get { return rightProvider == null ? 0 : rightProvider.BufferedMs; }
-        }
-
-        /// <summary>单侧调节水位 (2.1s 低通后的平滑值), 看门狗用它判"水位持续单方向堆积"。</summary>
-        public int LeftRegulatedMs
-        {
-            get { return leftProvider == null ? 0 : leftProvider.RegulatedMs; }
-        }
-
-        public int RightRegulatedMs
-        {
-            get { return rightProvider == null ? 0 : rightProvider.RegulatedMs; }
-        }
-
-        /// <summary>共享校正比例 (ppm), 看门狗用它判"校正是否触顶"。
-        /// mode != 1 时返回左 provider 的独立 ratio (固定/关闭模式不会触顶, 不影响判据)。</summary>
+        /// <summary>共享校正比例 (ppm)。独立组时返回第一路的独立 ratio。</summary>
         public int SharedRatioPpm
         {
             get
             {
-                if (leftProvider != null) return (int)leftProvider.RatioPpm;
+                var p = ProviderAt(0);
+                if (p != null) return (int)p.RatioPpm;
                 return 0;
             }
         }
@@ -181,29 +166,47 @@ namespace StereoSplitter
         /// <summary>启动结果: 预缓冲是否真的拿到了数据 (旧实现超时也当成功, 导致空缓冲起播)。</summary>
         public enum StartOutcome
         {
-            /// <summary>左右缓冲均达到目标水位。</summary>
             Ready,
-            /// <summary>超时但已有部分数据, 开头可能欠载。</summary>
             Insufficient,
-            /// <summary>超时且完全没有数据 (捕获源当前静音/无声源)。</summary>
             NoAudioYet
         }
 
+        /// <summary>两路兼容入口 (UI 现有调用): 等价于 split-lr 模式 + 两路同组。</summary>
         public StartOutcome Start(float gain, float master, int prebufferMs, int outLatencyMs, int leftDelayMs, int rightDelayMs,
             Func<bool> aborted, string expectedCaptureId)
         {
-            // 三个 MMDevice 都在本线程创建: 跨线程使用 UI 线程创建的 MMDevice 会 QI IMMDevice 失败 E_NOINTERFACE (NAudio #214)
+            routing = RoutingModel.SplitLr("s0", leftDevId, "左", leftDelayMs,
+                                           "s1", rightDevId, "右", rightDelayMs);
+            return StartCore(routing, gain, master, prebufferMs, outLatencyMs, aborted, expectedCaptureId);
+        }
+
+        /// <summary>N 路入口 (P3 起由 UI 列表驱动)。</summary>
+        public StartOutcome Start(RoutingModel model, float gain, float master, int prebufferMs, int outLatencyMs,
+            Func<bool> aborted, string expectedCaptureId)
+        {
+            routing = model;
+            return StartCore(model, gain, master, prebufferMs, outLatencyMs, aborted, expectedCaptureId);
+        }
+
+        StartOutcome StartCore(RoutingModel model, float gain, float master, int prebufferMs, int outLatencyMs,
+            Func<bool> aborted, string expectedCaptureId)
+        {
+            specs.Clear();
+            for (int i = 0; i < model.SinkSpecs.Count; i++)
+                if (model.SinkSpecs[i].Enabled) specs.Add(model.SinkSpecs[i]);
+            if (specs.Count == 0)
+                throw new AudioDeviceException("没有启用任何输出设备，请至少启用一路");
+
             var enumerator = new MMDeviceEnumerator();
+            var devs = new List<MMDevice>();
             try
             {
                 // 启动前校验: 设备可能在这几秒内被拔出, 用陈旧 ID 建 WasapiOut 只会抛 "尚未实现" 这类鬼话
-                // 一次枚举同时校验左右 (原实现对左/右各枚举了一遍全量设备)
-                string missing = FindMissingChannel(enumerator, leftDevId, rightDevId);
+                string missing = FindMissingSink(enumerator, specs);
                 if (missing != null)
                     throw new AudioDeviceException(missing + "不可用（可能已拔出或被禁用），请刷新设备后重试");
 
-                leftDev = enumerator.GetDevice(leftDevId);
-                rightDev = enumerator.GetDevice(rightDevId);
+                for (int i = 0; i < specs.Count; i++) devs.Add(enumerator.GetDevice(specs[i].DeviceId));
                 captureDev = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
             }
             finally { try { enumerator.Dispose(); } catch { } }
@@ -216,65 +219,84 @@ namespace StereoSplitter
             loopback = new WasapiLoopbackCapture(captureDev);
             var wf = loopback.WaveFormat;
             sampleRate = wf.SampleRate;
+            captureChannels = wf.Channels;
             log("[启动] 格式: " + wf.SampleRate + "Hz / " + wf.Encoding + " / " + wf.BitsPerSample + "bit / " + wf.Channels + "ch");
 
-            // 端点传输类型: 蓝牙 A2DP 自成一条链路, 偶发"咔哒"多出在链路层而不是缓冲层,
-            // 写进日志才能在排查时立刻区分责任方
-            string lt = DeviceCatalog.TransportName(leftDev), rt = DeviceCatalog.TransportName(rightDev);
-            log("[启动] 端点传输: 左=" + DeviceCatalog.TransportText(lt) + " / 右=" + DeviceCatalog.TransportText(rt));
-            if ((DeviceCatalog.IsBluetooth(lt) || DeviceCatalog.IsBluetooth(rt)) && outLatencyMs < 20)
-                log("[提示] 蓝牙端点使用 " + outLatencyMs + "ms 输出缓冲偏紧；若链路上偶发\"咔哒\"，把「延迟」档位调到 25ms/20ms 或更高");
+            // 端点传输类型: 蓝牙 A2DP 自成一条链路, 偶发"咔哒"多出在链路层而不是缓冲层
+            var transports = new string[devs.Count];
+            bool anyBt = false;
+            for (int i = 0; i < devs.Count; i++)
+            {
+                string t = DeviceCatalog.TransportName(devs[i]);
+                transports[i] = t;
+                if (DeviceCatalog.IsBluetooth(t)) anyBt = true;
+            }
+            log("[启动] 端点传输: " + JoinPerSink(specs, i => DeviceCatalog.TransportText(transports[i])));
 
-            var outFormat = WaveFormat.CreateIeeeFloatWaveFormat(wf.SampleRate, 1);
-            // 时钟环稳态目标: 档位越小目标越低, 上限 100ms (余量分档规则见 DriftTargetMs)
+            // 跨采样率/位深交给系统 (NAudio 的 AUTOCONVERTPCM), 声道数不得大于端点声道数
             int driftTargetMs = DriftTargetMs(prebufferMs, outLatencyMs);
             int driftTargetSamples = (int)((long)wf.SampleRate * driftTargetMs / 1000);
-            // 起播填充目标 = 稳态目标 + 余量 (见 PrePullGuardMs 注释)
             int fillTargetMs = driftTargetMs + PrePullGuardMs;
             int fillTargetSamples = (int)((long)wf.SampleRate * fillTargetMs / 1000);
-            leftBuf = new BufferedWaveProvider(outFormat) { BufferDuration = TimeSpan.FromMilliseconds(1000), DiscardOnBufferOverflow = true };
-            rightBuf = new BufferedWaveProvider(outFormat) { BufferDuration = TimeSpan.FromMilliseconds(1000), DiscardOnBufferOverflow = true };
 
-            leftOut = new WasapiOut(leftDev, AudioClientShareMode.Shared, true, outLatencyMs);
-            rightOut = new WasapiOut(rightDev, AudioClientShareMode.Shared, true, outLatencyMs);
-            // 共享校正决策: 左右 provider 通过同一个 DriftCorrectionShared 协调 ratio,
-            // 消除"独立算 ratio -> 插值方向不对称 -> 偏音"的根因
-            var shared = new DriftCorrectionShared(driftTargetSamples, wf.SampleRate, LogThrottled);
-            leftProvider = new DriftCorrectingProvider(leftBuf, driftTargetSamples, driftMode, fixedPpm, LogThrottled, "左", true, shared);
-            rightProvider = new DriftCorrectingProvider(rightBuf, driftTargetSamples, driftMode, fixedPpm, LogThrottled, "右", false, shared);
-            // Play 之前设好增益/主音量, 否则首帧以满音量(1.0)出声造成跳变
-            leftProvider.Gain = gain;
-            rightProvider.Gain = gain;
-            leftProvider.Master = master;
-            rightProvider.Master = master;
-            leftOut.Init(leftProvider);
-            rightOut.Init(rightProvider);
+            // 时钟组: 同一 ClockGroupId 的路共享 ratio; 空 ID = 每路独立组
+            var groups = new Dictionary<string, ClockGroup>();
+            var memberId = new int[specs.Count];
+            int maxGroupSize = 1;
+            for (int i = 0; i < specs.Count; i++)
+            {
+                string gid = specs[i].ClockGroupId ?? "";
+                ClockGroup g;
+                if (gid.Length == 0)
+                {
+                    g = new ClockGroup(driftTargetSamples, wf.SampleRate, LogThrottled);
+                    g.MemberCount = 1;
+                    memberId[i] = 0;
+                }
+                else
+                {
+                    if (!groups.TryGetValue(gid, out g))
+                    {
+                        // 新建组: 成员数从 0 起, 否则第一个成员的编号会错位 (0,2,4…)
+                        g = new ClockGroup(driftTargetSamples, wf.SampleRate, LogThrottled);
+                        g.MemberCount = 0;
+                        groups[gid] = g;
+                    }
+                    memberId[i] = g.MemberCount;
+                    g.MemberCount = g.MemberCount + 1;
+                    if (g.MemberCount > maxGroupSize) maxGroupSize = g.MemberCount;
+                }
+            }
+            var compiled = model.Compile(specs, wf.Channels);
 
-            // 输出/捕获线程意外退出 → 看门狗接管 (设备休眠、被独占、被移除都会走到这里)。
-            // 主动 Stop 时也会触发, 由 stopping 标记屏蔽, 否则每次停止都会被当成故障。
-            leftOut.PlaybackStopped += delegate(object s, StoppedEventArgs e) { OnOutputStopped("左", e); };
-            rightOut.PlaybackStopped += delegate(object s, StoppedEventArgs e) { OnOutputStopped("右", e); };
+            sinks.Clear();
+            for (int i = 0; i < specs.Count; i++)
+            {
+                string gid = specs[i].ClockGroupId ?? "";
+                ClockGroup g = gid.Length == 0 ? null : groups[gid];
+                var sink = new SinkRuntime(specs[i], devs[i], wf, driftTargetSamples, fillTargetSamples,
+                    outLatencyMs, driftMode, fixedPpm, memberId[i], g, LogThrottled);
+                sink.Matrix = compiled.SinkMatrix[i];
+                sink.SetGain(gain);
+                sink.SetMaster(master);
+                int idx = i;
+                sink.Output.PlaybackStopped += delegate(object s, StoppedEventArgs e) { OnOutputStopped(specs[idx].Label, e); };
+                sinks.Add(sink);
+            }
+            if (anyBt && outLatencyMs < 20)
+                log("[提示] 蓝牙端点使用 " + outLatencyMs + "ms 输出缓冲偏紧；若链路上偶发\"咔哒\"，把「延迟」档位调到 25ms/20ms 或更高");
+            for (int i = 0; i < sinks.Count; i++)
+                log("[启动] 路由 " + specs[i].Label + " " + specs[i].OutChannels + "ch: " + RoutingModel.Describe(compiled.SinkMatrix[i]));
+
             loopback.RecordingStopped += delegate(object s, StoppedEventArgs e) { OnCaptureStopped(e); };
-
-            // 左右独立延迟线: 输入是交错多声道原始数据 → 按 blockAlign(帧) 算目标字节并天然对齐
-            // (旧算法按 mono float 4字节算 → 延迟减半; &~3 未对齐帧 → 44100Hz 等场景字节错位出破音)
-            int blockAlign = Math.Max(1, wf.BlockAlign);
-            int leftMs = Math.Max(0, leftDelayMs);
-            int rightMs = Math.Max(0, rightDelayMs);
-            leftLine = new DelayLine(BytesOf(wf, leftMs, blockAlign),
-                (buf, off, len) => Split(buf, off, len, 0, leftBuf));
-            rightLine = new DelayLine(BytesOf(wf, rightMs, blockAlign),
-                (buf, off, len) => Split(buf, off, len, 1, rightBuf));
 
             dataReady = new AutoResetEvent(false);
             loopback.DataAvailable += (s, e) =>
             {
-                // 采样线程裸异常会直接杀进程 → 捕获并去重记一条
                 try
                 {
-                    leftLine.Write(e.Buffer, e.BytesRecorded);
-                    rightLine.Write(e.Buffer, e.BytesRecorded);
-                    // 捕获活性时间戳: 看门狗用它区分"源本来就静音"和"捕获线程已死"
+                    // 同一条原始字节送进每路的延迟线; 延迟线之后各自按矩阵混音
+                    for (int i = 0; i < sinks.Count; i++) sinks[i].Line.Write(e.Buffer, e.BytesRecorded);
                     if (e.BytesRecorded > 0) lastCaptureTick = Environment.TickCount;
                     if (silentStartup && e.BytesRecorded > 0 && Interlocked.Exchange(ref firstDataLogged, 1) == 0)
                         log("[启动] 音频流已就绪 (捕获源开始有数据)");
@@ -287,7 +309,6 @@ namespace StereoSplitter
                         log("[错误] 采样数据处理异常: " + ex.Message);
                     }
                 }
-                // 唤醒预缓冲等待 (事件在 Dispose 里等采集线程退出后才释放, 此处无释放竞态)
                 try
                 {
                     var ev = dataReady;
@@ -299,14 +320,14 @@ namespace StereoSplitter
 
             loopback.StartRecording();
 
-            int fillBytes = fillTargetSamples * 4;
             int targetMs = driftTargetSamples * 1000 / wf.SampleRate;
             // 等待上限随填充目标与延迟补偿动态放宽 (延迟 2000ms 时固定 2s 会超时)
-            int maxWaitMs = fillTargetMs + Math.Max(leftMs, rightMs) + 1000;
+            int maxDelay = 0;
+            for (int i = 0; i < specs.Count; i++) if (specs[i].DelayMs > maxDelay) maxDelay = specs[i].DelayMs;
+            int maxWaitMs = fillTargetMs + maxDelay + 1000;
             int waitStart = Environment.TickCount;
-            while (leftBuf.BufferedBytes < fillBytes || rightBuf.BufferedBytes < fillBytes)
+            while (!AllReachedFill())
             {
-                // 关窗中止检查: FormClosing 置 startAbort 后最多 20ms 即退出
                 if (aborted != null && aborted()) throw new OperationCanceledException("启动已取消");
                 if (Environment.TickCount - waitStart >= maxWaitMs) break;
                 var ev = dataReady;
@@ -314,56 +335,97 @@ namespace StereoSplitter
             }
 
             // 先取水位再修剪: 修剪会把快路压回目标值, 之后再判断就永远"达标"
-            int gotL = leftBuf.BufferedBytes;
-            int gotR = rightBuf.BufferedBytes;
+            var got = new int[sinks.Count];
+            for (int i = 0; i < sinks.Count; i++) got[i] = sinks[i].BufferedBytes;
+            for (int i = 0; i < sinks.Count; i++) sinks[i].TrimToFill();
 
-            // 修剪快路多攒的水位: 等待以慢路为终点时, 无延迟的快路会多攒数据, 抵消延迟线的时差
-            // 两 buf 统一修剪到填充阈值 → 净声道差 = 延迟线的 (L - R)
-            TrimTo(leftBuf, fillBytes);
-            TrimTo(rightBuf, fillBytes);
+            bool allFill = true, anyEmpty = false;
+            for (int i = 0; i < sinks.Count; i++)
+            {
+                if (got[i] < sinks[i].FillBytes) allFill = false;
+                if (got[i] == 0) anyEmpty = true;
+            }
 
             StartOutcome outcome;
-            if (gotL >= fillBytes && gotR >= fillBytes)
+            if (allFill)
             {
                 outcome = StartOutcome.Ready;
-                log("[启动] 预缓冲完成 (L=" + gotL + " R=" + gotR + " 字节, 填充目标 " + fillTargetMs +
+                log("[启动] 预缓冲完成 (" + JoinPairs(specs, i => got[i].ToString()) + " 字节, 填充目标 " + fillTargetMs +
                     "ms / 时钟目标 " + targetMs + "ms / 档位 " + prebufferMs + "ms / 输出 " + outLatencyMs +
                     "ms / 总预估≈" + (targetMs + outLatencyMs + CaptureLatencyEstimateMs) +
                     "ms [捕获" + CaptureLatencyEstimateMs + "+内部" + targetMs + "+输出" + outLatencyMs + ", 不含USB/DAC])");
             }
-            else if (gotL == 0 || gotR == 0)
+            else if (anyEmpty)
             {
                 outcome = StartOutcome.NoAudioYet;
                 log("[警告] 捕获源 " + captureName + " 在 " + (maxWaitMs / 1000.0).ToString("0.0") +
-                    " 秒内没有音频数据 (L=" + gotL + " R=" + gotR + " 字节)，已按静音启动，播放声音后会自动补齐");
+                    " 秒内没有音频数据 (" + JoinPairs(specs, i => got[i].ToString()) + " 字节)，已按静音启动，播放声音后会自动补齐");
             }
             else
             {
                 outcome = StartOutcome.Insufficient;
-                log("[警告] 预缓冲不足 (L=" + gotL + " R=" + gotR + " / 目标 " + fillBytes +
-                    " 字节)，开头可能出现欠载");
+                log("[警告] 预缓冲不足 (" + JoinPairs(specs, i => got[i].ToString()) + " / 目标 " +
+                    (sinks.Count > 0 ? sinks[0].FillBytes.ToString() : "0") + " 字节)，开头可能出现欠载");
             }
 
             silentStartup = (outcome == StartOutcome.NoAudioYet);
-            log("[启动] 时钟漂移补偿: " + (driftMode == 0 ? "关闭" : driftMode == 2 ? "固定 " + fixedPpm + "ppm" : "自适应") + ", 比例上限 ±0.50%");
-            if (leftMs > 0 || rightMs > 0)
-                log("[启动] 延迟补偿: 左=" + leftMs + "ms 右=" + rightMs + "ms");
+            log("[启动] 时钟漂移补偿: " + (driftMode == 0 ? "关闭" : driftMode == 2 ? "固定 " + fixedPpm + "ppm" : "自适应") +
+                ", 比例上限 ±0.50% / 时钟组 " + (maxGroupSize > 1 ? maxGroupSize + " 路共享" : "每路独立"));
+            if (maxDelay > 0)
+                log("[启动] 延迟补偿: " + JoinPairs(specs, i => specs[i].DelayMs + "ms"));
 
             if (aborted != null && aborted()) throw new OperationCanceledException("启动已取消");
 
-            leftOut.Play();
-            rightOut.Play();
-            log("[启动] 输出 L=" + DeviceCatalog.SafeName(leftDev));
-            log("[启动] 输出 R=" + DeviceCatalog.SafeName(rightDev));
+            for (int i = 0; i < sinks.Count; i++) sinks[i].Start();
+            for (int i = 0; i < sinks.Count; i++)
+                log("[启动] 输出 " + specs[i].Label + "=" + DeviceCatalog.SafeName(sinks[i].Device));
             return outcome;
         }
 
-        // 一次枚举同时校验左右声道设备是否仍在活动输出列表中; 返回缺失的声道名, 都正常返回 null
-        static string FindMissingChannel(MMDeviceEnumerator enumerator, string leftId, string rightId)
+        bool AllReachedFill()
         {
-            if (string.IsNullOrEmpty(leftId)) return "左声道设备";
-            if (string.IsNullOrEmpty(rightId)) return "右声道设备";
-            bool leftOk = false, rightOk = false;
+            if (sinks.Count == 0) return true;
+            for (int i = 0; i < sinks.Count; i++) if (!sinks[i].ReachedFill) return false;
+            return true;
+        }
+
+        /// <summary>"左"→"L"、"右"→"R", 其余用 Label; 让两路日志与旧版逐字可比。</summary>
+        static string ShortTag(string label)
+        {
+            if (label == "左") return "L";
+            if (label == "右") return "R";
+            return label;
+        }
+
+        static string JoinPairs(IList<SinkSpec> list, Func<int, string> f)
+        {
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (i > 0) sb.Append(' ');
+                sb.Append(ShortTag(list[i].Label)).Append('=').Append(f(i));
+            }
+            return sb.ToString();
+        }
+
+        static string JoinPerSink(IList<SinkSpec> list, Func<int, string> f)
+        {
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (i > 0) sb.Append(" / ");
+                sb.Append(f(i));
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>一次枚举同时校验全部输出设备是否仍在活动输出列表中; 返回缺失路名, 都正常返回 null</summary>
+        static string FindMissingSink(MMDeviceEnumerator enumerator, IList<SinkSpec> list)
+        {
+            if (list.Count == 0) return "输出设备";
+            for (int i = 0; i < list.Count; i++)
+                if (string.IsNullOrEmpty(list[i].DeviceId)) return list[i].Label + "声道设备";
+            var seen = new bool[list.Count];
             try
             {
                 var coll = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
@@ -371,59 +433,90 @@ namespace StereoSplitter
                 {
                     string id = null;
                     try { id = coll[i].ID; } catch { }
-                    if (id == leftId) leftOk = true;
-                    if (id == rightId) rightOk = true;
-                    if (leftOk && rightOk) break;
+                    if (id == null) continue;
+                    for (int s = 0; s < list.Count; s++)
+                        if (!seen[s] && list[s].DeviceId == id) seen[s] = true;
                 }
             }
             catch { }
-            if (!leftOk) return "左声道设备";
-            if (!rightOk) return "右声道设备";
+            for (int i = 0; i < list.Count; i++)
+                if (!seen[i]) return list[i].Label + "声道设备";
             return null;
         }
 
         public void SetMaster(float m)
         {
-            // 主音量走采样层: WasapiOut.Volume 实际是设备端点音量，会与左右滑条的端点绑定冲突
-            if (leftProvider != null) leftProvider.Master = m;
-            if (rightProvider != null) rightProvider.Master = m;
+            for (int i = 0; i < sinks.Count; i++) sinks[i].SetMaster(m);
+        }
+
+        /// <summary>
+        /// 运行中热替换路由: 重新 Compile 出矩阵并逐路原子换引用, 不停链路、不断音。
+        /// 返回 false = 没有可替换的链路 (未运行 / 声道数变了需要重建)。
+        ///
+        /// 只换矩阵不换 provider: 输出声道数一变就得重建 BufferedWaveProvider 与端点,
+        /// 那是"改设备"级别的事, 交给下一次启动 (P2 校验会先拦住超限配置)。
+        /// </summary>
+        public bool SetRouting(RoutingModel model)
+        {
+            if (model == null || sinks.Count == 0) return false;
+            var compiled = model.Compile(specs, captureChannels);
+            bool any = false;
+            for (int i = 0; i < sinks.Count; i++)
+            {
+                int idx = compiled.IndexOf(specs[i].Key);
+                if (idx < 0) continue;
+                if (compiled.SinkOutCh[idx] != sinks[i].OutCh) continue;   // 声道数变了, 不能热换
+                sinks[i].Matrix = compiled.SinkMatrix[idx];
+                any = true;
+            }
+            return any;
         }
 
         public void SetGain(float gain)
         {
-            if (leftProvider != null) leftProvider.Gain = gain;
-            if (rightProvider != null) rightProvider.Gain = gain;
+            for (int i = 0; i < sinks.Count; i++) sinks[i].SetGain(gain);
         }
 
         public void SetDriftMode(int mode, int fixedPpm)
         {
-            if (leftProvider != null) leftProvider.SetMode(mode, fixedPpm);
-            if (rightProvider != null) rightProvider.SetMode(mode, fixedPpm);
+            for (int i = 0; i < sinks.Count; i++) sinks[i].SetDriftMode(mode, fixedPpm);
         }
 
         public string BufferStatus()
         {
             try
             {
-                if (leftProvider == null || rightProvider == null || sampleRate <= 0) return "-";
-                int minL = leftProvider.TakeMinBufferedMs();
-                int minR = rightProvider.TakeMinBufferedMs();
-                // 调节水位在前: 它是校正环真正稳定的量, 也是判断是否需要扩缓冲的依据。
-                // 瞬时值紧随其后: 含块粒度锯齿, 只用于看单次回调的抖动幅度。
-                // 校正只显示一个值: shared ratio 后左右必然相等。
-                // 水位差: shared ratio 的副作用指标, 同型号 USB 音箱应 < 5ms。
-                int regL = leftProvider.RegulatedMs, regR = rightProvider.RegulatedMs;
-                string s = "调节 L=" + regL + "ms R=" + regR + "ms 差=" + (regL - regR) + "ms" +
-                    " 瞬时 L=" + leftProvider.BufferedMs + "ms R=" + rightProvider.BufferedMs + "ms" +
-                    " 校正=" + Ppm(leftProvider.RatioPpm) +
-                    " 最低 L=" + minL + "ms R=" + minR + "ms";
-                long ul = leftProvider.UnderrunSamples, ur = rightProvider.UnderrunSamples;
-                if (ul > 0 || ur > 0) s += " 欠载 L=" + ul + " R=" + ur;
-                // 只在真出现时才显示: 迟到 = WasapiOut 没按时取数据(设备侧可能已欠载), 卡顿 = 音频线程被抢占
-                string tl = leftProvider.TimingInfo, tr = rightProvider.TimingInfo;
-                if (tl != null) s += " 左" + tl;
-                if (tr != null) s += " 右" + tr;
-                return s;
+                if (sinks.Count == 0 || sampleRate <= 0) return "-";
+                var a = ProviderAt(0);
+                var b = ProviderAt(1);
+                if (sinks.Count == 2 && a != null && b != null)
+                {
+                    int minL = a.TakeMinBufferedMs();
+                    int minR = b.TakeMinBufferedMs();
+                    int regL = a.RegulatedMs, regR = b.RegulatedMs;
+                    string s = "调节 L=" + regL + "ms R=" + regR + "ms 差=" + (regL - regR) + "ms" +
+                        " 瞬时 L=" + a.BufferedMs + "ms R=" + b.BufferedMs + "ms" +
+                        " 校正=" + Ppm(a.RatioPpm) +
+                        " 最低 L=" + minL + "ms R=" + minR + "ms";
+                    long ul = a.UnderrunSamples, ur = b.UnderrunSamples;
+                    if (ul > 0 || ur > 0) s += " 欠载 L=" + ul + " R=" + ur;
+                    string tl = a.TimingInfo, tr = b.TimingInfo;
+                    if (tl != null) s += " 左" + tl;
+                    if (tr != null) s += " 右" + tr;
+                    return s;
+                }
+                var sb = new System.Text.StringBuilder();
+                for (int i = 0; i < sinks.Count; i++)
+                {
+                    var p = sinks[i].Provider;
+                    if (p == null) continue;
+                    if (sb.Length > 0) sb.Append(" | ");
+                    sb.Append(specs[i].Label).Append(' ')
+                      .Append(p.RegulatedMs).Append('/').Append(p.TakeMinBufferedMs()).Append("ms ")
+                      .Append(Ppm(p.RatioPpm));
+                    if (p.UnderrunSamples > 0) sb.Append(" 欠载").Append(p.UnderrunSamples);
+                }
+                return sb.ToString();
             }
             catch { return "-"; }
         }
@@ -437,7 +530,7 @@ namespace StereoSplitter
         void OnOutputStopped(string side, StoppedEventArgs e)
         {
             if (stopping) return;
-            string why = "输出" + side + "声道已停止";
+            string why = "输出" + side + "已停止";
             if (e != null && e.Exception != null) why += ": " + e.Exception.Message;
             else why += "（设备休眠/被独占/已移除）";
             RaiseStalled(why);
@@ -451,7 +544,6 @@ namespace StereoSplitter
             RaiseStalled(why);
         }
 
-        // 只上报第一次: 左右两路往往同时停, 后续还可能连环触发
         void RaiseStalled(string why)
         {
             if (Interlocked.Exchange(ref stallNotified, 1) != 0) return;
@@ -464,131 +556,29 @@ namespace StereoSplitter
         {
             stopping = true; // 先置位: 下面的 Stop 会同步触发 Stopped 事件
             if (loopback != null) { try { loopback.StopRecording(); } catch { } }
-            if (leftOut != null) { try { leftOut.Stop(); } catch { } }
-            if (rightOut != null) { try { rightOut.Stop(); } catch { } }
-            if (leftLine != null) leftLine.Clear();
-            if (rightLine != null) rightLine.Clear();
-        }
-
-        // 延迟线的目标字节数 = 采样率 × 毫秒 / 1000 帧 × 帧对齐字节; 上限钳到 int (2000ms 远不到)
-        static int BytesOf(WaveFormat wf, int ms, int blockAlign)
-        {
-            if (ms <= 0) return 0;
-            long bytes = (long)wf.SampleRate * ms / 1000 * blockAlign;
-            return (int)Math.Min(int.MaxValue, bytes);
-        }
-
-        static void TrimTo(BufferedWaveProvider buf, int targetBytes)
-        {
-            int excess = buf.BufferedBytes - targetBytes;
-            if (excess <= 0) return;
-            var tmp = new byte[4096];          // 固定小缓冲: 原先按 excess 分配, 起播时一次几百 KB
-            while (excess > 0)
-            {
-                int got = buf.Read(tmp, 0, Math.Min(excess, tmp.Length));
-                if (got <= 0) break;
-                excess -= got;
-            }
-        }
-
-        // Split 输出缓冲复用: 只在采样线程(DataAvailable→emit)访问, 无并发
-        byte[] splitOut;
-        float[] splitF;
-        float[] splitSrcF;
-
-        void Split(byte[] data, int offset, int bytes, int channel, BufferedWaveProvider target)
-        {
-            var f = loopback.WaveFormat;
-            int bps = f.BitsPerSample / 8;
-            int ch = f.Channels;
-            int frame = bps * ch;
-            if (frame <= 0 || bytes < frame) return;
-            // 单声道捕获无第二声道 → 取模回 ch0 重复 (越界读会抛异常杀死进程)
-            if (ch > 0) channel = channel % ch;
-            int frames = bytes / frame;
-
-            // 复用缓冲: 旧实现每样本 BitConverter.GetBytes 分配 byte[4] (~9.6万次/秒 → GC 抖动)
-            if (splitOut == null || splitOut.Length < frames * 4) splitOut = new byte[frames * 4];
-            if (splitF == null || splitF.Length < frames) splitF = new float[frames];
-
-            bool isFloat = f.Encoding == WaveFormatEncoding.IeeeFloat;
-            bool is16 = f.BitsPerSample == 16;
-            if (isFloat && f.BitsPerSample == 32)
-            {
-                // 常用路径 (WASAPI 混音格式): 整块复制到 float[] 后按帧取声道,
-                // 避免逐样本 BitConverter.ToSingle (与逐样本读取结果完全一致)
-                int total = frames * ch;
-                if (splitSrcF == null || splitSrcF.Length < total) splitSrcF = new float[total];
-                Buffer.BlockCopy(data, offset, splitSrcF, 0, total * 4);
-                for (int i = 0; i < frames; i++)
-                    splitF[i] = splitSrcF[i * ch + channel];
-            }
-            else if (is16)
-            {
-                for (int i = 0; i < frames; i++)
-                    splitF[i] = BitConverter.ToInt16(data, offset + i * frame + channel * bps) / 32768f;
-            }
-            else if (isFloat)
-            {
-                // 非 32bit 浮点: 保持原逐样本逻辑
-                for (int i = 0; i < frames; i++)
-                    splitF[i] = BitConverter.ToSingle(data, offset + i * frame + channel * bps);
-            }
-            else
-            {
-                for (int i = 0; i < frames; i++) splitF[i] = 0f;
-            }
-            Buffer.BlockCopy(splitF, 0, splitOut, 0, frames * 4);
-            // 输出缓冲已满 → DiscardOnBufferOverflow 会整块静默丢弃 (听起来是断音), 限流记一条
-            int need = frames * 4;
-            if (target.BufferedBytes + need > target.BufferLength && WarnOverflow())
-                log("[警告] 输出缓冲已满 (" + (target == leftBuf ? "左" : "右") + "声道 " + target.BufferedBytes + "/" +
-                    target.BufferLength + " 字节)，本块已丢弃；输出设备可能卡顿或时钟校正跟不上");
-            target.AddSamples(splitOut, 0, need);
-        }
-
-        // 溢出告警限流: 同一类事件 60 秒最多一条, 避免采样线程刷屏
-        bool WarnOverflow()
-        {
-            int now = Environment.TickCount;
-            if (lastOverflowWarnTick != 0 && now - lastOverflowWarnTick < 60000) return false;
-            lastOverflowWarnTick = now;
-            return true;
+            for (int i = 0; i < sinks.Count; i++) sinks[i].Stop();
         }
 
         public void Dispose()
         {
             // 幂等: GiveUp / StopEngine / FormClosing 三条路径都会走到, 重复释放会抛
-            // ObjectDisposedException, 而调用方多为 catch{} 兜底 → 真实故障被掩盖
             if (disposed) return;
             disposed = true;
 
             try { Stop(); } catch { }
 
             if (loopback != null) { try { loopback.Dispose(); } catch { } loopback = null; }
-            // 采集线程已退出 (StopRecording 等待其结束) → 此时释放等待句柄无竞态
             if (dataReady != null)
             {
                 try { dataReady.Close(); } catch { }
                 dataReady = null;
             }
-            if (leftOut != null) { try { leftOut.Dispose(); } catch { } leftOut = null; }
-            if (rightOut != null) { try { rightOut.Dispose(); } catch { } rightOut = null; }
+            for (int i = 0; i < sinks.Count; i++) sinks[i].Dispose();
+            sinks.Clear();
             if (captureDev != null)
             {
                 try { captureDev.Dispose(); } catch { }
                 captureDev = null;
-            }
-            // 左右设备由本引擎自建 → 由本引擎释放 (原 UI 所有的设备不再传入)
-            if (leftDev != null)
-            {
-                try { leftDev.Dispose(); } catch { }
-                leftDev = null;
-            }
-            if (rightDev != null)
-            {
-                try { rightDev.Dispose(); } catch { }
-                rightDev = null;
             }
         }
     }

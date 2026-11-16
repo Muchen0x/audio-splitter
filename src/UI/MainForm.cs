@@ -92,7 +92,11 @@ namespace StereoSplitter
         DefaultChangeWatcher defaultWatcher;
         string expectCaptureId = null;
         // 运行期间生效的设备ID (拔出识别用: 默认输出切走时 bindings 会解绑但引擎仍在跑, 不能用 bindings 判断)
-        string runCaptureId, runLeftId, runRightId;
+        // runSinkIds = 本次运行实际打开的全部输出端点 (N 路)
+        string runCaptureId;
+        readonly List<string> runSinkIds = new List<string>();
+        // 本次运行实际下发给内核的路由模型 (热更新前比对用)
+        RoutingModel runModel;
         // 已警告过的断开设备 (设备状态事件可能连发, 同一设备只警告一次)
         HashSet<string> warnedLostIds = new HashSet<string>();
         // 启动前 UI 快照 (AutoConfigure 的 Bind 会用设备真值回填覆盖控件, 启动失败时恢复权威值)
@@ -116,15 +120,16 @@ namespace StereoSplitter
         bool running = false;
 
         // ---- 长期运行看门狗状态 ----
-        // 输出线程停摆判定: RenderedSamples 连续 10 秒不涨 → WasapiOut 已不再拉数据
+        // 输出线程停摆判定: RenderedSamples 连续 10 秒不涨 → WasapiOut 已不再拉数据。
+        // N 路: 下标 = 引擎 sink 下标, 路数变了按需扩容 (旧引擎事件不会写这里, 见 ReferenceEquals 校验)。
         const int WatchdogFreezeMs = 10000;
-        long watchRenderedL = -1, watchRenderedR = -1;
-        int watchRenderedTickL, watchRenderedTickR;
+        long[] watchRendered = new long[0];
+        int[] watchRenderedTick = new int[0];
         // 水位失衡判定: 一侧调节水位持续 >300ms 且校正触顶 → 设备消费速率严重低于捕获速率
         // (独占模式设备采样率失配、驱动异常)。RenderedSamples 还在涨 → 停摆检测抓不到。
         const int WatchdogImbalanceMs = 10000;
         const int ImbalanceThresholdMs = 300;   // 正常水位 ≤142ms (target 100 + 波动 42), 300 远超
-        int watchImbalanceTickL, watchImbalanceTickR;
+        int[] watchImbalanceTick = new int[0];
         bool captureIdleLogged;      // "捕获源无数据"只提示一次
         int captureIdleSince;
         int lastCaptureCheckTick;    // 空闲期确认捕获设备是否还在 (1 分钟一次)
@@ -557,10 +562,10 @@ namespace StereoSplitter
         void HandleDeviceLost(string id)
         {
             if (state != AppState.Starting && state != AppState.Running) return;
-            if (id != runCaptureId && id != runLeftId && id != runRightId) return;
+            if (id != runCaptureId && !runSinkIds.Contains(id)) return;
             if (!warnedLostIds.Add(id)) return;
-            string role = id == runCaptureId ? "捕获" : (id == runLeftId ? "左声道" : "右声道");
-            Log("[警告] " + role + "设备已断开: " + FindNameById(id) +
+            string role = id == runCaptureId ? "捕获" : "输出设备";
+            Log("[警告] " + role + "已断开: " + FindNameById(id) +
                 " → 看门狗会在检测到断流后尝试自动重建；若设备已彻底移除则自动停止分流");
         }
 
@@ -912,65 +917,53 @@ namespace StereoSplitter
                 // 2. 重绑主音量同步到新默认设备
                 BindDefaultVolumeSync("[配置] 2/4");
 
-                // 3. 左右目标: 只在"未选/失效"时补默认。
+                // 3. 输出目标: 只在"未选/失效"时补默认。
                 //    用户已选的设备一律不动 —— 静默改选会让人以为"选好的设备自己变了"。
-                //    与捕获设备相同/左右相同属于真冲突, 留给下面的回环检查报错, 让用户自己改。
-                OutputCardControl clDev = LeftCard(), crDev = RightCard();
-                if (clDev == null || crDev == null)
+                //    N 路: 先登记已选设备, 再从候选池轮流补。设备不够时允许复用同一台 ——
+                //    内核按设备分组, 每台端点只开一条 WasapiOut, 多张卡片共用一台设备是合法用法。
+                if (cards.Count == 0 || lanes.Count == 0)
                 {
-                    Log("[错误] 配置 3/4 输出卡片不足, 无法确定左右目标。");
+                    Log("[错误] 配置 3/4 没有输出卡片。");
                     return false;
                 }
-                if (clDev == crDev)
+                if (LeftCard() == null || RightCard() == null)
                 {
-                    Log("[错误] 配置 3/4 左右目标指向了同一张卡片 (没有分别接左/右声道的卡片), 请检查输出声道。");
+                    Log("[错误] 配置 3/4 输出卡片不足, 无法确定左右目标 (需要 FL/FR 或两张单声道卡片)。");
                     return false;
                 }
-                bool needAuto =
-                    clDev.cmbDevice.SelectedIndex < 0 || crDev.cmbDevice.SelectedIndex < 0;
+                var cand = new List<int>();
+                for (int i = 0; i < Devices.Count; i++) if (i != defIdx && !Devices[i].IsVirtual) cand.Add(i);
+                for (int i = 0; i < Devices.Count; i++) if (i != defIdx && Devices[i].IsVirtual) cand.Add(i);
+                if (cand.Count == 0)
+                {
+                    Log("[错误] 配置 3/4 除捕获设备外没有任何可用输出端点。");
+                    return false;
+                }
+                var usedIdx = new HashSet<int>();
+                for (int i = 0; i < cards.Count; i++)
+                    if (cards[i].cmbDevice.SelectedIndex >= 0) usedIdx.Add(cards[i].cmbDevice.SelectedIndex);
 
-                if (needAuto)
+                int filled = 0;
+                for (int i = 0; i < cards.Count; i++)
                 {
-                    int l = -1, r = -1;
-                    // 优先真实设备
-                    for (int i = 0; i < Devices.Count; i++)
+                    if (cards[i].cmbDevice.SelectedIndex >= 0) continue;
+                    int chosen = -1;
+                    for (int k = 0; k < cand.Count; k++)
                     {
-                        if (i == defIdx) continue;
-                        if (Devices[i].IsVirtual) continue;
-                        if (l < 0) l = i;
-                        else { r = i; break; }
+                        int c = cand[(filled + k) % cand.Count];
+                        if (!usedIdx.Contains(c)) { chosen = c; break; }
                     }
-                    // 不够则任意非默认
-                    if (l < 0 || r < 0)
-                    {
-                        for (int i = 0; i < Devices.Count; i++)
-                        {
-                            if (i == defIdx) continue;
-                            if (l < 0) l = i;
-                            else if (i != l) { r = i; break; }
-                        }
-                    }
-                    if (l >= 0 && r >= 0 && l != r)
-                    {
-                        clDev.SetDeviceIndex(l);
-                        crDev.SetDeviceIndex(r);
-                        clDev.Lane.DeviceId = DeviceIdAt(l);
-                        crDev.Lane.DeviceId = DeviceIdAt(r);
-                        Log("[配置] 3/4 左右目标: 未选择, 自动补选 L=[" + l + "] " + Devices[l].FriendlyName +
-                            " / R=[" + r + "] " + Devices[r].FriendlyName);
-                    }
-                    else
-                    {
-                        Log("[错误] 配置 3/4 无法自动选择左右目标设备，可用设备不足。");
-                        return false;
-                    }
+                    if (chosen < 0) chosen = cand[filled % cand.Count];   // 设备不够 → 复用
+                    cards[i].SetDeviceIndex(chosen);
+                    if (i < lanes.Count) lanes[i].DeviceId = DeviceIdAt(chosen);
+                    usedIdx.Add(chosen);
+                    filled++;
+                    Log("[配置] 3/4 输出目标: 第 " + (i + 1) + " 路（" +
+                        (i < lanes.Count ? ChannelNameOf(lanes[i].ChannelKey) : "?") + "）未选择 → 自动补选 [" +
+                        chosen + "] " + Devices[chosen].FriendlyName);
                 }
-                else
-                {
-                    Log("[配置] 3/4 左右目标: 保持手动选择 L=[" + clDev.cmbDevice.SelectedIndex + "] " +
-                        Devices[clDev.cmbDevice.SelectedIndex].FriendlyName + " / R=[" + crDev.cmbDevice.SelectedIndex + "] " +
-                        Devices[crDev.cmbDevice.SelectedIndex].FriendlyName);
-                }
+                if (filled == 0)
+                    Log("[配置] 3/4 输出目标: 保持手动选择 (" + LaneSummary() + ")");
 
                 // 4. 重绑左右音量同步到左右目标设备
                 if (!BindChannelVolumeSync("[配置] 4/4"))
@@ -979,17 +972,17 @@ namespace StereoSplitter
                     return false;
                 }
 
-                // 回环检查 (只报错, 不改用户的选择)
-                bool lBad = clDev.cmbDevice.SelectedIndex == defIdx;
-                bool rBad = crDev.cmbDevice.SelectedIndex == defIdx;
-                if (lBad || rBad)
+                // 回环检查 (只报错, 不改用户的选择): 任一路指向捕获设备都会采到自己的输出
+                int badLane = -1;
+                for (int i = 0; i < cards.Count; i++)
+                    if (cards[i].cmbDevice.SelectedIndex == defIdx) { badLane = i; break; }
+                if (badLane >= 0)
                 {
-                    string who = lBad && rBad ? "左右输出" : (lBad ? "左输出" : "右输出");
-                    Log("[错误] 回环检查未通过: " + who + "与捕获设备相同 [" + defIdx + "] " + dev.FriendlyName +
-                        "，请改选输出设备 (程序不会替你改)。");
+                    Log("[错误] 回环检查未通过: 第 " + (badLane + 1) + " 路与捕获设备相同 [" + defIdx + "] " +
+                        dev.FriendlyName + "，请改选输出设备 (程序不会替你改)。");
                     return false;
                 }
-                Log("[配置] 回环检查通过 (捕获输出与左右目标无冲突)");
+                Log("[配置] 回环检查通过 (捕获输出与 " + cards.Count + " 路输出无冲突)");
 
                 return true;
             }
@@ -1035,24 +1028,11 @@ namespace StereoSplitter
 
         // ==================== 规格与输出卡片 ====================
 
-        /// <summary>当前规格的声道清单 (键, 显示名)。键与 Windows 扬声器位对应。</summary>
+        /// <summary>当前规格的声道清单 (键, 显示名)。键与 Windows 扬声器位对应。
+        /// 表在 LaneRouting 里 (内核翻译与界面共用同一张, 免得两边各写一套)。</summary>
         List<KeyValuePair<string, string>> CurrentSpecChannels()
         {
-            switch (cmbSpec.SelectedIndex)
-            {
-                case 0: return Pairs(new string[] { "M" }, new string[] { "单声道" });
-                case 2: return Pairs(new string[] { "FL", "FR", "LFE" }, new string[] { "左", "右", "低音" });
-                case 3: return Pairs(new string[] { "FL", "FR", "BL", "BR" }, new string[] { "左前", "右前", "左后", "右后" });
-                case 4: return Pairs(new string[] { "FL", "FR", "C", "LFE", "SL", "SR" }, new string[] { "左前", "右前", "中置", "低音", "左环绕", "右环绕" });
-                default: return Pairs(new string[] { "FL", "FR" }, new string[] { "左", "右" });
-            }
-        }
-
-        static List<KeyValuePair<string, string>> Pairs(string[] keys, string[] names)
-        {
-            var list = new List<KeyValuePair<string, string>>();
-            for (int i = 0; i < keys.Length; i++) list.Add(new KeyValuePair<string, string>(keys[i], names[i]));
-            return list;
+            return LaneRouting.SpecChannels(cmbSpec.SelectedIndex);
         }
 
         string SpecText()
@@ -1279,6 +1259,8 @@ namespace StereoSplitter
                     if (!used) { key = chans[i].Key; break; }
                 }
                 lane.ChannelKey = key;
+                // 新卡片默认沿用上一路的设备: 一块 6ch 声卡接 5.1 时不必重复选六次
+                if (lanes.Count > 0) lane.DeviceId = lanes[lanes.Count - 1].DeviceId;
             }
             lanes.Add(lane);
             RebuildCards();
@@ -1292,23 +1274,38 @@ namespace StereoSplitter
             SyncLanesFromCards();
             SaveSettings();
             RefreshSpecBadges();
+            // 端点卡片的静音写在设备端点上 (与音量同一套双向绑定/还原基线); 其余卡片走混音增益
+            if (running && bindings != null && !volSyncing)
+            {
+                OutputCardControl cl = LeftCard(), cr = RightCard();
+                if (card == cl && bindings.Left != null && bindings.Left.IsValid)
+                    bindings.Left.WriteMute(card.chkMute.Checked);
+                else if (card == cr && card != cl && bindings.Right != null && bindings.Right.IsValid)
+                    bindings.Right.WriteMute(card.chkMute.Checked);
+            }
+            if (running) ApplyRoutingHot("卡片改动", false);
         }
 
         void OnCardVolumeScrolled(OutputCardControl card)
         {
             if (volSyncing) return;
-            // 左右输出的音量/静音仍走端点双向绑定; 其余卡片先只保存 (多路内核接入后生效)
+            // 端点卡片(左/右)的音量/静音走设备端点双向绑定; 其余卡片的音量进混音增益
             OutputCardControl cl = LeftCard(), cr = RightCard();
+            bool endpoint = false;
             if (card == cl && bindings != null && bindings.Left != null && bindings.Left.IsValid)
             {
+                endpoint = true;
                 bindings.Left.WriteVolume(card.volTrack.Value / 100f);
                 if (card.volTrack.Value > 0 && bindings.Left.ReadMuted()) bindings.Left.WriteMute(false);
             }
             else if (card == cr && card != cl && bindings != null && bindings.Right != null && bindings.Right.IsValid)
             {
+                endpoint = true;
                 bindings.Right.WriteVolume(card.volTrack.Value / 100f);
                 if (card.volTrack.Value > 0 && bindings.Right.ReadMuted()) bindings.Right.WriteMute(false);
             }
+            // 拖动中的热更新: 只改增益, 不记日志 (一次拖动几十次事件, 记了就是刷屏)
+            if (running && !endpoint) ApplyRoutingHot("音量", true);
             SaveSettings();
         }
 
@@ -1680,7 +1677,7 @@ namespace StereoSplitter
             }
             RollbackDefaultIfChanged();
             UnbindAllVolumeSync();
-            runCaptureId = runLeftId = runRightId = null;
+            ClearRunState();
             expectCaptureId = null;
             SetAppState(AppState.Failed);
         }
@@ -1839,30 +1836,39 @@ namespace StereoSplitter
                 return;
             }
 
-            if (scl == null || scr == null || scl.cmbDevice.SelectedIndex < 0 || scr.cmbDevice.SelectedIndex < 0)
+            if (scl == null || scr == null)
             {
                 StartFailed();
-                MessageBox.Show("请为左右输出选择设备。", "提示");
+                MessageBox.Show("没有可用的输出卡片，请先添加至少一路输出。", "提示");
                 return;
             }
-            if (scl.cmbDevice.SelectedIndex == scr.cmbDevice.SelectedIndex)
+            // N 路: 每一路都必须选好设备; 同一设备承载多路是合法用法 (内核按设备分组,
+            // 每台端点只开一条 WasapiOut), 因此不再禁止"多张卡片选中同一设备"。
+            for (int i = 0; i < lanes.Count && i < cards.Count; i++)
             {
-                StartFailed();
-                MessageBox.Show("左右输出不能选同一设备。", "提示");
-                return;
+                if (cards[i].cmbDevice.SelectedIndex < 0)
+                {
+                    StartFailed();
+                    MessageBox.Show("第 " + (i + 1) + " 路输出（" + ChannelNameOf(lanes[i].ChannelKey) +
+                        "）还没有选择设备。", "提示");
+                    return;
+                }
             }
 
             int defIdx = catalog.IndexOf(catalog.DefaultRenderId());
-            if (defIdx == scl.cmbDevice.SelectedIndex || defIdx == scr.cmbDevice.SelectedIndex)
+            // 回环检查 (逐路): 任一路指向捕获设备 → 采集自己的输出, 立刻啸叫
+            for (int i = 0; i < lanes.Count && i < cards.Count; i++)
             {
+                if (cards[i].cmbDevice.SelectedIndex != defIdx) continue;
                 var others = new List<string>();
-                for (int i = 0; i < Devices.Count; i++)
-                    if (i != scl.cmbDevice.SelectedIndex && i != scr.cmbDevice.SelectedIndex)
-                        others.Add("[" + i + "] " + Devices[i].FriendlyName);
+                for (int k = 0; k < Devices.Count; k++)
+                    if (k != defIdx) others.Add("[" + k + "] " + Devices[k].FriendlyName);
                 StartFailed();
                 MessageBox.Show(
-                    "捕获输出与左右目标相同，会造成声音回环！\n\n" +
-                    "请把「捕获(虚拟)」改为虚拟设备(如 CABLE Input)。\n其它可选:\n" + string.Join("\n", others),
+                    "第 " + (i + 1) + " 路（" + ChannelNameOf(lanes[i].ChannelKey) + "）指向了捕获设备 [" + defIdx + "] " +
+                    Devices[defIdx].FriendlyName + "，会造成声音回环！\n\n" +
+                    "请把「捕获(虚拟)」改为虚拟设备(如 CABLE Input)，或给这一路换别的输出。\n其它可选:\n" +
+                    string.Join("\n", others),
                     "设备冲突");
                 return;
             }
@@ -1875,12 +1881,18 @@ namespace StereoSplitter
 
                 // 预置运行期设备ID: 引擎在后台完成前 runCaptureId 还是空, Starting 期拔出会漏警
                 // (AutoConfigure 已把系统默认设为 cmbDefault 项 → 捕获源即该设备; 引擎完成回调里再以 eng.CaptureId 校正)
-                runLeftId = DeviceIdAt(scl.cmbDevice.SelectedIndex);
-                runRightId = DeviceIdAt(scr.cmbDevice.SelectedIndex);
                 runCaptureId = DeviceIdAt(cmbDefault.SelectedIndex);
+                FillRunSinkIds();
 
                 autoRestartCount = 0;   // 手动启动 → 重新给自动重建机会
-                LaunchEngine(runLeftId, runRightId, runCaptureId, SnapshotStartParams(), false);
+                StartParams params0 = SnapshotStartParams();
+                if (!ValidateRouting(params0.Model))
+                {
+                    StartFailed();
+                    MessageBox.Show("路由校验未通过（详见日志里的 [路由] 行），已中止启动。", "启动中止");
+                    return;
+                }
+                LaunchEngine(runCaptureId, params0, false);
             }
             catch (Exception ex)
             {
@@ -1894,8 +1906,10 @@ namespace StereoSplitter
         // 启动参数快照: 引擎 Start 在后台线程跑, UI 值必须先在本线程拷出来
         class StartParams
         {
-            public int PreMs, OutMs, DlyL, DlyR, GainPct, Mode, FixedPpm;
+            public int PreMs, OutMs, GainPct, Mode, FixedPpm;
             public float Gain, Master;
+            /// <summary>界面 → 内核的翻译结果 (每路设备/延迟/绑定增益都在里面, 后台线程只读)。</summary>
+            public RoutingModel Model;
         }
 
         StartParams SnapshotStartParams()
@@ -1905,18 +1919,145 @@ namespace StereoSplitter
             {
                 PreMs = LatencyProfiles[prof][0],
                 OutMs = LatencyProfiles[prof][1],
-                DlyL = LeftCard() != null ? (int)LeftCard().nudDelay.Value : 0,
-                DlyR = RightCard() != null ? (int)RightCard().nudDelay.Value : 0,
                 Gain = pendingGain,
                 Master = CurrentMaster(),
                 GainPct = (int)Math.Round(pendingGain * 100),
                 Mode = driftMode,
-                FixedPpm = fixedPpm
+                FixedPpm = fixedPpm,
+                Model = BuildModelFromLanes(0, true)
             };
         }
 
+        /// <summary>
+        /// 界面 → 内核模型 (启动与热更新的唯一入口)。
+        /// <para>srcCh: 捕获源声道数; 0 = 尚未启动, 按立体声假设建抽头。</para>
+        /// </summary>
+        RoutingModel BuildModelFromLanes(int srcCh, bool logDelayConflict)
+        {
+            SyncLanesFromCards();       // 控件是权威源
+            bool conflict;
+            var model = LaneRouting.Build(lanes, cmbSpec.SelectedIndex, srcCh,
+                LeftCard() == null ? null : LeftCard().Lane,
+                RightCard() == null ? null : RightCard().Lane,
+                delegate (string id) { return catalog == null ? "" : catalog.NameOf(id); },
+                out conflict);
+            if (conflict && logDelayConflict)
+                Log("[提示] 同一设备上的多路延迟不一致，已按最小值生效（内核每台设备只有一条延迟线）");
+            return model;
+        }
+
+        /// <summary>
+        /// 启动前的路由校验: Error 挡住启动, Warn/Info 只记日志。
+        /// 校验两遍: 设备层 (空设备/指向捕获设备/端点声道数不足) + 声道层 (绑定越界/未分配/削波)。
+        /// </summary>
+        bool ValidateRouting(RoutingModel model)
+        {
+            var issues = model.ValidateSinks(DeviceIdAt(cmbDefault.SelectedIndex), EndpointChannels);
+            // srcCh 传 0: 启动前拿不到捕获格式, 此时判抽头越界会把合法的 6ch 配置全误报
+            issues.AddRange(model.Validate(0, model.EnabledSinks()));
+
+            bool hasError = false;
+            for (int i = 0; i < issues.Count; i++)
+            {
+                switch (issues[i].Severity)
+                {
+                    case IssueSev.Error: hasError = true; Log("[错误] [路由] " + issues[i].Message); break;
+                    case IssueSev.Warn: Log("[警告] [路由] " + issues[i].Message); break;
+                    default: Log("[提示] [路由] " + issues[i].Message); break;
+                }
+            }
+            int en = model.EnabledSinks().Count;
+            Log("[配置] 路由: " + model.DescribeConfig() + " / " + en + " 台设备");
+            for (int i = 0; i < model.SinkSpecs.Count; i++)
+            {
+                var s = model.SinkSpecs[i];
+                if (!s.Enabled) continue;
+                Log("[配置] " + s.Label + " → " + FindNameById(s.DeviceId) + " (" + s.OutChannels +
+                    "ch, 延迟 " + s.DelayMs + "ms)");
+            }
+            return !hasError;
+        }
+
+        /// <summary>端点实际输出声道数 (0 = 拿不到, 交由内核与端点协商时报错)。</summary>
+        int EndpointChannels(string id)
+        {
+            if (catalog == null || string.IsNullOrEmpty(id)) return 0;
+            MMDevice d = null;
+            try
+            {
+                d = catalog.Open(id);
+                return d == null ? 0 : d.AudioClient.MixFormat.Channels;
+            }
+            catch { return 0; }
+            finally { if (d != null) { try { d.Dispose(); } catch { } } }
+        }
+
+        /// <summary>本次运行打开的全部输出端点 (= 路由模型里启用路的设备)。</summary>
+        void FillRunSinkIds()
+        {
+            runSinkIds.Clear();
+            SyncLanesFromCards();
+            for (int i = 0; i < lanes.Count; i++)
+            {
+                string id = lanes[i].DeviceId;
+                if (!string.IsNullOrEmpty(id) && !runSinkIds.Contains(id)) runSinkIds.Add(id);
+            }
+        }
+
+        /// <summary>
+        /// 运行中热替换路由矩阵 (声道抽头/静音/音量增益): 重新 Compile 并逐路原子换引用,
+        /// 不停链路、不断音。
+        /// <para>设备与延迟是**链路级**参数 (每台设备一条 WasapiOut + 一条延迟线), 改它们只能
+        /// 重新开始 —— 这里比对链路形状后给出明确提示, 而不是悄悄换一半。</para>
+        /// </summary>
+        void ApplyRoutingHot(string reason, bool quiet = false)
+        {
+            var eng = engine;
+            if (!running || eng == null) return;
+            int srcCh = 0;
+            try { srcCh = eng.CaptureChannels; } catch { }
+
+            var model = BuildModelFromLanes(srcCh, false);
+            if (runModel != null && !SameLinkShape(runModel, model))
+            {
+                Log("[提示] 设备或延迟已改动，需「停止 → 开始」才会生效（当前链路保持不变）");
+                return;
+            }
+
+            bool ok = false;
+            try { ok = eng.SetRouting(model); }
+            catch (Exception ex) { Log("[错误] 路由热更新失败: " + ex.Message); }
+
+            if (ok)
+            {
+                runModel = model;
+                if (!quiet)
+                    Log("[设置] 路由已热更新 (" + reason + "): " + model.DescribeConfig() +
+                        (srcCh > 0 ? " / 源 " + RoutingModel.DescribeSource(srcCh) : ""));
+            }
+            else if (!quiet)
+            {
+                Log("[提示] 路由热更新未生效（与当前链路的声道数不匹配），需停止后重新开始");
+            }
+        }
+
+        /// <summary>链路形状是否一致: 路数、设备、每路声道数、延迟。</summary>
+        static bool SameLinkShape(RoutingModel a, RoutingModel b)
+        {
+            var sa = a.EnabledSinks();
+            var sb = b.EnabledSinks();
+            if (sa.Count != sb.Count) return false;
+            for (int i = 0; i < sa.Count; i++)
+            {
+                if (sa[i].DeviceId != sb[i].DeviceId) return false;
+                if (sa[i].OutChannels != sb[i].OutChannels) return false;
+                if (sa[i].DelayMs != sb[i].DelayMs) return false;
+            }
+            return true;
+        }
+
         // 手动启动与自动重建共用同一条启动链 (差别只在失败处理: 自动重建不弹框、不自动回滚)
-        void LaunchEngine(string leftId, string rightId, string expectCap, StartParams p, bool autoRestart)
+        void LaunchEngine(string expectCap, StartParams p, bool autoRestart)
         {
             startAbort = false;
             startFinished.Reset();
@@ -1926,8 +2067,9 @@ namespace StereoSplitter
                 try
                 {
                     if (startAbort) throw new OperationCanceledException("启动已取消");
-                    eng = new AudioEngine(leftId, rightId, Log, p.Mode, p.FixedPpm);
-                    AudioEngine.StartOutcome outcome = eng.Start(p.Gain, p.Master, p.PreMs, p.OutMs, p.DlyL, p.DlyR,
+                    // 设备全部写在 p.Model 里 (每台设备一路 sink), 引擎不再单独接收左右 ID
+                    eng = new AudioEngine(Log, p.Mode, p.FixedPpm);
+                    AudioEngine.StartOutcome outcome = eng.Start(p.Model, p.Gain, p.Master, p.PreMs, p.OutMs,
                         delegate { return startAbort; }, expectCap);
 
                     if (exiting || IsDisposed || !IsHandleCreated)
@@ -1942,15 +2084,17 @@ namespace StereoSplitter
                         // 订阅放在赋值之后: 处理函数会按引用校验"还是不是当前引擎", 防止旧引擎的迟到事件触发二次重建
                         eng.Stalled += OnEngineStalledFromAudio;
                         runCaptureId = eng.CaptureId;
-                        runLeftId = leftId;
-                        runRightId = rightId;
+                        runModel = p.Model;
                         ResetWatchdog();
                         runSinceTick = Environment.TickCount;
                         SetAppState(AppState.Running);
                         ApplyVolumes();
                         Log("[启动] 端点绑定: 主=" + DevInfo(bindings.Master) + " / 左=" + DevInfo(bindings.Left) + " / 右=" + DevInfo(bindings.Right));
-                        Log("[启动] 分流已启动 (增益 " + p.GainPct + "%)" +
+                        Log("[启动] 分流已启动 " + eng.SinkCount + " 路 (增益 " + p.GainPct + "%)" +
                             (outcome == AudioEngine.StartOutcome.NoAudioYet ? "，等待音频数据" : ""));
+                        // 捕获格式只有启动后才知道: 拿到真实声道数就重建一次模型并热替换矩阵,
+                        // 否则"按立体声建抽头"的假设会让真 5.1 源的中置/低音/环绕全部取错
+                        ApplyRoutingHot("启动校源");
                         if (autoRestart)
                         {
                             restarting = false;
@@ -1996,7 +2140,7 @@ namespace StereoSplitter
                 Log("[停止] 分流已停止。");
             }
             UnbindAllVolumeSync();
-            runCaptureId = runLeftId = runRightId = null;
+            ClearRunState();
             expectCaptureId = null;
             warnedLostIds.Clear();
             autoRestartCount = 0;
@@ -2022,7 +2166,7 @@ namespace StereoSplitter
             TearDownEngine();
             SetAppState(AppState.Failed);
             UnbindAllVolumeSync();
-            runCaptureId = runLeftId = runRightId = null;
+            ClearRunState();
             expectCaptureId = null;
             warnedLostIds.Clear();
             autoRestartCount = 0;
@@ -2035,21 +2179,40 @@ namespace StereoSplitter
 
         void ResetWatchdog()
         {
-            watchRenderedL = -1;
-            watchRenderedR = -1;
-            watchRenderedTickL = Environment.TickCount;
-            watchRenderedTickR = Environment.TickCount;
-            watchImbalanceTickL = 0;
-            watchImbalanceTickR = 0;
+            watchRendered = new long[0];
+            watchRenderedTick = new int[0];
+            watchImbalanceTick = new int[0];
             captureIdleLogged = false;
             captureIdleSince = 0;
             lastCaptureCheckTick = 0;
         }
 
+        /// <summary>看门狗数组按当前路数扩容 (-1 = "还没取到第一个读数")。</summary>
+        void EnsureWatchArrays(int n)
+        {
+            if (watchRendered.Length == n) return;
+            watchRendered = new long[n];
+            watchRenderedTick = new int[n];
+            watchImbalanceTick = new int[n];
+            for (int i = 0; i < n; i++) watchRendered[i] = -1;
+        }
+
+        static string SinkLabel(AudioEngine eng, int i)
+        {
+            var rt = eng == null ? null : eng.SinkAt(i);
+            if (rt != null && rt.Spec != null && !string.IsNullOrEmpty(rt.Spec.Label)) return rt.Spec.Label;
+            return "第" + (i + 1) + "路";
+        }
+
+        static string PpmText(double v)
+        {
+            return v.ToString("+0;-0;0") + "ppm";
+        }
+
         /// <summary>
         /// 每 2 秒判定一次链路活性。核心判据是"输出线程有没有被调用"(RenderedSamples 是否增长),
         /// 而不是水位高低 —— 源静音时水位本来就该是 0, 用水位判会天天误报。
-        /// 左右分开判定: 总和会把单侧停摆掩盖掉 (另一侧照常增长)。
+        /// 逐路判定: 总和会把某一路停摆掩盖掉 (其它路照常增长)。
         /// </summary>
         void WatchdogTick()
         {
@@ -2061,53 +2224,41 @@ namespace StereoSplitter
             if (autoRestartCount > 0 && runSinceTick != 0 && unchecked(now - runSinceTick) >= 300000)
                 autoRestartCount = 0;
 
-            // 10 秒不被调用 → 该侧输出端已停摆 (设备休眠/被独占/驱动挂起且没抛事件)
-            long rl = eng.LeftRenderedSamples;
-            if (rl != watchRenderedL) { watchRenderedL = rl; watchRenderedTickL = now; }
-            else if (watchRenderedTickL != 0 && unchecked(now - watchRenderedTickL) >= WatchdogFreezeMs)
+            // 10 秒不被调用 → 该路输出端已停摆 (设备休眠/被独占/驱动挂起且没抛事件)
+            int sinks = eng.SinkCount;
+            EnsureWatchArrays(sinks);
+            for (int i = 0; i < sinks; i++)
             {
-                OnEngineStalled("输出左声道线程已 " + (WatchdogFreezeMs / 1000) +
-                    " 秒未取数据（水位 " + eng.LeftBufferMs + "ms）—— 单只音箱休眠/被独占的典型表现");
-                return;
-            }
-            long rr = eng.RightRenderedSamples;
-            if (rr != watchRenderedR) { watchRenderedR = rr; watchRenderedTickR = now; }
-            else if (watchRenderedTickR != 0 && unchecked(now - watchRenderedTickR) >= WatchdogFreezeMs)
-            {
-                OnEngineStalled("输出右声道线程已 " + (WatchdogFreezeMs / 1000) +
-                    " 秒未取数据（水位 " + eng.RightBufferMs + "ms）—— 单只音箱休眠/被独占的典型表现");
-                return;
-            }
-
-            // 水位失衡检测: 独占模式下设备实际采样率可能与标称偏差 10%+,
-            // 远超校正环 ±0.5% 修正范围 → 一侧水位持续堆积到满、另一侧被 shared ratio 加速抽空。
-            // 此时 RenderedSamples 仍在涨 (Read 还被调用, 只是消费速率不匹配), 停摆检测抓不到。
-            // 判据: 一侧调节水位 >300ms (正常 ≤142ms) 且校正触顶 (|ppm|>4900), 持续 10 秒。
-            int ppm = eng.SharedRatioPpm;
-            bool clamped = ppm > 4900 || ppm < -4900;
-            int regL = eng.LeftRegulatedMs, regR = eng.RightRegulatedMs;
-            int imbalancedSide = 0;   // 0=无 1=左 2=右
-            if (clamped && regL > ImbalanceThresholdMs) imbalancedSide = 1;
-            else if (clamped && regR > ImbalanceThresholdMs) imbalancedSide = 2;
-
-            if (imbalancedSide != 0)
-            {
-                int tickKey = imbalancedSide == 1 ? watchImbalanceTickL : watchImbalanceTickR;
-                if (tickKey == 0)
+                var rt = eng.SinkAt(i);
+                if (rt == null || rt.Provider == null) continue;
+                long r = rt.Provider.RenderedSamples;
+                if (r != watchRendered[i]) { watchRendered[i] = r; watchRenderedTick[i] = now; }
+                else if (watchRenderedTick[i] != 0 && unchecked(now - watchRenderedTick[i]) >= WatchdogFreezeMs)
                 {
-                    if (imbalancedSide == 1) watchImbalanceTickL = now;
-                    else watchImbalanceTickR = now;
-                }
-                else if (unchecked(now - tickKey) >= WatchdogImbalanceMs)
-                {
-                    string side = imbalancedSide == 1 ? "左" : "右";
-                    int reg = imbalancedSide == 1 ? regL : regR;
-                    OnEngineStalled(side + "声道水位持续堆积至 " + reg + "ms 且校正已触顶 " + ppm +
-                        "ppm 超过 10 秒——设备消费速率严重低于捕获速率，校正环无法补偿");
+                    OnEngineStalled("输出「" + SinkLabel(eng, i) + "」线程已 " + (WatchdogFreezeMs / 1000) +
+                        " 秒未取数据（水位 " + rt.Provider.BufferedMs + "ms）—— 该设备休眠/被独占的典型表现");
                     return;
                 }
             }
-            else { watchImbalanceTickL = 0; watchImbalanceTickR = 0; }
+
+            // 水位失衡检测: 设备实际采样率与标称偏差 10%+ 时, 远超校正环 ±0.5% 修正范围 →
+            // 该路水位持续堆积到满。此时 RenderedSamples 仍在涨 (Read 还被调用, 只是消费速率
+            // 不匹配), 停摆检测抓不到。判据: 调节水位 >300ms (正常 ≤142ms) 且该路校正触顶
+            // (|ppm|>4900), 持续 10 秒。逐路判定: 总和会互相掩盖。
+            for (int i = 0; i < sinks; i++)
+            {
+                var rt = eng.SinkAt(i);
+                if (rt == null || rt.Provider == null) continue;
+                double ppm = rt.Provider.RatioPpm;
+                int reg = rt.Provider.RegulatedMs;
+                bool clamped = ppm > 4900 || ppm < -4900;
+                if (!clamped || reg <= ImbalanceThresholdMs) { watchImbalanceTick[i] = 0; continue; }
+                if (watchImbalanceTick[i] == 0) { watchImbalanceTick[i] = now; continue; }
+                if (unchecked(now - watchImbalanceTick[i]) < WatchdogImbalanceMs) continue;
+                OnEngineStalled("「" + SinkLabel(eng, i) + "」水位持续堆积至 " + reg + "ms 且校正已触顶 " +
+                    PpmText(ppm) + " 超过 10 秒——该设备消费速率严重低于捕获速率，校正环无法补偿");
+                return;
+            }
 
             int capTick = eng.LastCaptureTick;
             // 1.5s 阈值: 播放时回调约每 10ms 一次, 1.5s 无回调必为停流; 原 3s 会漏掉 2~3 秒的暂停
@@ -2179,17 +2330,29 @@ namespace StereoSplitter
         void RestartEngine()
         {
             if (exiting || IsDisposed) return;
-            string leftId = runLeftId, rightId = runRightId, capId = runCaptureId;
+            string capId = runCaptureId;
 
-            if (string.IsNullOrEmpty(leftId) || string.IsNullOrEmpty(rightId) || string.IsNullOrEmpty(capId))
+            if (string.IsNullOrEmpty(capId) || runSinkIds.Count == 0)
             {
                 Log("[错误] 缺少运行期设备信息，无法自动重建；请手动重新开始");
                 GiveUp();
                 return;
             }
-            if (FindMissingEndpoint(leftId, rightId) != null)
+            string missing = FindMissingEndpoint(runSinkIds.ToArray());
+            if (missing != null)
             {
-                Log("[错误] 左右目标设备已不可用，放弃自动重建；请刷新设备后重新开始");
+                Log("[错误] 输出设备已不可用 (" + FindNameById(missing) + ")，放弃自动重建；请刷新设备后重新开始");
+                GiveUp();
+                return;
+            }
+
+            // 按当前 UI 重新翻译 (运行期卡片的结构控件是锁定的, 内容与上次启动一致;
+            // 音量/静音可能被调过, 重建时一并带过去)
+            StartParams p;
+            try { p = SnapshotStartParams(); }
+            catch (Exception ex)
+            {
+                Log("[错误] 重建参数生成失败: " + ex.Message);
                 GiveUp();
                 return;
             }
@@ -2197,7 +2360,7 @@ namespace StereoSplitter
             restarting = true;
             TearDownEngine();                 // 起播水位/缓冲全部重来, 与首次启动一致
             SetAppState(AppState.Starting);   // 期间 running=false → 看门狗自然停手
-            LaunchEngine(leftId, rightId, capId, SnapshotStartParams(), true);
+            LaunchEngine(capId, p, true);
         }
 
         // 一次枚举校验多个端点是否仍活动; 返回第一个缺失的 ID, 全部在位返回 null。
@@ -2256,8 +2419,17 @@ namespace StereoSplitter
         void ApplyVolumes()
         {
             if (engine == null) return;
-            // 左右音量/静音走设备端点(已双向绑定)，主音量走采样层
+            // 左右音量/静音走设备端点(已双向绑定)，主音量走采样层；
+            // 其余各路音量已乘进混音矩阵 (LaneRouting 的绑定增益), 这里不用管
             engine.SetMaster(CurrentMaster());
+        }
+
+        /// <summary>清空"本次运行"的设备/模型记录 (停止、失败、放弃三条路径共用)。</summary>
+        void ClearRunState()
+        {
+            runCaptureId = null;
+            runSinkIds.Clear();
+            runModel = null;
         }
 
         void MainForm_FormClosing(object sender, FormClosingEventArgs e)

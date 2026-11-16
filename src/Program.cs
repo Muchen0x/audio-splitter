@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -24,9 +24,34 @@ namespace StereoSplitter
         // ASFW_ANY: 把"允许抢前台"的许可发给本会话里的任意进程
         const int ASFW_ANY = -1;
 
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        static extern bool AttachConsole(int processId);
+        const int ATTACH_PARENT_PROCESS = -1;
+
         [STAThread]
-        static void Main()
+        static void Main(string[] argv)
         {
+            // 路由内核自检 (不打开任何音频端点, 只跑矩阵断言):
+            //   SplitterGUI.exe --selftest  → 结果写 log/selftest-routing.txt, 退出码 0/1
+            if (argv != null && argv.Length > 0 &&
+                string.Equals(argv[0], "--selftest", StringComparison.OrdinalIgnoreCase))
+            {
+                try { AttachConsole(ATTACH_PARENT_PROCESS); } catch { }   // 让命令行里能看到输出
+                int code;
+                try
+                {
+                    code = RoutingSelfTest.Run(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log"));
+                }
+                catch (Exception ex)
+                {
+                    try { Console.WriteLine("自检异常: " + ex); } catch { }
+                    code = 2;
+                }
+                try { Console.WriteLine(code == 0 ? "自检通过" : "自检失败, 详见 log/selftest-routing.txt"); } catch { }
+                Environment.ExitCode = code;
+                return;
+            }
+
             // 单文件发布: 同目录无 NAudio dll 时从嵌入资源加载
             // (同目录有 dll 时 .NET probing 优先, 开发环境行为不变)
             AppDomain.CurrentDomain.AssemblyResolve += (sender, args) =>
