@@ -1,0 +1,218 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.Reflection;
+using System.Threading;
+using System.Windows.Forms;
+using NAudio.Wave;
+using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi.Interfaces;
+using StereoSplitter.Devices;
+
+namespace StereoSplitter
+{
+    partial class MainForm
+    {
+        // ==================== 设置持久化 (exe 同目录 SplitterGUI.ini) ====================
+
+        string IniPath
+        {
+            get { return Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "SplitterGUI.ini"); }
+        }
+        Infrastructure.SettingsStore settings;
+
+        void LoadSettings()
+        {
+            settings.Load();
+            // ini 损坏/被占用时 Load 会静默回默认值: 这里留痕, 否则用户看到的是"设置全丢了"却查不到原因
+            if (settings.LastLoadError != null)
+                Log("[警告] 配置文件读取失败(" + settings.LastLoadError + ")，本次以默认值启动: " + IniPath);
+
+            chkMinimizeToTray.Checked = GetInt("MinimizeToTray", 0) != 0;
+            cmbLatency.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("LatencyProfile", 0)));
+            int wi = GetInt("WaterIntervalSec", 30);
+            if (wi != 0) wi = Math.Max(1, Math.Min(3600, wi)); // 0=关闭; 其余 1~3600 秒原样用
+            nudWaterInterval.Value = wi;
+
+            int mode = Math.Max(0, Math.Min(2, GetInt("DriftMode", 1)));
+            chkDrift.Checked = mode != 0;
+            driftMode = mode;
+            fixedPpm = Math.Max(-5000, Math.Min(5000, GetInt("FixedRatioPpm", 600)));
+
+            int gain = Math.Max(0, Math.Min(300, GetInt("Gain", 100)));
+            volGain.Value = gain;
+            lblVolGain.Text = gain + "%";
+            pendingGain = gain / 100f;
+
+            // 输出卡片 (规格 + 各路输出)
+            LoadLanes();
+        }
+
+
+        static string StrOrDefault(string s, string def)
+        {
+            return string.IsNullOrEmpty(s) ? def : s;
+        }
+
+        int GetInt(string key, int def)
+        {
+            return settings.GetInt(key, def);
+        }
+
+        string GetStr(string key)
+        {
+            return settings.GetStr(key);
+        }
+
+        string DeviceIdAt(int idx)
+        {
+            return catalog.IdAt(idx);
+        }
+
+        void SaveSettings()
+        {
+            // 初始化阶段(读ini/Bind回读/覆盖回写)不落盘, 防止把ini冲成端点回读值
+            if (loadingSettings) return;
+            // 字典立即同步: RefreshDevices 等按字典恢复选中, 不能等写盘
+            SyncSettingsDict();
+            // 文件写盘 debounce 300ms: 拖动滑条时避免每次移动都写盘
+            if (saveDebounce != null)
+            {
+                saveDebounce.Stop();
+                saveDebounce.Start();
+            }
+        }
+
+        void FlushSettings()
+        {
+            if (loadingSettings) return;
+            SyncSettingsDict();
+
+            string err;
+            if (settings.WriteAll(out err))
+            {
+                lastSaveWarnTick = 0;      // 恢复正常后允许下次重新告警
+                return;
+            }
+
+            // 失败限流: 60 秒最多一条, 避免拖动滑条时刷屏
+            int now = Environment.TickCount;
+            if (lastSaveWarnTick != 0 && unchecked(now - lastSaveWarnTick) < 60000) return;
+            lastSaveWarnTick = now;
+            Log("[警告] 设置写入失败: " + err + "；本次运行的改动可能不会保留 (" + IniPath + ")");
+        }
+
+        void SyncSettingsDict()
+        {
+            try
+            {
+                settings.Put("MinimizeToTray", chkMinimizeToTray.Checked ? "1" : "0");
+                settings.Put("LatencyProfile", Math.Max(0, cmbLatency.SelectedIndex).ToString());
+                settings.Put("Spec", cmbSpec.SelectedIndex < 0 ? "1" : cmbSpec.SelectedIndex.ToString());
+                SyncLanesFromCards();
+                settings.RemovePrefix("Out");   // 先清干净, 删过的卡/行不留孤儿键
+                settings.Put("OutCount", models.Count.ToString());
+                for (int li = 0; li < models.Count && li < 16; li++)
+                {
+                    OutputCardModel m = models[li];
+                    string pk = "Out" + li + ".";
+                    // Channel 仍是"卡片声道": 单声道写声道键, 多声道写哨兵 (旧版本读到哨兵会退回第一行)
+                    settings.Put(pk + "Channel",
+                        m.Multi ? LaneRouting.MultiKey : (m.Slots.Count > 0 ? m.Slots[0].ChannelKey : "FL"));
+                    settings.Put(pk + "DeviceId", m.DeviceId ?? "");
+                    settings.Put(pk + "DelayMs", m.DelayMs.ToString());
+                    settings.Put(pk + "Volume", m.Volume.ToString());
+                    settings.Put(pk + "Mute", m.Mute ? "1" : "0");
+                    settings.Put(pk + "Multi", m.Multi ? "1" : "0");
+                    settings.Put(pk + "ChCount", m.Slots.Count.ToString());
+                    for (int s = 0; s < m.Slots.Count && s < 8; s++)
+                    {
+                        string ck = pk + "Ch" + s + ".";
+                        settings.Put(ck + "Channel", m.Slots[s].ChannelKey ?? "");
+                        settings.Put(ck + "Volume", m.Slots[s].Volume.ToString());
+                    }
+                }
+                settings.Put("WaterIntervalSec", ((int)nudWaterInterval.Value).ToString());
+                settings.Put("Gain", volGain.Value.ToString());
+                // 兼容键: 左右 = FL/FR 输出卡片的设备 (旧 ini 与外部工具仍按这两个键读)
+                settings.Put("DeviceLeft", LeftDeviceId() ?? "");
+                settings.Put("DeviceRight", RightDeviceId() ?? "");
+                settings.Put("DeviceDefault", DeviceIdAt(cmbDefault.SelectedIndex));
+                OutputCardControl vcl = LeftCard(), vcr = RightCard();
+                settings.Put("VolumeLeft", (vcl != null ? vcl.volTrack.Value : 100).ToString());
+                settings.Put("VolumeRight", (vcr != null ? vcr.volTrack.Value : 100).ToString());
+                settings.Put("VolumeMaster", volMaster.Value.ToString());
+                settings.Put("MuteLeft", (vcl != null && vcl.chkMute.Checked) ? "1" : "0");
+                settings.Put("MuteRight", (vcr != null && vcr.chkMute.Checked) ? "1" : "0");
+                settings.Put("MuteMaster", chkMuteMaster.Checked ? "1" : "0");
+                settings.Put("MuteCapture", chkMuteCapture.Checked ? "1" : "0");
+                settings.Put("DriftMode", driftMode.ToString());
+                settings.Put("FixedRatioPpm", fixedPpm.ToString());
+            }
+            catch (Exception ex)
+            {
+                // 控件读取失败会让这次保存缺键: 留痕。每会话只提示一次, 防止持续异常时刷屏。
+                if (!syncDictWarned)
+                {
+                    syncDictWarned = true;
+                    Log("[警告] 保存设置时读取控件状态失败: " + ex.Message + "（本次保存可能缺键）");
+                }
+            }
+        }
+
+        void RestoreDeviceSelection(string key, NoWheelComboBox combo, string label)
+        {
+            string id = GetStr(key);
+            if (string.IsNullOrEmpty(id)) return;
+            int idx = catalog.IndexOf(id);
+            if (idx >= 0) combo.SelectedIndex = idx;
+            else Log("[初始化] 未找到已保存的" + label + "设备，使用默认选择");
+        }
+
+        // ini 音量在启动时由 WriteUIValuesToDevice 统一写入端点 (Load 期尚未绑定端点, 此处只回填 UI)
+        void ApplyIniVolumeOverrides()
+        {
+            bool any = false;
+            volSyncing = true;
+            try
+            {
+                if (settings.Has("VolumeMaster"))
+                {
+                    int v = Math.Max(0, Math.Min(100, GetInt("VolumeMaster", 100)));
+                    volMaster.Value = v;
+                    lblVolMaster.Text = v + "%";
+                    any = true;
+                }
+                if (settings.Has("MuteMaster"))
+                {
+                    bool m = GetInt("MuteMaster", 0) != 0;
+                    chkMuteMaster.Checked = m;
+                    any = true;
+                }
+                if (settings.Has("MuteCapture"))
+                {
+                    bool m = GetInt("MuteCapture", 0) != 0;
+                    chkMuteCapture.Checked = m;
+                    any = true;
+                }
+            }
+            finally
+            {
+                volSyncing = false;
+            }
+
+            // 存量设置音量为0 → 补勾静音 (与拖到0自动静音规则一致)
+            if (volMaster.Value == 0) chkMuteMaster.Checked = true;
+            for (int i = 0; i < models.Count; i++)
+                if (models[i].Volume == 0) models[i].Mute = true;
+
+            if (any)
+                Log("[初始化] 设置已加载: 主=" + volMaster.Value + "%/" + (chkMuteMaster.Checked ? "静音" : "开") +
+                    " 输出 " + models.Count + " 张卡片 (" + LaneSummary() + ")" +
+                    " 增益=" + volGain.Value + "%" +
+                    (chkMuteCapture.Checked ? " 捕获消音=开" : ""));
+        }
+    }
+}
