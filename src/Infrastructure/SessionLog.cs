@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 
 namespace StereoSplitter.Infrastructure
 {
@@ -13,11 +14,15 @@ namespace StereoSplitter.Infrastructure
     /// <summary>
     /// 会话日志文件: 每次启动一个 session 文件, 行格式 HH:mm:ss.fff [LEVEL] 内容。
     /// 只负责落盘与清理, UI 展示由调用方处理 (原实现把两件事混在 MainForm.Log 里)。
+    /// 刷盘策略: AutoFlush 关闭, INFO 行由 2s 定时器批量落盘 (P2-8);
+    /// ERROR/WARNING 立即落盘 —— 崩溃前的排障信息不允许丢。
     /// </summary>
     sealed class SessionLog : IDisposable
     {
         StreamWriter writer;
         readonly string filePath;
+        readonly object writeLock = new object();
+        Timer flushTimer;
 
         public string FilePath
         {
@@ -30,16 +35,35 @@ namespace StereoSplitter.Infrastructure
             PruneOldLogs(directory);
             filePath = Path.Combine(directory, "session_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".log");
             writer = new StreamWriter(filePath, true);
-            writer.AutoFlush = true;
+            writer.AutoFlush = false;
+            // 批量刷盘: Info 行最多滞后 2s 落盘; 定时器回调与本类所有写路径共用 writeLock
+            flushTimer = new Timer(delegate { FlushTick(); }, null, 2000, 2000);
         }
 
-        /// <summary>按调用方给的时间戳写一行 (UI 与文件共用同一个时间戳, 不各取一次 Now)。</summary>
-        public void Write(string timestamp, LogLevel level, string message)
+        void FlushTick()
         {
-            if (writer == null) return;
             try
             {
-                writer.WriteLine(timestamp + " [" + Tag(level) + "] " + message);
+                lock (writeLock)
+                {
+                    if (writer != null) writer.Flush();
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>按调用方给的时间戳写一行 (UI 与文件共用同一个时间戳, 不各取一次 Now)。
+        /// Write 会被多线程调用 (UI 线程 marshal 之外, 日志框未建/已释放时治理线程直写), 全程持锁。</summary>
+        public void Write(string timestamp, LogLevel level, string message)
+        {
+            try
+            {
+                lock (writeLock)
+                {
+                    if (writer == null) return;
+                    writer.WriteLine(timestamp + " [" + Tag(level) + "] " + message);
+                    if (level != LogLevel.Info) writer.Flush(); // 错误/警告立即落盘
+                }
             }
             catch { }
         }
@@ -54,12 +78,15 @@ namespace StereoSplitter.Infrastructure
         {
             try
             {
-                if (writer != null)
+                lock (writeLock)
                 {
-                    writer.Flush();
-                    writer.BaseStream.SetLength(0);
+                    if (writer != null)
+                    {
+                        writer.Flush();
+                        writer.BaseStream.SetLength(0);
+                    }
                 }
-                else if (File.Exists(filePath))
+                if (writer == null && File.Exists(filePath))
                 {
                     File.WriteAllText(filePath, "");
                 }
@@ -110,9 +137,22 @@ namespace StereoSplitter.Infrastructure
 
         public void Dispose()
         {
+            // 先停定时器再关流: 之后 tick 里 writer 判空直接返回, 无并发窗口
+            if (flushTimer != null)
+            {
+                try { flushTimer.Dispose(); } catch { }
+                flushTimer = null;
+            }
             if (writer == null) return;
-            try { writer.Dispose(); } catch { }
-            writer = null;
+            try
+            {
+                lock (writeLock)
+                {
+                    writer.Dispose(); // StreamWriter.Dispose 内部先 Flush, 收尾日志不丢
+                    writer = null;
+                }
+            }
+            catch { }
         }
     }
 }
