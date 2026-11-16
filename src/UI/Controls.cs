@@ -13,28 +13,72 @@ using StereoSplitter.Devices;
 
 namespace StereoSplitter
 {
+    /// <summary>
+    /// 滚轮路由: 下拉框/数字框自己不吃滚轮, 而是把消息转给外层的 AutoScroll 容器。
+    /// <para>以前这里是直接 return —— 值确实没被改, 但滚动链也在控件上断了: 鼠标滑过卡片上的
+    /// 下拉或延迟框时, 输出卡片列表就滚不动, 得先把鼠标挪到空白处。这里改成转发,
+    /// 控件自身依旧不改值, 滚动却照常发生。</para>
+    /// </summary>
+    static class WheelRouting
+    {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        public const int WM_MOUSEWHEEL = 0x020A;
+
+        /// <summary>把滚轮转给最近的「AutoScroll 且能滚」的容器; 找不到就交给直接父窗口继续冒泡。</summary>
+        public static void Forward(Control self, Message m)
+        {
+            Control p = self.Parent;
+            Control nearest = null;
+            while (p != null)
+            {
+                if (p.IsHandleCreated)
+                {
+                    ScrollableControl sc = p as ScrollableControl;
+                    if (sc != null && sc.AutoScroll && sc.VerticalScroll.Visible)
+                    {
+                        SendMessage(p.Handle, m.Msg, m.WParam, m.LParam);
+                        return;
+                    }
+                    if (nearest == null) nearest = p;
+                }
+                p = p.Parent;
+            }
+            if (nearest != null && nearest.IsHandleCreated)
+                SendMessage(nearest.Handle, m.Msg, m.WParam, m.LParam);   // 交给父窗口按默认规则冒泡
+        }
+    }
+
     class NoWheelComboBox : ComboBox
     {
         protected override void WndProc(ref Message m)
         {
-            const int WM_MOUSEWHEEL = 0x020A;
-            if (m.Msg == WM_MOUSEWHEEL) return;
+            if (m.Msg == WheelRouting.WM_MOUSEWHEEL)
+            {
+                // 下拉展开时滚轮归列表自己(滚动选项), 否则转给外层列表
+                if (!DroppedDown) WheelRouting.Forward(this, m);
+                return;
+            }
             base.WndProc(ref m);
         }
     }
 
-    // 鼠标滚轮不改值的 NumericUpDown (只允许手动输入/上下按钮)
+    // 鼠标滚轮不改值的 NumericUpDown (只允许手动输入/上下按钮, 每次 ±Increment)
     class NoWheelNumeric : NumericUpDown
     {
         protected override void OnMouseWheel(MouseEventArgs e)
         {
-            // 不调 base: 滚轮对数字框一律无效
+            // 不调 base: 滚轮对数字框一律无效 (误滚一下就把延迟拖偏, 很难发现)
         }
 
         protected override void WndProc(ref Message m)
         {
-            const int WM_MOUSEWHEEL = 0x020A;
-            if (m.Msg == WM_MOUSEWHEEL) return;   // 焦点在数字框里时也吃掉, 免得改值
+            if (m.Msg == WheelRouting.WM_MOUSEWHEEL)
+            {
+                WheelRouting.Forward(this, m);
+                return;
+            }
             base.WndProc(ref m);
         }
     }

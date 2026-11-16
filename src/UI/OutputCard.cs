@@ -129,12 +129,14 @@ namespace StereoSplitter
             };
             cmbChannel.DrawItem += DrawChannelItem;
             lblDelay = new Label { Text = "延迟", AutoSize = true };
-            // NoWheelNumeric: 光标停在上面滚轮不会改延迟 (误滚一下就把声场拖偏, 很难发现)
+            // NoWheelNumeric: 光标停在上面滚轮不会改延迟 (误滚一下就把声场拖偏, 很难发现),
+            // 但滚轮会转给外层列表照常滚动; 上下按钮 / ↑↓ 每次 ±10ms
             nudDelay = new NoWheelNumeric
             {
                 Width = 52,
                 Minimum = 0,
-                Maximum = 2000
+                Maximum = 2000,
+                Increment = 10
             };
             lblMs = new Label { Text = "ms", AutoSize = true };
             btnRemove = new Button
@@ -246,7 +248,7 @@ namespace StereoSplitter
             var tip = new ToolTip();
             tip.SetToolTip(cmbDevice, "这张卡片输出到哪台设备。\n同一台设备只会有一张卡片: 两张卡片选到同一设备会自动合并成多声道卡片。\n运行中不可改（换设备要重建链路），需先停止分流。");
             tip.SetToolTip(cmbChannel, "这张卡片输出的声道。\n选「多声道」= 该设备的每个物理声道各占一行, 行内可分别选声道、分别调音量。\n角标: 规格行右侧的数字 = 有几个物理声道接到该声道。\n运行中可改（只换混音矩阵）；但「多声道…」形态要改设备物理声道数，运行中不可切。");
-            tip.SetToolTip(nudDelay, "这张卡片的延迟补偿 (毫秒)。多台设备距离不同时, 给近的加延迟对齐声场。\n延迟是设备级: 合并后取原卡片里的最小值。\n运行中不可改（延迟线在启动时固定），需先停止分流。");
+            tip.SetToolTip(nudDelay, "这张卡片的延迟补偿 (毫秒)。多台设备距离不同时, 给近的加延迟对齐声场。\n上下按钮 / ↑↓ 每次 ±10ms, 也可直接输入数字。\n滚轮在这里不生效(避免误滚把声场拖偏), 但会照常滚动输出卡片列表。\n延迟是设备级: 合并后取原卡片里的最小值; 运行中不可改。");
             tip.SetToolTip(volTrack, "主音量。\n单声道卡片: 写该设备的端点音量(与系统音量条双向同步, 停止时还原)。\n多声道卡片: 同样是设备端点音量; 各声道的微调在下方各行。\n双击百分比可复位 100%。\n运行中可调。");
             tip.SetToolTip(btnRemove, "移除这张输出卡片 (整台设备)。\n运行中不可移除（会改变链路），需先停止分流。");
         }
