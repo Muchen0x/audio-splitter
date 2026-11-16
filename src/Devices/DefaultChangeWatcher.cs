@@ -19,6 +19,12 @@ namespace StereoSplitter
         readonly Action<DataFlow, Role, string> onDefaultChanged;
         readonly Action<string> onDeviceLost;
 
+        // 回调线程上不能直接记日志 (UI/SessionLog 都不保证线程安全), 异常只做计数,
+        // 由主窗体看门狗 (UI 线程) 定期读走并落日志。见 MainForm.WatchdogTick 开头。
+        long callbackErrors;
+        public long CallbackErrors { get { return Interlocked.Read(ref callbackErrors); } }
+        public void ResetCallbackErrors() { Interlocked.Exchange(ref callbackErrors, 0); }
+
         public DefaultChangeWatcher(Action<DataFlow, Role, string> cb, Action<string> deviceLost)
         {
             onDefaultChanged = cb;
@@ -27,7 +33,8 @@ namespace StereoSplitter
 
         public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
         {
-            try { onDefaultChanged(flow, role, defaultDeviceId); } catch { }
+            try { onDefaultChanged(flow, role, defaultDeviceId); }
+            catch { Interlocked.Increment(ref callbackErrors); }
         }
 
         public void OnDeviceStateChanged(string deviceId, DeviceState newState)
@@ -41,7 +48,8 @@ namespace StereoSplitter
 
         void NotifyLost(string deviceId)
         {
-            try { if (onDeviceLost != null) onDeviceLost(deviceId); } catch { }
+            try { if (onDeviceLost != null) onDeviceLost(deviceId); }
+            catch { Interlocked.Increment(ref callbackErrors); }
         }
     }
 }

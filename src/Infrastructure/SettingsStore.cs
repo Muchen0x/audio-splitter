@@ -23,6 +23,9 @@ namespace StereoSplitter.Infrastructure
             get { return path; }
         }
 
+        /// <summary>上次 Load() 失败的原因 (null = 正常)。ini 损坏/被占用时静默回默认值, 靠这个字段留痕。</summary>
+        public string LastLoadError;
+
         public SettingsStore(string path)
         {
             this.path = path;
@@ -32,6 +35,7 @@ namespace StereoSplitter.Infrastructure
         {
             values.Clear();
             order.Clear();
+            LastLoadError = null;
             try
             {
                 if (!File.Exists(path)) return;
@@ -44,7 +48,7 @@ namespace StereoSplitter.Infrastructure
                     Put(key, line.Substring(i + 1).Trim());
                 }
             }
-            catch { }
+            catch (Exception ex) { LastLoadError = ex.GetType().Name + ": " + ex.Message; }
         }
 
         public bool Has(string key)

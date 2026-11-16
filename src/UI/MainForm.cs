@@ -25,6 +25,7 @@ namespace StereoSplitter
         FlowLayoutPanel cardHost;
         FlowLayoutPanel flwSpecChannels;
         bool fittingWidths;      // FitCardWidths 重入保护
+        bool syncDictWarned;     // SyncSettingsDict 控件读取失败只提示一次
         int gridLogCols = -1;    // 上次记过日志的列数 (只在列数变化时打, 拖动窗口不刷屏)
         // 上次真正摆过的栅格参数: 完全一致时跳过重排 (缩放窗口时每帧都会被叫到好几次)
         int lastCardCols = -1, lastCardW = -1, lastRightGap = -1, lastCardCount = -1;
@@ -1079,6 +1080,9 @@ namespace StereoSplitter
         void LoadSettings()
         {
             settings.Load();
+            // ini 损坏/被占用时 Load 会静默回默认值: 这里留痕, 否则用户看到的是"设置全丢了"却查不到原因
+            if (settings.LastLoadError != null)
+                Log("[警告] 配置文件读取失败(" + settings.LastLoadError + ")，本次以默认值启动: " + IniPath);
 
             chkMinimizeToTray.Checked = GetInt("MinimizeToTray", 0) != 0;
             cmbLatency.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("LatencyProfile", 0)));
@@ -2102,7 +2106,15 @@ namespace StereoSplitter
                 settings.Put("DriftMode", driftMode.ToString());
                 settings.Put("FixedRatioPpm", fixedPpm.ToString());
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // 控件读取失败会让这次保存缺键: 留痕。每会话只提示一次, 防止持续异常时刷屏。
+                if (!syncDictWarned)
+                {
+                    syncDictWarned = true;
+                    Log("[警告] 保存设置时读取控件状态失败: " + ex.Message + "（本次保存可能缺键）");
+                }
+            }
         }
 
         void RestoreDeviceSelection(string key, NoWheelComboBox combo, string label)
@@ -2863,6 +2875,13 @@ namespace StereoSplitter
         /// </summary>
         void WatchdogTick()
         {
+            // 设备变更监听回调 (WASAPI 通知线程) 曾抛异常: 只在那边计数, 这里读走并落日志
+            if (defaultWatcher != null && defaultWatcher.CallbackErrors > 0)
+            {
+                Log("[警告] 设备变更监听回调异常 " + defaultWatcher.CallbackErrors + " 次（已恢复监听）");
+                defaultWatcher.ResetCallbackErrors();
+            }
+
             var eng = engine;
             if (!running || eng == null) return;
             int now = Environment.TickCount;
@@ -3115,7 +3134,8 @@ namespace StereoSplitter
                     }
                 }
             }
-            catch { }
+            // 这一步失败 = 默认输出还挂在虚拟声卡上(整机无声), 必须留痕 (内层 TrySetDefault 的错误已有日志, 这里兜的是它之外的意外)
+            catch (Exception ex) { Log("[错误] 恢复默认输出异常: " + ex.Message); }
 
             SaveSettings();
             FlushSettings(); // 退出前立即落最后一次 (debounce 不再等)

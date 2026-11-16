@@ -79,7 +79,12 @@ namespace StereoSplitter.Devices
             {
                 handler = delegate (AudioVolumeNotificationData data)
                 {
-                    try { onNotify(data); } catch { }
+                    try { onNotify(data); }
+                    catch (Exception ex)
+                    {
+                        // 业务侧异常在通知线程上吞掉, 但要留痕 (与 Fail() 走同一 log 通道, 那里也允许在通知线程调)
+                        try { if (log != null) log("[警告] 端点音量通知处理失败(" + (DeviceName ?? "?") + "): " + ex.Message); } catch { }
+                    }
                 };
                 vol.OnVolumeNotification += handler;
             }
