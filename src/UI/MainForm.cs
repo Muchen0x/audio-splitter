@@ -888,19 +888,24 @@ namespace StereoSplitter
                 // 2. 重绑主音量同步到新默认设备
                 BindDefaultVolumeSync("[配置] 2/4");
 
-                // 3. 左右目标若与默认冲突/无效 → 自动选前两个非默认非虚拟设备
+                // 3. 左右目标: 只在"未选/失效"时补默认。
+                //    用户已选的设备一律不动 —— 静默改选会让人以为"选好的设备自己变了"。
+                //    与捕获设备相同/左右相同属于真冲突, 留给下面的回环检查报错, 让用户自己改。
                 OutputCardControl clDev = LeftCard(), crDev = RightCard();
                 if (clDev == null || crDev == null)
                 {
                     Log("[错误] 配置 3/4 输出卡片不足, 无法确定左右目标。");
                     return false;
                 }
-                bool conflict =
-                    clDev.cmbDevice.SelectedIndex < 0 || crDev.cmbDevice.SelectedIndex < 0 ||
-                    clDev.cmbDevice.SelectedIndex == defIdx || crDev.cmbDevice.SelectedIndex == defIdx ||
-                    clDev.cmbDevice.SelectedIndex == crDev.cmbDevice.SelectedIndex;
+                if (clDev == crDev)
+                {
+                    Log("[错误] 配置 3/4 左右目标指向了同一张卡片 (没有分别接左/右声道的卡片), 请检查输出声道。");
+                    return false;
+                }
+                bool needAuto =
+                    clDev.cmbDevice.SelectedIndex < 0 || crDev.cmbDevice.SelectedIndex < 0;
 
-                if (conflict)
+                if (needAuto)
                 {
                     int l = -1, r = -1;
                     // 优先真实设备
@@ -927,7 +932,7 @@ namespace StereoSplitter
                         crDev.SetDeviceIndex(r);
                         clDev.Lane.DeviceId = DeviceIdAt(l);
                         crDev.Lane.DeviceId = DeviceIdAt(r);
-                        Log("[配置] 3/4 左右目标: 自动改选(冲突/无效) L=[" + l + "] " + Devices[l].FriendlyName +
+                        Log("[配置] 3/4 左右目标: 未选择, 自动补选 L=[" + l + "] " + Devices[l].FriendlyName +
                             " / R=[" + r + "] " + Devices[r].FriendlyName);
                     }
                     else
@@ -950,10 +955,14 @@ namespace StereoSplitter
                     return false;
                 }
 
-                // 回环检查
-                if (clDev.cmbDevice.SelectedIndex == defIdx || crDev.cmbDevice.SelectedIndex == defIdx)
+                // 回环检查 (只报错, 不改用户的选择)
+                bool lBad = clDev.cmbDevice.SelectedIndex == defIdx;
+                bool rBad = crDev.cmbDevice.SelectedIndex == defIdx;
+                if (lBad || rBad)
                 {
-                    Log("[错误] 回环检查未通过: 捕获输出与左右目标相同。");
+                    string who = lBad && rBad ? "左右输出" : (lBad ? "左输出" : "右输出");
+                    Log("[错误] 回环检查未通过: " + who + "与捕获设备相同 [" + defIdx + "] " + dev.FriendlyName +
+                        "，请改选输出设备 (程序不会替你改)。");
                     return false;
                 }
                 Log("[配置] 回环检查通过 (捕获输出与左右目标无冲突)");
@@ -1052,14 +1061,19 @@ namespace StereoSplitter
             return cards.Count > 0 ? cards[0] : null;
         }
 
-        /// <summary>右输出卡片: FR; 单声道规格时第二张 M 卡; 都没有则与左共用。</summary>
+        /// <summary>右输出卡片: FR; 单声道规格时第二张 M 卡; 都没有则取与左不同的第一张。</summary>
         OutputCardControl RightCard()
         {
-            for (int i = 0; i < lanes.Count && i < cards.Count; i++) if (lanes[i].ChannelKey == "FR") return cards[i];
+            // 左卡片先定下来 —— 右卡片绝不能和它是同一张:
+            // 两张"卡片"指向同一对象时, 左右设备必然相同, 会被误判成
+            // "左右选同一设备" 而触发自动改选, 设备就被悄悄换掉了。
+            OutputCardControl l = LeftCard();
+            for (int i = 0; i < lanes.Count && i < cards.Count; i++)
+                if (lanes[i].ChannelKey == "FR" && cards[i] != l) return cards[i];
             int seen = 0;
             for (int i = 0; i < lanes.Count && i < cards.Count; i++)
-                if (lanes[i].ChannelKey == "M") { seen++; if (seen == 2) return cards[i]; }
-            OutputCardControl l = LeftCard();
+                if (lanes[i].ChannelKey == "M" && cards[i] != l) { seen++; if (seen == 2) return cards[i]; }
+            for (int i = 0; i < cards.Count; i++) if (cards[i] != l) return cards[i];
             return l ?? (cards.Count > 1 ? cards[1] : null);
         }
 
