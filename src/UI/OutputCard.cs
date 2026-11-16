@@ -139,7 +139,7 @@ namespace StereoSplitter
                 Increment = 10
             };
             lblMs = new Label { Text = "ms", AutoSize = true };
-            btnRemove = new Button
+            btnRemove = new NoCueButton
             {
                 Text = "×",
                 Width = 26,
@@ -176,7 +176,7 @@ namespace StereoSplitter
                 Height = 20,
                 TextAlign = ContentAlignment.MiddleLeft
             };
-            chkMute = new CheckBox
+            chkMute = new NoCueCheckBox
             {
                 Text = "静音",
                 AutoSize = false,
@@ -652,7 +652,7 @@ namespace StereoSplitter
             if (e.Index < 0) r = new Rectangle(r.X + 3, r.Y, r.Width - 6, r.Height);
             TextRenderer.DrawText(e.Graphics, cmbChannel.Items[idx].ToString(), cmbChannel.Font, r, fg,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-            if (e.Index >= 0) e.DrawFocusRectangle();
+            // 不再 DrawFocusRectangle: 下拉项上的虚线焦点框也是"点一下留一圈虚线"的来源
         }
     }
 }

@@ -59,8 +59,139 @@ namespace StereoSplitter
         }
     }
 
+    /// <summary>
+    /// 焦点虚线框抑制: WinForms 的按钮 / 复选框 / 下拉框拿到焦点就画一圈虚线焦点框,
+    /// 鼠标点一下也留一个, 满屏虚线框很难看。
+    /// <para>做法是截掉系统"显示焦点框"的 UI 状态请求 (WM_UPDATEUISTATE / UISF_HIDEFOCUS),
+    /// 让 ShowFocusCues 永远返回 false。键盘用户看的是控件自己的高亮/边框, 不需要这圈虚线。</para>
+    /// </summary>
+    static class FocusCue
+    {
+        public const int WM_UPDATEUISTATE = 0x0129;
+        const int UISF_HIDEFOCUS = 0x0001;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        /// <summary>把"要显示焦点框"的请求改写成"继续隐藏", 再交给基类处理。</summary>
+        public static void Suppress(ref Message m)
+        {
+            long wp = m.WParam.ToInt64();
+            int action = (int)(wp & 0xFFFF);          // 低 16 位 = 要改哪一位
+            int state = (int)((wp >> 16) & 0xFFFF);   // 高 16 位 = 改成的值
+            if (action == UISF_HIDEFOCUS && (state & UISF_HIDEFOCUS) == 0)
+                m.WParam = new IntPtr((UISF_HIDEFOCUS << 16) | UISF_HIDEFOCUS);
+        }
+
+        /// <summary>句柄刚建好时先置成隐藏, 免得第一次点击前就带着焦点框。</summary>
+        public static void HideNow(Control c)
+        {
+            if (c == null || !c.IsHandleCreated) return;
+            SendMessage(c.Handle, WM_UPDATEUISTATE, new IntPtr((UISF_HIDEFOCUS << 16) | UISF_HIDEFOCUS), IntPtr.Zero);
+        }
+    }
+
+    /// <summary>点完不留虚线焦点框的按钮。</summary>
+    class NoCueButton : Button
+    {
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            FocusCue.HideNow(this);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == FocusCue.WM_UPDATEUISTATE) FocusCue.Suppress(ref m);
+            base.WndProc(ref m);
+        }
+    }
+
+    /// <summary>点完不留虚线焦点框的复选框 (原生 CheckBox 点一下就画一圈虚线)。</summary>
+    class NoCueCheckBox : CheckBox
+    {
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            FocusCue.HideNow(this);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == FocusCue.WM_UPDATEUISTATE) FocusCue.Suppress(ref m);
+            base.WndProc(ref m);
+        }
+    }
+
+    /// <summary>焦点交还窗体 / 输入框回车的公共动作。</summary>
+    static class UiFocus
+    {
+        /// <summary>
+        /// 把焦点交还给整个窗体。
+        /// <para>数字框/文本框失去焦点时才会把编辑中的文字提交成值, 所以"回车提交并失焦"
+        /// 和"点空白处焦点回到窗口"都走这一条路。</para>
+        /// </summary>
+        public static void ParkOnForm(Control c)
+        {
+            Form f = (c != null && !c.IsDisposed) ? c.FindForm() : null;
+            if (f == null || f.IsDisposed) return;
+            try
+            {
+                f.ActiveControl = null;                  // 当前控件失焦 → 编辑值提交
+                if (f.CanFocus && !f.Focused) f.Focus(); // 焦点落到窗体本身
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>
+    /// 点到空白处 (标签 / 面板 / 卡片底色 / 窗体背景) 时把焦点交回整个窗口。
+    /// <para>不这么做的话: 在延迟框里输完数字, 点一下卡片空白, 那个框还带着焦点,
+    /// 之后随便敲个方向键就又把值改回去了。点到真控件 (输入框/下拉框/按钮/滑条) 则不动,
+    /// 它们自己会抢焦点。</para>
+    /// </summary>
+    class FocusParkRouter : IMessageFilter
+    {
+        const int WM_LBUTTONDOWN = 0x0201;
+
+        public bool PreFilterMessage(ref Message m)
+        {
+            if (m.Msg != WM_LBUTTONDOWN) return false;
+            Control hit = Control.FromChildHandle(m.HWnd);
+            if (hit == null) return false;              // 下拉列表等非控件窗口: 不介入
+
+            for (Control c = hit; c != null; c = c.Parent)
+                if (IsInputLike(c)) return false;
+
+            Form f = hit.FindForm();
+            if (f == null || f.IsDisposed || !f.IsHandleCreated) return false;
+            // 延后一拍: 先让这次点击按正常规则落地 (该抢焦点的抢完), 再把焦点收回窗体
+            try { f.BeginInvoke((Action)(() => UiFocus.ParkOnForm(f))); }
+            catch { }
+            return false;                               // 消息照常派发, 点击本身不受影响
+        }
+
+        /// <summary>真正需要键盘焦点的控件 (点它们不抢焦点, 否则没法输入/选字)。</summary>
+        static bool IsInputLike(Control c)
+        {
+            if (c is TextBoxBase) return true;   // 日志框: 点进去要能选文字/复制
+            if (c is ComboBox) return true;
+            if (c is UpDownBase) return true;
+            if (c is ButtonBase) return true;
+            if (c is VolumeSlider) return true;
+            if (c is ListBox) return true;
+            return false;
+        }
+    }
+
     class NoWheelComboBox : ComboBox
     {
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            FocusCue.HideNow(this);
+        }
+
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == WheelRouting.WM_MOUSEWHEEL)
@@ -69,6 +200,7 @@ namespace StereoSplitter
                 if (!DroppedDown) WheelRouting.Forward(this, m);
                 return;
             }
+            if (m.Msg == FocusCue.WM_UPDATEUISTATE) FocusCue.Suppress(ref m);
             base.WndProc(ref m);
         }
     }
@@ -81,6 +213,26 @@ namespace StereoSplitter
             // 不调 base: 滚轮对数字框一律无效 (误滚一下就把延迟拖偏, 很难发现)
         }
 
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            FocusCue.HideNow(this);
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            // 回车 = 提交 + 失焦: 数字框是"失去焦点才把编辑中的文字变成值",
+            // 所以这里直接把焦点交回窗体, 值顺带落定 (再敲键盘也不会改到它)。
+            if (e.KeyCode == Keys.Enter && !e.Alt && !e.Control)
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                UiFocus.ParkOnForm(this);
+                return;
+            }
+            base.OnKeyDown(e);
+        }
+
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == WheelRouting.WM_MOUSEWHEEL)
@@ -88,6 +240,7 @@ namespace StereoSplitter
                 WheelRouting.Forward(this, m);
                 return;
             }
+            if (m.Msg == FocusCue.WM_UPDATEUISTATE) FocusCue.Suppress(ref m);
             base.WndProc(ref m);
         }
     }

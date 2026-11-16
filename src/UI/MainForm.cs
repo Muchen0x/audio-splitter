@@ -158,6 +158,8 @@ namespace StereoSplitter
             // 滚轮去向: 卡片列表正在滚的时候, 光标扫过音量条也只滚列表、不改音量
             // (拖着列表往下翻, 音量不能莫名其妙跳 5%); 列表没得滚时滚轮才调音量。
             Application.AddMessageFilter(new VolumeWheelRouter());
+            // 点到空白处 (标签/面板/卡片底色) 时把焦点交回整个窗口, 别让它赖在最后那个输入框里
+            Application.AddMessageFilter(new FocusParkRouter());
 
             // 上下可拖动面板: 内容区 | 6px灰分隔条 | 日志区 (参照 tk.PanedWindow)
             // FixedPanel=Panel2: 窗口变矮时先收缩上面的内容区, 日志区高度保持不变
@@ -189,8 +191,8 @@ namespace StereoSplitter
 
             var lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
             cmbDefault = new NoWheelComboBox { Location = new Point(110, 12), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
-            chkMuteCapture = new CheckBox { Text = "消音", Location = new Point(363, 14), AutoSize = true };
-            btnRefresh = new Button { Text = "刷新设备", Location = new Point(417, 11), Width = 72, Height = 23 };
+            chkMuteCapture = new NoCueCheckBox { Text = "消音", Location = new Point(363, 14), AutoSize = true };
+            btnRefresh = new NoCueButton { Text = "刷新设备", Location = new Point(417, 11), Width = 72, Height = 23 };
 
             // 增益独占一行 (主音量上方)。自绘滑条轨道垂直居中, 标签 Top = 滑条.Top 时
             // 文字中心落在轨道线上。滑条宽度不写死, 由 LayoutVolumeRows() 按面板宽度自适应
@@ -203,10 +205,10 @@ namespace StereoSplitter
             var lblVM = new Label { Text = "主音量:", Location = new Point(15, 106), AutoSize = true };
             volMaster = new VolumeSlider { Location = new Point(78, 106), Width = 300, Minimum = 0, Maximum = 100, Value = 100, SmallChange = 5, LargeChange = 5 };
             lblVolMaster = new Label { Text = "100%", AutoSize = false, Width = 46, Height = 20, TextAlign = ContentAlignment.MiddleLeft };
-            chkMuteMaster = new CheckBox { Text = "静音", AutoSize = false, Width = 56, Height = 20 };
+            chkMuteMaster = new NoCueCheckBox { Text = "静音", AutoSize = false, Width = 56, Height = 20 };
 
             // 开始分流
-            btnStart = new Button { Text = "开始分流", Location = new Point(15, 142), Width = 130, Height = 35 };
+            btnStart = new NoCueButton { Text = "开始分流", Location = new Point(15, 142), Width = 130, Height = 35 };
             lblDot = new Label { Text = "●", Location = new Point(162, 147), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
             lblStatus = new Label { Text = "状态: 就绪", Location = new Point(182, 152), AutoSize = true, ForeColor = Color.Gray };
 
@@ -224,7 +226,7 @@ namespace StereoSplitter
                 AutoScroll = false,
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
             };
-            btnAddOutput = new Button
+            btnAddOutput = new NoCueButton
             {
                 Text = "添加输出",
                 Location = new Point(482, 184),
@@ -260,8 +262,8 @@ namespace StereoSplitter
                     AudioEngine.EstimatedTotalMs(LatencyProfiles[i][0], LatencyProfiles[i][1]) + "ms" + latWarn[i] + ")");
             cmbLatency.SelectedIndex = 0;
 
-            chkMinimizeToTray = new CheckBox { Text = "关闭时最小化到托盘", Location = new Point(294, 44), AutoSize = true };
-            chkDrift = new CheckBox { Text = "校正", AutoSize = true, Checked = true };
+            chkMinimizeToTray = new NoCueCheckBox { Text = "关闭时最小化到托盘", Location = new Point(294, 44), AutoSize = true };
+            chkDrift = new NoCueCheckBox { Text = "校正", AutoSize = true, Checked = true };
             chkDrift.Location = new Point(chkMinimizeToTray.Right + 8, chkMinimizeToTray.Top);
 
             // 卡片宽度跟随容器可视宽度。AutoScroll 的竖滚动条出现/消失只改
@@ -284,11 +286,12 @@ namespace StereoSplitter
             // 整组靠右: 右缘与「清除日志」按钮一致 (按钮右边 10px 距面板边), 右侧不留空条。
             var lblWater = new Label { Text = "水位监控:", Location = new Point(293, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
             var lblWaterIv = new Label { Text = "间隔", Location = new Point(359, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            // 间隔 0 = 关闭监控; 1 秒起, 不再卡 5 秒下限 (想看 1~4 秒的抖动就让人看)
             nudWaterInterval = new NoWheelNumeric { Location = new Point(397, 5), Width = 60, Minimum = 0, Maximum = 3600, Value = 30, Anchor = AnchorStyles.Top | AnchorStyles.Right };
             var lblWaterSec = new Label { Text = "秒", Location = new Point(461, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
 
             var lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true, Font = new Font("Microsoft YaHei UI", 10F) };
-            btnClearLog = new Button
+            btnClearLog = new NoCueButton
             {
                 Text = "清除日志",
                 Location = new Point(489, 4),
@@ -333,7 +336,7 @@ namespace StereoSplitter
             tipTop.SetToolTip(chkMuteCapture, "锁定捕获端静音（外部取消静音会被恢复）。\n运行中可调。");
             tipTop.SetToolTip(chkDrift, "漂移闭环校正。\n运行中可切（立即生效）。");
             tipTop.SetToolTip(chkMinimizeToTray, "关闭窗口时最小化到托盘。\n与本机音频无关，随时可改。");
-            tipTop.SetToolTip(nudWaterInterval, "水位监控的刷新间隔（0 = 关闭监控）。\n随时可改。");
+            tipTop.SetToolTip(nudWaterInterval, "水位监控的刷新间隔（秒，1~3600；0 = 关闭监控）。\n随时可改，回车提交。");
             // 增益/主音量两行的滑条宽度跟面板宽度走 (窗口拉宽自动变长)
             splitContainer.Panel1.ClientSizeChanged += (s, e) => LayoutVolumeRows();
             LayoutVolumeRows();
@@ -367,8 +370,7 @@ namespace StereoSplitter
             cmbLatency.SelectedIndexChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
             nudWaterInterval.ValueChanged += (s, e) =>
             {
-                int v = (int)nudWaterInterval.Value;
-                if (v >= 1 && v <= 4) { nudWaterInterval.Value = 5; return; } // 下限5秒: 显示与实际一致
+                // 间隔只要 > 0 就照用: 1~4 秒也允许 (以前强制抬到 5 秒, 想看短间隔反而改不动)
                 SyncWaterTimer();
                 if (!loadingSettings) SaveSettings();
             };
@@ -415,7 +417,7 @@ namespace StereoSplitter
 
             waterTimer = new System.Windows.Forms.Timer
             {
-                Interval = Math.Max(5, (int)nudWaterInterval.Value) * 1000
+                Interval = Math.Max(1, (int)nudWaterInterval.Value) * 1000
             };
             waterTimer.Tick += (s, e) =>
             {
@@ -532,7 +534,7 @@ namespace StereoSplitter
             if (waterTimer == null) return;
             if (running && (int)nudWaterInterval.Value > 0)
             {
-                waterTimer.Interval = Math.Max(5, (int)nudWaterInterval.Value) * 1000;
+                waterTimer.Interval = Math.Max(1, (int)nudWaterInterval.Value) * 1000;
                 waterTimer.Start();
             }
             else
@@ -1048,7 +1050,7 @@ namespace StereoSplitter
             chkMinimizeToTray.Checked = GetInt("MinimizeToTray", 0) != 0;
             cmbLatency.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("LatencyProfile", 0)));
             int wi = GetInt("WaterIntervalSec", 30);
-            if (wi != 0) wi = Math.Max(5, Math.Min(3600, wi)); // 0=关闭, 1-4 按 5 秒
+            if (wi != 0) wi = Math.Max(1, Math.Min(3600, wi)); // 0=关闭; 其余 1~3600 秒原样用
             nudWaterInterval.Value = wi;
 
             int mode = Math.Max(0, Math.Min(2, GetInt("DriftMode", 1)));
@@ -1467,8 +1469,10 @@ namespace StereoSplitter
         /// <para>列数按"基准宽度的整数倍"跳档: 可视宽到 2×基准才铺第 2 列、到 3×基准才铺第 3 列。
         /// 因为余量摊进卡片宽度, 实际卡片宽度始终落在 [基准, 基准+间距] 这个窄区间里,
         /// 所以换列时滑条长度只变化几像素, 不会有"窗口宽一点、滑条就长一截"的拉扯感。</para>
-        /// <para>直接读 ClientSize: 它本来就是"上一帧滚动条已经摆好之后"的实测值, 用它做输入
-        /// 才会收敛 —— 自己去预留/反推滚动条宽度反而会和真实布局对不上。</para>
+        /// <para><b>竖滚动条要占宽度</b>: 窗口变矮 → 卡片区出现竖条 → 可视宽少了 17px。
+        /// 如果卡片宽度还按"没竖条"的宽度算, 内容就比可视宽多出一条竖条的量,
+        /// 横向滚动条立刻跟着冒出来。所以这里先算一遍列数, 用算出来的行数预测竖条会不会出现,
+        /// 会出现就把它的宽度扣掉再算一遍 —— 卡片自己变窄, 永远不需要横向滚动。</para>
         /// </summary>
         void ComputeCardGrid(int count, out int cols, out int width)
         {
@@ -1479,7 +1483,26 @@ namespace StereoSplitter
                 return;
             }
 
-            int avail = cardHost.ClientSize.Width - cardHost.Padding.Horizontal;
+            // cardHost.Width 是"外框宽", 竖条显隐不影响它 (ClientSize 会跟着少一条滚动条),
+            // 用它当基准算出来的宽度才是稳定的; ClientSize 则用来看"此刻真实可用"多少。
+            int full = Math.Max(0, cardHost.Width - cardHost.Padding.Horizontal);
+            int avail = Math.Min(full, Math.Max(0, cardHost.ClientSize.Width - cardHost.Padding.Horizontal));
+            if (avail <= 0) { cols = 1; width = OutputCardControl.CardWidth; return; }
+
+            GridCols(avail, count, out cols, out width);
+
+            // 这一版摆完会比可视区高 → 竖条会出现 → 扣掉竖条宽度重算, 卡片顺势缩短
+            if (NeedVScroll(cols))
+            {
+                int narrower = Math.Max(0, full - SystemInformation.VerticalScrollBarWidth);
+                if (narrower >= CardMinW && narrower < avail)
+                    GridCols(narrower, count, out cols, out width);
+            }
+        }
+
+        /// <summary>纯算术: 给定可用宽度与卡片数, 算出列数与统一卡片宽度。</summary>
+        static void GridCols(int avail, int count, out int cols, out int width)
+        {
             if (avail <= 0) { cols = 1; width = OutputCardControl.CardWidth; return; }
 
             cols = Math.Max(1, (avail + CardGapX) / (CardBaseW + CardGapX));
@@ -1505,46 +1528,140 @@ namespace StereoSplitter
             }
         }
 
+        int CardCountForGrid()
+        {
+            if (cards != null && cards.Count > 0) return cards.Count;
+            return models != null ? models.Count : 0;
+        }
+
+        /// <summary>第 i 张卡片的实际高度 (还没建出来时按模型推算, 与 SetMulti 的公式一致)。</summary>
+        int CardHeightAt(int i)
+        {
+            if (cards != null && i < cards.Count) return cards[i].Height;
+            if (models != null && i < models.Count)
+                return OutputCardControl.CardHeight +
+                    (models[i].Multi ? 4 + Math.Max(1, models[i].Slots.Count) * OutputCardControl.RowHeight : 0);
+            return OutputCardControl.CardHeight;
+        }
+
+        /// <summary>
+        /// 按这个列数摆完, 内容会不会比可视区高 (即竖滚动条会不会出现)。
+        /// 行高取该行最高的一张卡片, 与 FlowLayoutPanel 的排法一致。
+        /// </summary>
+        bool NeedVScroll(int cols)
+        {
+            int n = CardCountForGrid();
+            if (n == 0 || cardHost == null) return false;
+            if (cols < 1) cols = 1;
+
+            int rows = (n + cols - 1) / cols;
+            int total = cardHost.Padding.Vertical;
+            for (int r = 0; r < rows; r++)
+            {
+                int hMax = 0;
+                for (int i = r * cols; i < Math.Min(n, (r + 1) * cols); i++)
+                {
+                    int h = CardHeightAt(i) + OutputCardControl.CardGap;   // + Margin.Bottom
+                    if (h > hMax) hMax = h;
+                }
+                total += hMax;
+            }
+            return total > cardHost.ClientSize.Height;
+        }
+
+        bool fitAgain;           // 本轮摆完又触发布局 → 需要再收敛一次
+
         /// <summary>
         /// 按当前可视宽度摆卡片: 统一宽度 + 横向间距。
         /// 不逐张算宽度: 卡片是逐个加进 FlowLayoutPanel 的, 滚动条可能在中途出现/消失,
         /// 后建的卡片量到的可视宽度就比前面的大一个滚动条宽 (17px), 于是滑条长度对不齐。
+        /// <para>改宽度本身会触发容器重新布局, 布局又会改滚动条 → 再发 ClientSizeChanged。
+        /// 以前那一次回调被重入保护直接丢掉, 于是"竖条出现了、卡片还是旧宽度"这一版就留在屏幕上
+        /// (横条就是这么来的)。这里改成: 被丢掉的那次记个待办, 本轮回手后再收敛一遍。</para>
         /// </summary>
         void FitCardWidths()
         {
             if (cards == null || cards.Count == 0) return;
-            if (fittingWidths) return;      // 改宽度会触发容器重新布局, 防递归
+            if (fittingWidths) { fitAgain = true; return; }
             fittingWidths = true;
             try
             {
-                int cols, w;
-                ComputeCardGrid(cards.Count, out cols, out w);
+                int guard = 0;
+                do
+                {
+                    fitAgain = false;
+                    ApplyCardWidths();
+                }
+                while (fitAgain && ++guard < 4);
+            }
+            finally { fittingWidths = false; }
+        }
 
-                int avail = cardHost.ClientSize.Width - cardHost.Padding.Horizontal;
-                // 兜底: 卡片绝不比可视区宽 (宽到连最小卡片宽都排不下时才听任横向滚动,
-                // 宁可横滚也不能把第一行的设备/声道/延迟挤成重叠)
-                if (avail >= CardMinW && w > avail) w = avail;
+        void ApplyCardWidths()
+        {
+            int cols, w;
+            ComputeCardGrid(cards.Count, out cols, out w);
 
-                // 单列不留右侧间距: 那段 10px 会被算进内容宽度, 宽度已 = 可视宽时
-                // 正好顶出一根横向滚动条 (实测 600/1000/1200 宽都出现过)。
-                // 多列必须留, 否则 FlowLayoutPanel 的换行判断会提前一张就折行。
-                int rightGap = cols > 1 ? CardGapX : 0;
-                var margin = new Padding(0, 0, rightGap, OutputCardControl.CardGap);
+            int avail = cardHost.ClientSize.Width - cardHost.Padding.Horizontal;
+            // 兜底: 卡片绝不比可视区宽 (宽到连最小卡片宽都排不下时才听任横向滚动,
+            // 宁可横滚也不能把第一行的设备/声道/延迟挤成重叠)
+            if (avail >= CardMinW && w > avail) w = avail;
+
+            // 单列不留右侧间距: 那段 10px 会被算进内容宽度, 宽度已 = 可视宽时
+            // 正好顶出一根横向滚动条 (实测 600/1000/1200 宽都出现过)。
+            // 多列必须留, 否则 FlowLayoutPanel 的换行判断会提前一张就折行。
+            int rightGap = cols > 1 ? CardGapX : 0;
+            var margin = new Padding(0, 0, rightGap, OutputCardControl.CardGap);
+
+            // 我们在 panel 自己的一次布局里改子控件尺寸 (ClientSizeChanged 就是在布局中发的),
+            // 外面再套一层挂起/恢复, 让它在尺寸全部落定后统一重算换行与滚动条;
+            // 不这么做的话它会把"内容宽"记成改之前的旧值。
+            cardHost.SuspendLayout();
+            try
+            {
                 for (int i = 0; i < cards.Count; i++)
                 {
                     // 先摆间距再改宽: 换列发生在容器重新布局时, 间距必须已经就位
                     if (cards[i].Margin != margin) cards[i].Margin = margin;
                     if (cards[i].Width != w) cards[i].Width = w;
                 }
-                if (cols != gridLogCols)
-                {
-                    gridLogCols = cols;
-                    Log("[界面] 卡片区 " + cols + " 列 × " + w + "px（可视 " +
-                        (cardHost.ClientSize.Width - cardHost.Padding.Horizontal) + "px，" +
-                        cards.Count + " 张卡片）");
-                }
             }
-            finally { fittingWidths = false; }
+            finally { cardHost.ResumeLayout(true); }
+
+            DropStaleHScroll();
+
+            if (cols != gridLogCols)
+            {
+                gridLogCols = cols;
+                Log("[界面] 卡片区 " + cols + " 列 × " + w + "px（可视 " + avail + "px，" +
+                    cards.Count + " 张卡片）");
+            }
+        }
+
+        /// <summary>
+        /// 竖滚动条刚出现的那一版, FlowLayoutPanel 会把"内容宽"记成卡片收窄之前的旧宽度
+        /// (实测: 卡片已 542, 它仍按 559 算), 横向滚动条就此赖着不走 —— 窗口变矮时冒出横条
+        /// 就是这么来的。卡片确实已经放得下时, 开关一次 AutoScroll 让它按当前内容重算滚动条。
+        /// </summary>
+        void DropStaleHScroll()
+        {
+            if (cardHost == null || !cardHost.HorizontalScroll.Visible) return;
+            if (cards == null || cards.Count == 0) return;
+
+            // 内容真的比可视区宽 (窗口窄到连最小卡片宽都排不下) → 留着横条, 否则看不全
+            int need = 0;
+            for (int i = 0; i < cards.Count; i++)
+            {
+                int r = cards[i].Width + cards[i].Margin.Horizontal;
+                if (r > need) need = r;
+            }
+            if (need > cardHost.ClientSize.Width) return;
+
+            Point keep = cardHost.AutoScrollPosition;
+            cardHost.AutoScroll = false;
+            cardHost.AutoScroll = true;
+            cardHost.PerformLayout();
+            cardHost.AutoScrollPosition = new Point(Math.Abs(keep.X), Math.Abs(keep.Y));
         }
 
         void AddLaneCard(OutputCardModel preset)
