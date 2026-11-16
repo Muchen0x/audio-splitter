@@ -74,12 +74,22 @@ namespace StereoSplitter
         readonly List<SlotRow> rows = new List<SlotRow>();
 
         bool syncing;
+        /// <summary>运行中: 单/多声道形态不可切（会改设备的物理声道数 = 链路级）。</summary>
+        bool shapeLocked;
+        /// <summary>启动中: 声道下拉整体禁用（新建的行要跟上这个状态）。</summary>
+        bool channelLocked;
+        /// <summary>启动中: 音量条整体禁用（新建的行要跟上这个状态）。</summary>
+        bool volLocked;
+        /// <summary>最近一次拿到的规格声道清单（回滚下拉选择时按它把值还原成模型里的）。</summary>
+        IList<KeyValuePair<string, string>> channelsRef = new List<KeyValuePair<string, string>>();
 
         /// <summary>结构性/配置变化(换设备/换声道/延迟/静音/音量松手)。</summary>
         public event Action<OutputCardControl> Changed;
         /// <summary>音量拖动中(连续)。运行中热更新用; 第二参数 true = 拖的是多声道行(增益)。</summary>
         public event Action<OutputCardControl, bool> VolumeScrolled;
         public event Action<OutputCardControl> RemoveRequested;
+        /// <summary>运行中试图切换单/多声道形态 → 已被拦下并回滚（调用方负责提示）。</summary>
+        public event Action<OutputCardControl> ShapeBlocked;
 
         public const int CardHeight = 56;       // 单声道卡片高度
         public const int CardWidth = 500;
@@ -112,8 +122,12 @@ namespace StereoSplitter
             cmbChannel = new NoWheelComboBox
             {
                 Width = 92,
-                DropDownStyle = ComboBoxStyle.DropDownList
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                // 自绘: 运行中要把「多声道…」这一项画成灰色（列表项没法单独禁用）
+                DrawMode = DrawMode.OwnerDrawFixed,
+                ItemHeight = 18
             };
+            cmbChannel.DrawItem += DrawChannelItem;
             lblDelay = new Label { Text = "延迟", AutoSize = true };
             // NoWheelNumeric: 光标停在上面滚轮不会改延迟 (误滚一下就把声场拖偏, 很难发现)
             nudDelay = new NoWheelNumeric
@@ -189,6 +203,14 @@ namespace StereoSplitter
             cmbChannel.SelectedIndexChanged += (s, e) =>
             {
                 if (syncing) return;
+                // 运行中切单/多声道 = 改设备物理声道数（OutChannels），WasapiOut 已经建好，热换不了
+                if (shapeLocked && IsShapeChange())
+                {
+                    RevertChannel();
+                    var b = ShapeBlocked;
+                    if (b != null) b(this);
+                    return;
+                }
                 Fire();
             };
             nudDelay.ValueChanged += (s, e) =>
@@ -222,11 +244,11 @@ namespace StereoSplitter
             };
 
             var tip = new ToolTip();
-            tip.SetToolTip(cmbDevice, "这张卡片输出到哪台设备。\n同一台设备只会有一张卡片: 两张卡片选到同一设备会自动合并成多声道卡片。");
-            tip.SetToolTip(cmbChannel, "这张卡片输出的声道。\n选「多声道」= 该设备的每个物理声道各占一行, 行内可分别选声道、分别调音量。\n角标: 规格行右侧的数字 = 有几个物理声道接到该声道。");
-            tip.SetToolTip(nudDelay, "这张卡片的延迟补偿 (毫秒)。多台设备距离不同时, 给近的加延迟对齐声场。\n延迟是设备级: 合并后取原卡片里的最小值。");
-            tip.SetToolTip(volTrack, "主音量。\n单声道卡片: 写该设备的端点音量(与系统音量条双向同步, 停止时还原)。\n多声道卡片: 同样是设备端点音量; 各声道的微调在下方各行。\n双击百分比可复位 100%。");
-            tip.SetToolTip(btnRemove, "移除这张输出卡片 (整台设备)");
+            tip.SetToolTip(cmbDevice, "这张卡片输出到哪台设备。\n同一台设备只会有一张卡片: 两张卡片选到同一设备会自动合并成多声道卡片。\n运行中不可改（换设备要重建链路），需先停止分流。");
+            tip.SetToolTip(cmbChannel, "这张卡片输出的声道。\n选「多声道」= 该设备的每个物理声道各占一行, 行内可分别选声道、分别调音量。\n角标: 规格行右侧的数字 = 有几个物理声道接到该声道。\n运行中可改（只换混音矩阵）；但「多声道…」形态要改设备物理声道数，运行中不可切。");
+            tip.SetToolTip(nudDelay, "这张卡片的延迟补偿 (毫秒)。多台设备距离不同时, 给近的加延迟对齐声场。\n延迟是设备级: 合并后取原卡片里的最小值。\n运行中不可改（延迟线在启动时固定），需先停止分流。");
+            tip.SetToolTip(volTrack, "主音量。\n单声道卡片: 写该设备的端点音量(与系统音量条双向同步, 停止时还原)。\n多声道卡片: 同样是设备端点音量; 各声道的微调在下方各行。\n双击百分比可复位 100%。\n运行中可调。");
+            tip.SetToolTip(btnRemove, "移除这张输出卡片 (整台设备)。\n运行中不可移除（会改变链路），需先停止分流。");
         }
 
         /// <summary>行数 (多声道行; 单声道为 0)。</summary>
@@ -238,6 +260,7 @@ namespace StereoSplitter
         /// </summary>
         public void SetMulti(bool multi, int rowCount, IList<KeyValuePair<string, string>> channels)
         {
+            if (channels != null) channelsRef = channels;
             int want = multi ? Math.Max(1, rowCount) : 0;
             // 行数不变就只刷新下拉选项 (避免重建控件导致焦点/滚动位置跳动)
             while (rows.Count > want) RemoveRow(rows.Count - 1);
@@ -271,7 +294,8 @@ namespace StereoSplitter
             r.Cmb = new NoWheelComboBox
             {
                 Width = 92,
-                DropDownStyle = ComboBoxStyle.DropDownList
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Enabled = !channelLocked        // 启动中新建的行也要是禁用状态
             };
             r.Vol = new VolumeSlider
             {
@@ -281,7 +305,8 @@ namespace StereoSplitter
                 Maximum = 100,
                 Value = 100,
                 SmallChange = 5,
-                LargeChange = 5
+                LargeChange = 5,
+                Enabled = !volLocked          // 启动中新建的行也一样
             };
             r.Lbl = new Label
             {
@@ -414,6 +439,7 @@ namespace StereoSplitter
         /// <summary>用模型值回填控件 (载入/外部改动后调用)。行数须先由 SetMulti 定好。</summary>
         public void SyncFromModel(IList<KeyValuePair<string, string>> channels)
         {
+            if (channels != null) channelsRef = channels;
             syncing = true;
             try
             {
@@ -481,6 +507,7 @@ namespace StereoSplitter
         /// <summary>填充声道下拉 (规格声道 + 「多声道」)。</summary>
         public void SetChannels(IList<KeyValuePair<string, string>> channels)
         {
+            if (channels != null) channelsRef = channels;
             syncing = true;
             try
             {
@@ -511,6 +538,7 @@ namespace StereoSplitter
         /// <summary>把控件当前值写回模型。</summary>
         public void WriteBackToModel(IList<KeyValuePair<string, string>> channels)
         {
+            if (channels != null) channelsRef = channels;
             string key = SelectedChannelKey(channels);
             Model.Multi = key == LaneRouting.MultiKey;
 
@@ -542,14 +570,87 @@ namespace StereoSplitter
             if (h != null) h(this);
         }
 
-        /// <summary>启动/运行中禁用结构控件, 音量仍可调。</summary>
-        public void SetBusy(bool structuralLocked)
+        // ==================== 运行中锁定 ====================
+        //
+        // 分三档, 与内核能力严格对齐 (AudioEngine.SetRouting 只能换矩阵, 声道数/设备/延迟都换不了):
+        //   链路级 (设备 / 延迟 / 移除卡片 / 单多声道形态)  → 运行中置灰
+        //   矩阵级 (卡片声道 / 多声道行声道)                 → 运行中可改, 热替换矩阵
+        //   采样级 (音量 / 静音)                             → 运行中可改
+
+        /// <summary>链路级: 运行中禁用换设备 / 改延迟 / 移除卡片。</summary>
+        public void SetStructuralLock(bool locked)
         {
-            cmbDevice.Enabled = !structuralLocked;
-            cmbChannel.Enabled = !structuralLocked;
-            nudDelay.Enabled = !structuralLocked;
-            btnRemove.Enabled = !structuralLocked;
-            for (int i = 0; i < rows.Count; i++) rows[i].Cmb.Enabled = !structuralLocked;
+            cmbDevice.Enabled = !locked;
+            nudDelay.Enabled = !locked;
+            btnRemove.Enabled = !locked;
+        }
+
+        /// <summary>声道下拉(含多声道各行): 只在启动过程中禁用; 运行中是矩阵级, 可以改。</summary>
+        public void SetChannelLock(bool locked)
+        {
+            channelLocked = locked;
+            cmbChannel.Enabled = !locked;
+            for (int i = 0; i < rows.Count; i++) rows[i].Cmb.Enabled = !locked;
+        }
+
+        /// <summary>采样级: 卡片主音量 / 静音 / 多声道各行音量。只在启动过程中禁用
+        /// （启动用的是点下去那一刻的模型快照，中途改值不会进这一趟）。</summary>
+        public void SetVolumeLock(bool locked)
+        {
+            volLocked = locked;
+            volTrack.Enabled = !locked;
+            chkMute.Enabled = !locked;
+            for (int i = 0; i < rows.Count; i++) rows[i].Vol.Enabled = !locked;
+        }
+
+        /// <summary>单/多声道形态: 会改设备物理声道数, 运行中把「多声道…」画灰并拦下。</summary>
+        public void SetShapeLock(bool locked)
+        {
+            bool changed = shapeLocked != locked;
+            shapeLocked = locked;
+            if (changed && cmbChannel.IsHandleCreated) cmbChannel.Invalidate();
+        }
+
+        /// <summary>当前下拉选择是否改变单/多声道形态 (与模型里的形态不一致)。</summary>
+        bool IsShapeChange()
+        {
+            string key = SelectedChannelKey(channelsRef);
+            if (key == null) return false;      // 还没选 → 交给上层补设备
+            return (key == LaneRouting.MultiKey) != Model.Multi;
+        }
+
+        /// <summary>把下拉还原成模型里的值 (拦下非法切换后调用, 全程不发事件)。</summary>
+        void RevertChannel()
+        {
+            if (channelsRef == null) return;
+            SyncFromModel(channelsRef);
+        }
+
+        /// <summary>「多声道…」项的下标 (= 规格声道数, 它总在最后)。</summary>
+        int MultiItemIndex { get { return channelsRef == null ? -1 : channelsRef.Count; } }
+
+        /// <summary>
+        /// 声道下拉自绘: 运行中把「多声道…」画成灰色。ComboBox 没有"禁用单个列表项"的能力，
+        /// 只能自绘 + 在选择事件里回滚。
+        /// </summary>
+        void DrawChannelItem(object sender, DrawItemEventArgs e)
+        {
+            e.DrawBackground();
+            int idx = e.Index >= 0 ? e.Index : cmbChannel.SelectedIndex;
+            if (idx < 0 || idx >= cmbChannel.Items.Count) return;
+
+            bool dim = !cmbChannel.Enabled || (shapeLocked && idx >= MultiItemIndex);
+            Color fg;
+            if (dim) fg = SystemColors.GrayText;
+            else if ((e.State & DrawItemState.Selected) != 0) fg = SystemColors.HighlightText;
+            else fg = cmbChannel.ForeColor;
+
+            // 外框那条 (e.Index < 0) 的 Bounds 含边框, 留 3px 内缩, 与默认绘制的文字位置对齐
+            Rectangle r = e.Bounds;
+            if (e.Index < 0) r = new Rectangle(r.X + 3, r.Y, r.Width - 6, r.Height);
+            TextRenderer.DrawText(e.Graphics, cmbChannel.Items[idx].ToString(), cmbChannel.Font, r, fg,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            if (e.Index >= 0) e.DrawFocusRectangle();
         }
     }
 }

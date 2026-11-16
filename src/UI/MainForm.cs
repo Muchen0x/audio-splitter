@@ -41,6 +41,7 @@ namespace StereoSplitter
         Label lblDot, lblStatus;
         Button btnStart;
         Button btnRefresh;
+        Button btnAddOutput;      // 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
         Button btnClearLog;
         Infrastructure.SessionLog sessionLog;
         SplitContainer splitContainer;
@@ -222,7 +223,7 @@ namespace StereoSplitter
                 AutoScroll = false,
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
             };
-            var btnAddOutput = new Button
+            btnAddOutput = new Button
             {
                 Text = "添加输出",
                 Location = new Point(482, 184),
@@ -315,6 +316,22 @@ namespace StereoSplitter
 
             splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart, lblSpec, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
+
+            // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。
+            // 必须放在所有控件都建好之后（水位监控那几个是后面才 new 的）。
+            var tipTop = new ToolTip();
+            tipTop.SetToolTip(cmbDefault, "把哪台虚拟声卡的输出抓过来。\n运行中不可改（要重开捕获端点），需先停止分流。");
+            tipTop.SetToolTip(btnRefresh, "重新枚举输出设备（插拔 USB/DAC 后用）。\n运行中不可刷新（会改动卡片与链路），需先停止分流。");
+            tipTop.SetToolTip(cmbLatency, "预缓冲深度 + 输出缓冲的整套预设，决定稳态延迟与抗断音能力。\n运行中不可改（缓冲在启动时按档位建好），需先停止分流。");
+            tipTop.SetToolTip(cmbSpec, "可用的逻辑声道清单（单声道…5.1）。\n运行中不可改（会改变矩阵与每路声道数），需先停止分流。");
+            tipTop.SetToolTip(btnAddOutput, "新增一张输出卡片（一台设备）。\n运行中不可加卡（会改变链路），需先停止分流。");
+            tipTop.SetToolTip(volGain, "总增益，作用在采样层。\n运行中可调。");
+            tipTop.SetToolTip(volMaster, "总音量，作用在采样层。\n运行中可调。");
+            tipTop.SetToolTip(chkMuteMaster, "总静音。\n运行中可调。");
+            tipTop.SetToolTip(chkMuteCapture, "锁定捕获端静音（外部取消静音会被恢复）。\n运行中可调。");
+            tipTop.SetToolTip(chkDrift, "漂移闭环校正。\n运行中可切（立即生效）。");
+            tipTop.SetToolTip(chkMinimizeToTray, "关闭窗口时最小化到托盘。\n与本机音频无关，随时可改。");
+            tipTop.SetToolTip(nudWaterInterval, "水位监控的刷新间隔（0 = 关闭监控）。\n随时可改。");
             // 增益/主音量两行的滑条宽度跟面板宽度走 (窗口拉宽自动变长)
             splitContainer.Panel1.ClientSizeChanged += (s, e) => LayoutVolumeRows();
             LayoutVolumeRows();
@@ -455,35 +472,56 @@ namespace StereoSplitter
 
             running = (s == AppState.Running);
             btnStart.Text = running ? "停止分流" : "开始分流";
+            ApplyUiLock();
 
-            bool busy = (s == AppState.Starting);
-            bool run = (s == AppState.Running);
+            // 数值标签: 仅分流运行中(双向绑定生效)为黑, 其余灰色表示无效
+            SetVolumeBindVisual(running);
+
+            if (trayIcon != null) trayIcon.Text = "Stereo Splitter - " + txt;
+
+            // 水位监控仅运行时按间隔跑, Ready/Stopped 或间隔0=不跑 (防空转)
+            SyncWaterTimer();
+        }
+
+        /// <summary>
+        /// 按当前状态统一切换控件的可用性。分三档，与内核能力严格对齐
+        /// （<see cref="AudioEngine.SetRouting"/> 只能换矩阵，声道数/设备/延迟都换不了）：
+        /// <list type="bullet">
+        /// <item>链路级：捕获设备 / 刷新设备 / 延迟档位 / 规格 / 加卡 / 卡片设备 / 卡片延迟 / 移除卡片
+        ///       —— 运行中置灰</item>
+        /// <item>矩阵级：卡片声道 / 多声道行声道 —— 运行中可改（热替换矩阵）</item>
+        /// <item>形态级：单 ↔ 多声道 —— 会改设备物理声道数，运行中把「多声道…」画灰并拦下</item>
+        /// <item>采样级 / 监控级：音量、静音、消音、校正、水位间隔、最小化 —— 始终可动</item>
+        /// </list>
+        /// 卡片是动态建的，所以这里既在状态切换时调用，也在重建卡片后调用。
+        /// </summary>
+        void ApplyUiLock()
+        {
+            bool busy = (state == AppState.Starting);
+            bool run = (state == AppState.Running);
+
             cmbDefault.Enabled = !busy && !run;
             btnRefresh.Enabled = !busy && !run;
+            cmbLatency.Enabled = !busy && !run;
+            cmbSpec.Enabled = !busy && !run;
+            btnAddOutput.Enabled = !busy && !run;
+
             volMaster.Enabled = !busy;
             volGain.Enabled = !busy;
             chkMuteMaster.Enabled = !busy;
             chkMuteCapture.Enabled = !busy;
             chkMinimizeToTray.Enabled = !busy;
             chkDrift.Enabled = !busy;
-            cmbLatency.Enabled = !busy && !run;
-            cmbSpec.Enabled = !busy && !run;
             nudWaterInterval.Enabled = !busy;
             btnStart.Enabled = !busy;
+
             for (int ci = 0; ci < cards.Count; ci++)
             {
-                cards[ci].SetBusy(busy || run);   // 设备/声道/延迟/移除锁定
-                cards[ci].volTrack.Enabled = !busy;
-                cards[ci].chkMute.Enabled = !busy;
+                cards[ci].SetStructuralLock(busy || run);   // 设备 / 延迟 / 移除
+                cards[ci].SetChannelLock(busy);             // 声道 / 行声道
+                cards[ci].SetShapeLock(busy || run);        // 单 ↔ 多声道形态
+                cards[ci].SetVolumeLock(busy);              // 主音量(端点) / 静音 / 行音量
             }
-
-            // 数值标签: 仅分流运行中(双向绑定生效)为黑, 其余灰色表示无效
-            SetVolumeBindVisual(run);
-
-            if (trayIcon != null) trayIcon.Text = "Stereo Splitter - " + txt;
-
-            // 水位监控仅运行时按间隔跑, Ready/Stopped 或间隔0=不跑 (防空转)
-            SyncWaterTimer();
         }
 
         // 水位 timer 启停与间隔统一入口 (SetAppState / 间隔变更时调用)
@@ -1328,6 +1366,7 @@ namespace StereoSplitter
                 cards[i].Changed -= OnCardChanged;
                 cards[i].VolumeScrolled -= OnCardVolumeScrolled;
                 cards[i].RemoveRequested -= OnCardRemoveRequested;
+                cards[i].ShapeBlocked -= OnCardShapeBlocked;
                 cardHost.Controls.Remove(cards[i]);
                 cards[i].Dispose();
             }
@@ -1350,6 +1389,7 @@ namespace StereoSplitter
                 card.Changed += OnCardChanged;
                 card.VolumeScrolled += OnCardVolumeScrolled;
                 card.RemoveRequested += OnCardRemoveRequested;
+                card.ShapeBlocked += OnCardShapeBlocked;
                 // 卡片自带圆角外框, 竖向靠紧 (间隙 = Margin.Bottom), 左右由 cardHost.Padding 撑开
                 card.Margin = new Padding(0, 0, 0, OutputCardControl.CardGap);
                 card.Width = CardWidth();
@@ -1361,6 +1401,7 @@ namespace StereoSplitter
             FitCardWidths();
             if (IsHandleCreated && !IsDisposed)
                 BeginInvoke((Action)FitCardWidths);
+            ApplyUiLock();          // 新建的卡片要继承当前锁定状态(运行中/启动中)
             RefreshSpecBadges();
         }
 
@@ -1524,6 +1565,16 @@ namespace StereoSplitter
                     b.WriteMute(card.chkMute.Checked);
             }
             if (running) ApplyRoutingHot("卡片改动", false);
+        }
+
+        /// <summary>
+        /// 运行中试图切单/多声道形态 → 已被卡片拦下并回滚。形态改的是设备物理声道数
+        /// (OutChannels)，WasapiOut 建好后换不了，只能重新开始。
+        /// </summary>
+        void OnCardShapeBlocked(OutputCardControl card)
+        {
+            Log("[提示] " + DevNameFor(card.Model.DeviceId) + " 单/多声道形态是链路级参数，" +
+                "运行中不能切换（已还原）。要改请先「停止分流」。");
         }
 
         void OnCardVolumeScrolled(OutputCardControl card, bool isSlot)

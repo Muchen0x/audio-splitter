@@ -28,6 +28,13 @@ namespace StereoSplitter
         static extern bool AttachConsole(int processId);
         const int ATTACH_PARENT_PROCESS = -1;
 
+        static bool HasSwitch(string[] argv, string name)
+        {
+            for (int i = 0; i < argv.Length; i++)
+                if (string.Equals(argv[i], name, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
         [STAThread]
         static void Main(string[] argv)
         {
@@ -61,6 +68,32 @@ namespace StereoSplitter
                 try { AttachConsole(ATTACH_PARENT_PROCESS); } catch { }
                 Environment.ExitCode = StereoSplitter.Infrastructure.VolumeProbe.Run(
                     Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log"));
+                return;
+            }
+
+            // 端点维护 (会写端点, 只在显式给参数时执行):
+            //   SplitterGUI.exe --setvol "Xiaomi9:20" --setvol "CABLE:6"
+            //   SplitterGUI.exe --setdefault "Realtek"
+            // 用途: 实例被强杀后端点音量卡在分流值、或默认输出还挂在虚拟声卡上(系统无声)时善后。
+            if (argv != null && argv.Length > 0 && (HasSwitch(argv, "--setvol") || HasSwitch(argv, "--setdefault")))
+            {
+                try { AttachConsole(ATTACH_PARENT_PROCESS); } catch { }
+                var vols = new List<string>();
+                string def = null;
+                for (int i = 0; i < argv.Length; i++)
+                {
+                    if (string.Equals(argv[i], "--setvol", StringComparison.OrdinalIgnoreCase) && i + 1 < argv.Length)
+                        vols.Add(argv[++i]);
+                    else if (string.Equals(argv[i], "--setdefault", StringComparison.OrdinalIgnoreCase) && i + 1 < argv.Length)
+                        def = argv[++i];
+                }
+                int code = 0;
+                if (vols.Count > 0)
+                    code |= StereoSplitter.Infrastructure.EndpointAdmin.SetVolumes(
+                        vols, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log"));
+                if (def != null)
+                    code |= StereoSplitter.Infrastructure.EndpointAdmin.SetDefault(def);
+                Environment.ExitCode = code;
                 return;
             }
 
