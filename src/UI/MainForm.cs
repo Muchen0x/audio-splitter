@@ -25,6 +25,7 @@ namespace StereoSplitter
         FlowLayoutPanel cardHost;
         FlowLayoutPanel flwSpecChannels;
         bool fittingWidths;      // FitCardWidths 重入保护
+        int gridLogCols = -1;    // 上次记过日志的列数 (只在列数变化时打, 拖动窗口不刷屏)
         static readonly int[][] LatencyProfiles = new int[][] {
             new int[] { 100, 50 },
             new int[] { 50, 30 },
@@ -233,14 +234,15 @@ namespace StereoSplitter
             };
 
             // 输出卡片区 (可增删, 内容超出时只有纵向滚动)
-            // 宽度顶到面板右缘 (与「添加输出」右边缘对齐), 竖滚动条才会贴着右边显示;
-            // 左右不留 Padding: 卡片宽度 = 可视宽度, 数学上不可能超出 → 不会出现横向滚动条。
+            // 宽度顶到面板右缘 (与「添加输出」右边缘对齐), 竖滚动条才会贴着右边显示。
+            // 布局: 从左到右铺卡片, 铺满换行 —— 列数按「卡片基准宽度」的整数倍跳档
+            // (见 ComputeCardGrid), 所以窗口变宽是"多一列", 而不是把单张卡片拉成一根长条。
             cardHost = new FlowLayoutPanel
             {
                 Location = new Point(15, 216),
                 Size = new Size(559, 166),
-                FlowDirection = FlowDirection.TopDown,
-                WrapContents = false,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true,
                 AutoScroll = true,
                 Padding = new Padding(0, 4, 0, 6),
                 Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
@@ -1376,6 +1378,11 @@ namespace StereoSplitter
             var devTexts = new List<string>();
             for (int i = 0; i < Devices.Count; i++) devTexts.Add("[" + i + "] " + Devices[i].FriendlyName);
 
+            // 新建卡片先按"当前卡片数"该有的栅格摆好, 免得先按满宽建再被 FitCardWidths 挤一次
+            int gridCols, gridW;
+            ComputeCardGrid(models.Count, out gridCols, out gridW);
+            var gridMargin = new Padding(0, 0, CardGapX, OutputCardControl.CardGap);
+
             for (int i = 0; i < models.Count; i++)
             {
                 OutputCardModel m = models[i];
@@ -1390,9 +1397,9 @@ namespace StereoSplitter
                 card.VolumeScrolled += OnCardVolumeScrolled;
                 card.RemoveRequested += OnCardRemoveRequested;
                 card.ShapeBlocked += OnCardShapeBlocked;
-                // 卡片自带圆角外框, 竖向靠紧 (间隙 = Margin.Bottom), 左右由 cardHost.Padding 撑开
-                card.Margin = new Padding(0, 0, 0, OutputCardControl.CardGap);
-                card.Width = CardWidth();
+                // 卡片自带圆角外框: 竖向靠紧 (间隙 = Margin.Bottom), 横向留 CardGapX 供换列
+                card.Margin = gridMargin;
+                card.Width = gridW;
                 cardHost.Controls.Add(card);
                 cards.Add(card);
             }
@@ -1445,21 +1452,63 @@ namespace StereoSplitter
             lblVolMaster.Location = new Point(pctX, 106);
         }
 
+        /// <summary>卡片基准宽度: 换列的步长。取 490 = 卡片里固定控件(设备/声道/延迟/百分号/静音)
+        /// 占掉约 273px 之后, 滑条还剩 200px 左右的最舒适宽度, 也是默认窗口下单列卡片的取值区。</summary>
+        const int CardBaseW = 490;
+        /// <summary>并排卡片之间的横向间距 (卡片外框到外框)。</summary>
+        const int CardGapX = 10;
+        /// <summary>卡片最窄宽度: 再窄第一行的设备下拉就压到「声道」下拉上了。</summary>
+        const int CardMinW = 430;
+        /// <summary>单列时的宽度上限: 再宽滑条就拉成一根看不见刻度的长线。</summary>
+        const int CardMaxW = 1120;
+
         /// <summary>
-        /// 卡片宽度 = 卡片区可视宽度 (ClientSize 已扣掉竖滚动条)。
-        /// 不再给下限: 一旦卡片比可视区宽就会冒出横向滚动条, 宁可挤也不横滚。
+        /// 算卡片栅格: 列数 + 每张卡片的宽度。
+        /// <para>列数按"基准宽度的整数倍"跳档: 可视宽到 2×基准才铺第 2 列、到 3×基准才铺第 3 列。
+        /// 因为余量摊进卡片宽度, 实际卡片宽度始终落在 [基准, 基准+间距] 这个窄区间里,
+        /// 所以换列时滑条长度只变化几像素, 不会有"窗口宽一点、滑条就长一截"的拉扯感。</para>
+        /// <para>直接读 ClientSize: 它本来就是"上一帧滚动条已经摆好之后"的实测值, 用它做输入
+        /// 才会收敛 —— 自己去预留/反推滚动条宽度反而会和真实布局对不上。</para>
         /// </summary>
-        int CardWidth()
+        void ComputeCardGrid(int count, out int cols, out int width)
         {
-            if (cardHost == null) return OutputCardControl.CardWidth;
-            return cardHost.ClientSize.Width;
+            if (cardHost == null)
+            {
+                cols = 1;
+                width = OutputCardControl.CardWidth;
+                return;
+            }
+
+            int avail = cardHost.ClientSize.Width - cardHost.Padding.Horizontal;
+            if (avail <= 0) { cols = 1; width = OutputCardControl.CardWidth; return; }
+
+            cols = Math.Max(1, (avail + CardGapX) / (CardBaseW + CardGapX));
+            cols = Math.Min(cols, Math.Max(1, count));
+
+            if (cols <= 1)
+            {
+                // 单列: 卡片铺满可视宽 (与改造前完全一致), 只有窗口宽到离谱时才封顶
+                width = Math.Min(Math.Max(avail, CardMinW), CardMaxW);
+            }
+            else
+            {
+                // 多列: 每列都带一个右侧间距(含最后一列), 这样 FlowLayoutPanel 的换行判断
+                // (x + 卡宽 + Margin.Right > 可视宽) 正好在算好的列数处触发, 不会提前折行。
+                width = (avail - cols * CardGapX) / cols;
+                if (width < CardMinW)
+                {
+                    // 窗口窄到连最小宽度都排不下这么多列 → 主动减列, 宁可少一列也不挤成畸形
+                    cols = Math.Max(1, (avail + CardGapX) / (CardMinW + CardGapX));
+                    width = cols <= 1 ? Math.Min(Math.Max(avail, CardMinW), CardMaxW)
+                                      : (avail - cols * CardGapX) / cols;
+                }
+            }
         }
 
         /// <summary>
-        /// 把所有卡片拉成同一宽度。
-        /// 单张卡片各自算宽度不可靠: 卡片是逐个加进 FlowLayoutPanel 的,
-        /// 滚动条可能在中途出现/消失, 后建的卡片量到的可视宽度就比前面的大
-        /// 一个滚动条宽 (17px), 于是滑条长度对不齐。
+        /// 按当前可视宽度摆卡片: 统一宽度 + 横向间距。
+        /// 不逐张算宽度: 卡片是逐个加进 FlowLayoutPanel 的, 滚动条可能在中途出现/消失,
+        /// 后建的卡片量到的可视宽度就比前面的大一个滚动条宽 (17px), 于是滑条长度对不齐。
         /// </summary>
         void FitCardWidths()
         {
@@ -1468,9 +1517,22 @@ namespace StereoSplitter
             fittingWidths = true;
             try
             {
-                int w = CardWidth();
+                int cols, w;
+                ComputeCardGrid(cards.Count, out cols, out w);
+                var margin = new Padding(0, 0, CardGapX, OutputCardControl.CardGap);
                 for (int i = 0; i < cards.Count; i++)
+                {
+                    // 先摆间距再改宽: 换列发生在容器重新布局时, 间距必须已经就位
+                    if (cards[i].Margin != margin) cards[i].Margin = margin;
                     if (cards[i].Width != w) cards[i].Width = w;
+                }
+                if (cols != gridLogCols)
+                {
+                    gridLogCols = cols;
+                    Log("[界面] 卡片区 " + cols + " 列 × " + w + "px（可视 " +
+                        (cardHost.ClientSize.Width - cardHost.Padding.Horizontal) + "px，" +
+                        cards.Count + " 张卡片）");
+                }
             }
             finally { fittingWidths = false; }
         }
@@ -2914,6 +2976,13 @@ namespace StereoSplitter
         delegate void LogDelegate(string msg);
         void Log(string msg)
         {
+            // 卡片栅格的日志可能早于日志框建成 (或晚于它被释放) —— 那时只写文件
+            if (txtLog == null || txtLog.IsDisposed)
+            {
+                if (sessionLog != null)
+                    sessionLog.Write(DateTime.Now.ToString("HH:mm:ss.fff"), Infrastructure.SessionLog.Classify(msg), msg);
+                return;
+            }
             if (txtLog.InvokeRequired)
             {
                 try { BeginInvoke(new LogDelegate(Log), msg); } catch { }
