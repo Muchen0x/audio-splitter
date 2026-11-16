@@ -28,6 +28,14 @@ namespace StereoSplitter
     {
         protected override void OnMouseWheel(MouseEventArgs e)
         {
+            // 不调 base: 滚轮对数字框一律无效
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            const int WM_MOUSEWHEEL = 0x020A;
+            if (m.Msg == WM_MOUSEWHEEL) return;   // 焦点在数字框里时也吃掉, 免得改值
+            base.WndProc(ref m);
         }
     }
 
@@ -81,6 +89,46 @@ namespace StereoSplitter
                 return;
             }
             base.WndProc(ref m);
+        }
+    }
+
+    /// <summary>
+    /// 把鼠标滚轮转给光标下的音量滑条。
+    /// WM_MOUSEWHEEL 只发给"当前拥有焦点的窗口", 而卡片里的滑条刻意不抢焦点
+    /// (一抢焦点 AutoScroll 容器就会滚动一下, 卡片列表会抖), 所以焦点不在滑条上时
+    /// 滑条根本收不到滚轮消息 —— 这里按光标位置自己找控件, 命中就改值并吃掉消息
+    /// (否则卡片区会跟着滚), 没命中就不管, 滚动行为与以前完全一样。
+    /// </summary>
+    class VolumeWheelRouter : IMessageFilter
+    {
+        const int WM_MOUSEWHEEL = 0x020A;
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct POINT { public int X; public int Y; }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr WindowFromPoint(POINT pt);
+
+        public bool PreFilterMessage(ref Message m)
+        {
+            if (m.Msg != WM_MOUSEWHEEL) return false;
+
+            Point screen = Cursor.Position;
+            var hitPoint = new POINT { X = screen.X, Y = screen.Y };
+            Control hit = Control.FromChildHandle(WindowFromPoint(hitPoint));
+            if (hit == null) return false;
+
+            // 从命中的窗口往上找: 滑条本身没有子控件, 直接命中就是它
+            for (Control c = hit; c != null; c = c.Parent)
+            {
+                var slider = c as VolumeSlider;
+                if (slider == null) continue;
+                if (!slider.Visible || !slider.Enabled) return false;
+                int delta = (short)((m.WParam.ToInt64() >> 16) & 0xFFFF);
+                slider.ApplyWheelDelta(delta);
+                return true;
+            }
+            return false;
         }
     }
 

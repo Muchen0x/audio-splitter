@@ -143,6 +143,10 @@ namespace StereoSplitter
             MinimumSize = new Size(600, 480);
             Font = new Font("Microsoft YaHei UI", 9F);
 
+            // 滚轮路由: 光标停在音量条上就调音量 (每格 5%), 而不是滚卡片列表。
+            // 卡片里的滑条不抢焦点, 收不到 WM_MOUSEWHEEL, 只能按光标位置转过去。
+            Application.AddMessageFilter(new VolumeWheelRouter());
+
             // 上下可拖动面板: 内容区 | 6px灰分隔条 | 日志区 (参照 tk.PanedWindow)
             // FixedPanel=Panel2: 窗口变矮时先收缩上面的内容区, 日志区高度保持不变
             // (以前是 Panel1 固定 → 变矮时日志直接被压扁)。
@@ -176,17 +180,18 @@ namespace StereoSplitter
             chkMuteCapture = new CheckBox { Text = "消音", Location = new Point(363, 14), AutoSize = true };
             btnRefresh = new Button { Text = "刷新设备", Location = new Point(417, 11), Width = 72, Height = 23 };
 
-            // 增益独占一行 (主音量上方)。自绘滑条轨道垂直居中, 标签 Top=滑条.Top 时
-            // 文字中心落在轨道线上 (滑条高 20, 中心 10px, 与原 TrackBar 视觉位置一致)。
+            // 增益独占一行 (主音量上方)。自绘滑条轨道垂直居中, 标签 Top = 滑条.Top 时
+            // 文字中心落在轨道线上。滑条宽度不写死, 由 LayoutVolumeRows() 按面板宽度自适应
+            // (和卡片里的音量条一样, 窗口拉宽就跟着变长)。
             var lblG = new Label { Text = "增益:", Location = new Point(15, 72), AutoSize = true };
-            volGain = new VolumeSlider { Location = new Point(78, 72), Width = 300, Minimum = 0, Maximum = 300, Value = 100 };
-            lblVolGain = new Label { Text = "100%", Location = new Point(382, 72), AutoSize = true };
+            volGain = new VolumeSlider { Location = new Point(78, 72), Width = 300, Minimum = 0, Maximum = 300, Value = 100, SmallChange = 5, LargeChange = 5 };
+            lblVolGain = new Label { Text = "100%", AutoSize = false, Width = 46, Height = 20, TextAlign = ContentAlignment.MiddleLeft };
 
-            // 主音量独占一行 (增益下方)。SmallChange/LargeChange=5: 点击/方向键每次 5%, 与输出卡片音量一致
+            // 主音量独占一行 (增益下方)。SmallChange/LargeChange=5: 点击/方向键/滚轮每次 5%, 与输出卡片一致
             var lblVM = new Label { Text = "主音量:", Location = new Point(15, 106), AutoSize = true };
             volMaster = new VolumeSlider { Location = new Point(78, 106), Width = 300, Minimum = 0, Maximum = 100, Value = 100, SmallChange = 5, LargeChange = 5 };
-            lblVolMaster = new Label { Text = "100%", Location = new Point(382, 106), AutoSize = true };
-            chkMuteMaster = new CheckBox { Text = "静音", Location = new Point(424, 104), AutoSize = true };
+            lblVolMaster = new Label { Text = "100%", AutoSize = false, Width = 46, Height = 20, TextAlign = ContentAlignment.MiddleLeft };
+            chkMuteMaster = new CheckBox { Text = "静音", AutoSize = false, Width = 56, Height = 20 };
 
             // 开始分流
             btnStart = new Button { Text = "开始分流", Location = new Point(15, 142), Width = 130, Height = 35 };
@@ -300,6 +305,9 @@ namespace StereoSplitter
 
             splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart, lblSpec, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
+            // 增益/主音量两行的滑条宽度跟面板宽度走 (窗口拉宽自动变长)
+            splitContainer.Panel1.ClientSizeChanged += (s, e) => LayoutVolumeRows();
+            LayoutVolumeRows();
             // 日志框按面板实时尺寸摆放 (拖分隔条/改窗口都要跟), 竖滚动条才会一直贴着右边
             splitContainer.Panel2.Resize += (s, e) => LayoutLogPanel();
             LayoutLogPanel();
@@ -1197,6 +1205,33 @@ namespace StereoSplitter
             int w = Math.Max(120, cs.Width - 15 - 10);
             int h = Math.Max(40, cs.Height - 30 - 8);
             txtLog.SetBounds(15, 30, w, h);
+        }
+
+        /// <summary>
+        /// 增益/主音量两行的自适应布局 (与输出卡片里的音量条同理): 滑条右端跟着面板宽度走,
+        /// 右起固定为 [静音][10][百分比][8][滑条]。
+        /// 增益行没有静音框, 但预留同样的宽度 —— 两条滑条等长、百分比数字竖向对齐。
+        /// </summary>
+        void LayoutVolumeRows()
+        {
+            if (volMaster == null || chkMuteMaster == null) return;
+            Control host = volMaster.Parent;
+            if (host == null) return;
+
+            int panelW = host.ClientSize.Width;
+            const int leftEdge = 78;    // 滑条左端 = "增益:"/"主音量:" 标签右缘
+            const int rightEdge = 10;   // 右端留白, 与卡片区/日志框右缘一致
+            int muteW = chkMuteMaster.Width;
+            int pctW = lblVolMaster.Width;
+
+            chkMuteMaster.Location = new Point(panelW - rightEdge - muteW, 106);
+            int pctX = chkMuteMaster.Left - 10 - pctW;
+            int volW = Math.Max(120, pctX - 8 - leftEdge);
+
+            volGain.SetBounds(leftEdge, 72, volW, 20);
+            lblVolGain.Location = new Point(pctX, 72);
+            volMaster.SetBounds(leftEdge, 106, volW, 20);
+            lblVolMaster.Location = new Point(pctX, 106);
         }
 
         /// <summary>

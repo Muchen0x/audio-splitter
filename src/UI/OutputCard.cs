@@ -77,7 +77,8 @@ namespace StereoSplitter
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
             lblDelay = new Label { Text = "延迟", AutoSize = true };
-            nudDelay = new NumericUpDown
+            // NoWheelNumeric: 光标停在上面滚轮不会改延迟 (误滚一下就把声场拖偏, 很难发现)
+            nudDelay = new NoWheelNumeric
             {
                 Width = 52,
                 Minimum = 0,

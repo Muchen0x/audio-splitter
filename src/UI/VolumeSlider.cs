@@ -113,6 +113,25 @@ namespace StereoSplitter
             return false;
         }
 
+        /// <summary>
+        /// 滚轮一格 = LargeChange (主音量/卡片/增益都是 5), 与"点击轨道每次 5%"一致。
+        /// 返回是否吃掉这次滚轮 (false = 没动值, 让卡片区自己滚)。
+        /// </summary>
+        public bool ApplyWheelDelta(int delta)
+        {
+            if (!Enabled || delta == 0) return false;
+            int notches = delta / 120;
+            if (notches == 0) notches = delta > 0 ? 1 : -1;
+            SetValue(value + largeChange * notches, true);
+            return true;
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            // 不调 base: 值已到顶/到底时也不让消息继续上冒去滚卡片列表
+            ApplyWheelDelta(e.Delta);
+        }
+
         int TrackLeft { get { return ThumbRadius; } }
         int TrackRight { get { return Width - ThumbRadius - 1; } }
 
