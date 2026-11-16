@@ -18,8 +18,9 @@ namespace StereoSplitter
     ///     （取最小，宁可少补也不多补），不一致时记一条警告由调用方打印。
     ///  4. **音量分两处**: 左右两张"端点卡片"的音量仍写设备端点（与设备音量双向同步，行为不变）；
     ///     其余卡片的音量乘进混音矩阵的绑定增益 —— 端点音量是共享的，多路同设备时必然打架。
-    ///  5. **时钟组**: 两路（左右分离）共享一个校正比例；三路起每台设备独立，否则个体水位
-    ///     发散会让设备间对齐随时间漂移（见 docs/多设备声道路由设计.md §5.5）。
+    ///  5. **时钟组**: 立体声/单声道规格下所有设备共享一个校正比例（送的是同一对相关声，
+    ///     各自独立算 ratio 会偏音）；多声道规格下每台设备独立成组，否则个体水位发散会让
+    ///     设备间对齐随时间漂移（见 docs/多设备声道路由设计.md §5.5）。
     /// </summary>
     static class LaneRouting
     {
@@ -86,7 +87,11 @@ namespace StereoSplitter
             // ---- 按设备分组 → 每台设备一路 sink ----
             var sinkOfDevice = new Dictionary<string, SinkSpec>(StringComparer.Ordinal);
             var physCount = new Dictionary<string, int>(StringComparer.Ordinal);
-            bool shareClock = lanes.Count <= 2;      // 两路时代: 左右共享 ratio（偏音消除）
+            // 共享 ratio 的时机: 所有设备送的都是**同一对相关声** (立体声/单声道规格, 哪怕接了 3 台)
+            // → 必须同组, 否则各自算 ratio 会让插值方向不一致、长期平均增益有差 → 偏音。
+            // 多声道规格 (2.1/四声道/5.1) 每台设备各持**不同**声道 → 必须独立组, 否则个体水位发散
+            // 会让设备间对齐随时间漂移 (docs/多设备声道路由设计.md §5.5)。
+            bool shareClock = specIndex <= 1;
 
             for (int i = 0; i < lanes.Count; i++)
             {

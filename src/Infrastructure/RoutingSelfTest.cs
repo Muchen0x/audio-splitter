@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -28,6 +28,7 @@ namespace StereoSplitter
 
             CaseTwoLanesTwoDevices();
             CaseTwoLanesOneDevice();
+            CaseThreeDevicesShareClock();
             CaseSurroundThreeDevices();
             CaseSurroundOneDevice();
             CaseTwoPointOne();
@@ -116,7 +117,7 @@ namespace StereoSplitter
 
             Check("3 路", m.SinkSpecs.Count == 3);
             Check("每路 2ch", m.SinkSpecs[0].OutChannels == 2 && m.SinkSpecs[2].OutChannels == 2);
-            Check("三路起独立时钟组", m.SinkSpecs[1].ClockGroupId == "" && m.SinkSpecs[2].ClockGroupId == "");
+            Check("多声道规格独立时钟组", m.SinkSpecs[1].ClockGroupId == "" && m.SinkSpecs[2].ClockGroupId == "");
 
             var c = m.Compile(m.SinkSpecs, 6);
             Check("devA p0←s0 / p1←s1",
@@ -213,6 +214,26 @@ namespace StereoSplitter
             Check("端点卡 FL 矩阵 = 1.0 (音量交给设备端点)", Math.Abs(c.SinkMatrix[0][0, 0] - 1f) < 1e-6f);
             Check("非端点卡 中置 = 0.5", Math.Abs(c.SinkMatrix[2][0, 2] - 0.5f) < 1e-6f);
             Check("静音卡 低音 = 0", Math.Abs(c.SinkMatrix[2][1, 3]) < 1e-6f);
+        }
+
+        /// <summary>立体声规格接三台设备 (如双单声道并播): 全部共享一个 ratio 才不会偏音。</summary>
+        static void CaseThreeDevicesShareClock()
+        {
+            Begin("立体声规格 / 三台设备 → 共享时钟");
+            var lanes = new List<OutputLane>
+            {
+                Lane("FL", "devA", 0, 100),
+                Lane("FR", "devA", 0, 100),
+                Lane("FL", "devB", 20, 100),
+                Lane("FR", "devB", 20, 100),
+                Lane("FL", "devC", 40, 100)
+            };
+            bool conflict;
+            var m = LaneRouting.Build(lanes, 1, 0, lanes[0], lanes[1], null, out conflict);
+            Check("3 路", m.SinkSpecs.Count == 3);
+            Check("全部 g0",
+                m.SinkSpecs[0].ClockGroupId == "g0" && m.SinkSpecs[1].ClockGroupId == "g0" &&
+                m.SinkSpecs[2].ClockGroupId == "g0");
         }
 
         /// <summary>同一设备上两张卡片延迟不同: 取最小并报冲突 (内核每路只有一条延迟线)。</summary>
