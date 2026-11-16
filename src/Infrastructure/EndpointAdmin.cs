@@ -36,8 +36,11 @@ namespace StereoSplitter.Infrastructure
                     if (!int.TryParse(spec.Substring(c + 1).Trim(), out pct)) { Console.WriteLine("[跳过] 百分比不是整数: " + spec); bad++; continue; }
                     pct = Math.Max(0, Math.Min(100, pct));
 
-                    EndpointInfo ep = FindByName(catalog, needle);
-                    if (ep == null) { Console.WriteLine("[失败] 找不到设备: " + needle); bad++; continue; }
+                    EndpointInfo ep = null;
+                    List<EndpointInfo> hits = FindAllByName(catalog, needle);
+                    if (hits.Count == 0) { Console.WriteLine("[失败] 找不到设备: " + needle); bad++; continue; }
+                    if (hits.Count > 1) { PrintAmbiguous(needle, hits); bad++; continue; }
+                    ep = hits[0];
 
                     MMDevice dev = null;
                     try
@@ -70,8 +73,10 @@ namespace StereoSplitter.Infrastructure
             {
                 catalog = new DeviceCatalog();
                 catalog.Refresh();
-                EndpointInfo ep = FindByName(catalog, needle);
-                if (ep == null) { Console.WriteLine("[失败] 找不到设备: " + needle); return 5; }
+                List<EndpointInfo> hits = FindAllByName(catalog, needle);
+                if (hits.Count == 0) { Console.WriteLine("[失败] 找不到设备: " + needle); return 5; }
+                if (hits.Count > 1) { PrintAmbiguous(needle, hits); return 8; }
+                EndpointInfo ep = hits[0];
                 string before = catalog.DefaultRenderName();
                 string err;
                 if (!SystemDefaultPolicy.TrySetDefault(ep.ID, out err))
@@ -86,13 +91,68 @@ namespace StereoSplitter.Infrastructure
             finally { if (catalog != null) { try { catalog.Dispose(); } catch { } } }
         }
 
-        static EndpointInfo FindByName(DeviceCatalog catalog, string needle)
+        /// <summary>
+        /// 列出渲染端点（`--list [名字片段]`，只读干跑）。
+        /// 片段为空列全部，否则只列名字包含片段的；用于改之前先确认匹配目标。
+        /// 返回 0 = 正常。
+        /// </summary>
+        public static int ListEndpoints(string needle)
         {
-            if (string.IsNullOrEmpty(needle)) return null;
+            DeviceCatalog catalog = null;
+            try
+            {
+                catalog = new DeviceCatalog();
+                catalog.Refresh();
+                string defId = catalog.DefaultRenderId();
+                bool filter = !string.IsNullOrEmpty(needle);
+                int shown = 0;
+                for (int i = 0; i < catalog.Endpoints.Count; i++)
+                {
+                    EndpointInfo ep = catalog.Endpoints[i];
+                    if (filter && ep.FriendlyName.IndexOf(needle, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    shown++;
+                    MMDevice dev = null;
+                    try
+                    {
+                        dev = catalog.Open(ep.ID);
+                        if (dev == null) { Console.WriteLine("[" + i + "] (打不开) " + ep.FriendlyName); continue; }
+                        var vol = dev.AudioEndpointVolume;
+                        int pct = (int)Math.Round(vol.MasterVolumeLevelScalar * 100);
+                        Console.WriteLine("[" + i + "] " + pct.ToString().PadLeft(3) + "%" +
+                            (vol.Mute ? " 静音 " : "     ") +
+                            (ep.ID == defId ? "[默认] " : "       ") + ep.FriendlyName);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("[" + i + "] (音量不可用: " + ex.Message + ") " + ep.FriendlyName);
+                    }
+                    finally { if (dev != null) { try { dev.Dispose(); } catch { } } }
+                }
+                if (shown == 0) Console.WriteLine(filter ? ("没有匹配 \"" + needle + "\" 的设备") : "没有渲染端点");
+                return 0;
+            }
+            catch (Exception ex) { Console.WriteLine("列出端点异常: " + ex.Message); return 9; }
+            finally { if (catalog != null) { try { catalog.Dispose(); } catch { } } }
+        }
+
+        /// <summary>多匹配拒绝时打印候选清单，提示用户换成更精确的片段。</summary>
+        static void PrintAmbiguous(string needle, List<EndpointInfo> hits)
+        {
+            Console.WriteLine("[拒绝] \"" + needle + "\" 匹配到 " + hits.Count + " 个设备, 为防误伤已中止:");
+            for (int i = 0; i < hits.Count; i++)
+                Console.WriteLine("    - " + hits[i].FriendlyName);
+            Console.WriteLine("请改用更长的名字片段, 或先用 --list \"片段\" 确认目标。");
+        }
+
+        /// <summary>按名字子串找设备（不区分大小写）。**返回全部命中**，调用方需自行处理多匹配。</summary>
+        static List<EndpointInfo> FindAllByName(DeviceCatalog catalog, string needle)
+        {
+            var hits = new List<EndpointInfo>();
+            if (string.IsNullOrEmpty(needle)) return hits;
             for (int i = 0; i < catalog.Endpoints.Count; i++)
                 if (catalog.Endpoints[i].FriendlyName.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
-                    return catalog.Endpoints[i];
-            return null;
+                    hits.Add(catalog.Endpoints[i]);
+            return hits;
         }
     }
 }

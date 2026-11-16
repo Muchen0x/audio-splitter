@@ -71,10 +71,24 @@ namespace StereoSplitter
                 return;
             }
 
+            // 端点清单干跑 (只读): SplitterGUI.exe --list ["名字片段"]
+            // 用途: --setvol/--setdefault 之前先确认名字片段匹配到哪台设备。
+            if (argv != null && argv.Length > 0 && HasSwitch(argv, "--list"))
+            {
+                try { AttachConsole(ATTACH_PARENT_PROCESS); } catch { }
+                string needle = null;
+                for (int i = 0; i < argv.Length; i++)
+                    if (string.Equals(argv[i], "--list", StringComparison.OrdinalIgnoreCase) && i + 1 < argv.Length)
+                        needle = argv[++i];
+                Environment.ExitCode = StereoSplitter.Infrastructure.EndpointAdmin.ListEndpoints(needle);
+                return;
+            }
+
             // 端点维护 (会写端点, 只在显式给参数时执行):
             //   SplitterGUI.exe --setvol "Xiaomi9:20" --setvol "CABLE:6"
             //   SplitterGUI.exe --setdefault "Realtek"
             // 用途: 实例被强杀后端点音量卡在分流值、或默认输出还挂在虚拟声卡上(系统无声)时善后。
+            // 名字片段匹配到多台设备时会拒绝执行并列出候选, 防误伤。
             if (argv != null && argv.Length > 0 && (HasSwitch(argv, "--setvol") || HasSwitch(argv, "--setdefault")))
             {
                 try { AttachConsole(ATTACH_PARENT_PROCESS); } catch { }
