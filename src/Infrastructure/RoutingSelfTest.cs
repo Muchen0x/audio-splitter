@@ -35,7 +35,10 @@ namespace StereoSplitter
             CaseMono();
             CaseStereoFromSurroundSource();
             CaseVolumeAndMute();
-            CaseEndpointBindingByDevice();
+            CaseMergeSameDevice();
+            CaseMergeVolumeOwnership();
+            CaseFlattenVolumeRules();
+            CaseSparsePhysSlots();
             CaseDelayConflict();
             CaseValidateWarnings();
             CaseIniRoundTrip();
@@ -197,58 +200,118 @@ namespace StereoSplitter
                 Math.Abs(c.SinkMatrix[1][1, 0] - 0.35f) < 1e-6f);
         }
 
-        /// <summary>音量: 独占设备的卡走设备端点 (矩阵必须 1.0 防双衰减), 同设备多卡进矩阵。</summary>
+        /// <summary>音量: 进矩阵的增益直接来自 lane.Volume / Mute (端点承载的卡片由 Flatten 写 1.0)。</summary>
         static void CaseVolumeAndMute()
         {
-            Begin("音量归属 (端点 vs 混音增益)");
+            Begin("音量/静音进矩阵");
             var lanes = new List<OutputLane>
             {
                 Lane("FL", "devA", 0, 50),
-                Lane("FR", "devB", 0, 50),
-                Lane("C", "devC", 0, 50),
-                Lane("LFE", "devC", 0, 0)
+                Lane("C", "devB", 0, 60),
+                Lane("LFE", "devB", 0, 0)
             };
-            lanes[3].Mute = true;
+            lanes[2].Mute = true;
             bool conflict;
             var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
             var c = m.Compile(m.SinkSpecs, 6);
-            Check("独占设备的卡 FL 矩阵 = 1.0 (音量交给设备端点)", Math.Abs(c.SinkMatrix[0][0, 0] - 1f) < 1e-6f);
-            Check("同设备多卡 中置 = 0.5 (进混音增益)", Math.Abs(c.SinkMatrix[2][0, 2] - 0.5f) < 1e-6f);
-            Check("静音卡 低音 = 0", Math.Abs(c.SinkMatrix[2][1, 3]) < 1e-6f);
+            Check("FL 增益 0.5", Math.Abs(c.SinkMatrix[0][0, 0] - 0.5f) < 1e-6f);
+            Check("中置 增益 0.6", Math.Abs(c.SinkMatrix[1][0, 2] - 0.6f) < 1e-6f);
+            Check("静音 低音 = 0", Math.Abs(c.SinkMatrix[1][1, 3]) < 1e-6f);
         }
 
         /// <summary>
-        /// 音量归属规则: 按设备分组, 独占一台设备的卡才绑端点。
-        /// 这条规则错了会静默出错 —— 要么多路抢同一个端点互相覆盖, 要么该绑的没绑。
+        /// 同设备的两张卡片 → 合并成一张多声道卡片。
+        /// 合并必须无损: 各行声道/音量照旧、延迟取最小、送进内核的形状与合并前一致。
         /// </summary>
-        static void CaseEndpointBindingByDevice()
+        static void CaseMergeSameDevice()
         {
-            Begin("音量绑定归属 (按设备)");
-
-            // 三台设备各一张卡 → 三张都绑端点
-            var oneEach = new List<OutputLane>
+            Begin("同设备卡片合并");
+            var cards = new List<OutputCardModel>
             {
-                Lane("FL", "devA", 0, 40), Lane("FR", "devB", 0, 40), Lane("LFE", "devC", 0, 40)
+                Card("devA", 30, false, "FL", 40),
+                Card("devB", 0, false, "C", 70),
+                Card("devA", 10, false, "FR", 60)     // 与第 1 张同设备
             };
-            Check("一台设备一张卡 → 3 张全绑端点", LaneRouting.ResolveEndpointLanes(oneEach).Count == 3);
-
-            // 一台设备两张卡 → 这两张都不绑 (写同一个端点会互相覆盖), 另一台的仍然绑
-            var shared = new List<OutputLane>
-            {
-                Lane("FL", "devA", 0, 40), Lane("FR", "devA", 0, 40), Lane("LFE", "devB", 0, 40)
-            };
-            var eps = LaneRouting.ResolveEndpointLanes(shared);
-            Check("同设备两卡 → 只有低音那张绑端点", eps.Count == 1 && ReferenceEquals(eps[0], shared[2]));
+            int merged = LaneRouting.MergeSameDevice(cards);
+            Check("合并 1 张", merged == 1 && cards.Count == 2);
+            Check("devA 变多声道 2 行", cards[0].Multi && cards[0].Slots.Count == 2);
+            Check("行序 FL/FR", cards[0].Slots[0].ChannelKey == "FL" && cards[0].Slots[1].ChannelKey == "FR");
+            // 单声道来源的音量是"端点音量镜像", 不是行增益 → 合并后端点由主音量唯一承载, 行增益回 100
+            // (照抄 40/60 就会变成 端点×增益 双份衰减)
+            Check("单声道来源行增益复位 100", cards[0].Slots[0].Volume == 100 && cards[0].Slots[1].Volume == 100);
+            Check("延迟取最小 10ms", cards[0].DelayMs == 10);
+            Check("另一台不受影响", !cards[1].Multi && cards[1].DeviceId == "devB");
 
             bool conflict;
-            var m = LaneRouting.Build(shared, 2, 2, null, out conflict);
-            Check("同设备两卡 → 增益 0.4/0.4",
-                Math.Abs(m.Bindings[0].Gain - 0.4f) < 1e-6f && Math.Abs(m.Bindings[1].Gain - 0.4f) < 1e-6f);
-            Check("独占设备卡 → 矩阵增益 1.0", Math.Abs(m.Bindings[2].Gain - 1f) < 1e-6f);
+            var m = LaneRouting.Build(LaneRouting.Flatten(cards, null), 4, 6, null, out conflict);
+            Check("2 路 sink", m.SinkSpecs.Count == 2);
+            Check("devA 2ch", m.SinkSpecs[0].OutChannels == 2);
+        }
 
-            // 设备还没选的卡不参与端点绑定 (启动前 AutoConfigure 会补)
-            var noDev = new List<OutputLane> { Lane("M", "", 0, 40) };
-            Check("空设备不绑端点", LaneRouting.ResolveEndpointLanes(noDev).Count == 0);
+        /// <summary>
+        /// 合并时的音量归属: 多声道来源的行增益是"真增益", 合并后必须原样保留;
+        /// 单声道来源的行音量是端点镜像, 必须复位 100。混着来才不会双衰减也不会丢调节。
+        /// </summary>
+        static void CaseMergeVolumeOwnership()
+        {
+            Begin("合并音量归属");
+            var host = Card("devA", 0, true, "FL", 100);
+            host.Slots[0].Volume = 80;                       // p0: 真增益 80%
+            host.Slots.Add(new ChannelSlot { ChannelKey = "FR", Volume = 55 });
+            var single = Card("devA", 0, false, "BL", 12);   // 端点镜像 12%
+            var cards = new List<OutputCardModel> { host, single };
+
+            int merged = LaneRouting.MergeSameDevice(cards);
+            Check("合并 1 张", merged == 1 && cards.Count == 1);
+            Check("3 行", cards[0].Slots.Count == 3);
+            Check("多声道来源增益保留 80/55",
+                cards[0].Slots[0].Volume == 80 && cards[0].Slots[1].Volume == 55);
+            Check("单声道来源增益复位 100", cards[0].Slots[2].Volume == 100);
+            Check("行序 FL/FR/BL", cards[0].Slots[2].ChannelKey == "BL");
+        }
+
+        /// <summary>
+        /// 音量归属: 端点可用 → 卡片主音量不进矩阵 (写 1.0, 否则双份衰减);
+        /// 多声道各行音量进矩阵; 端点不可用 → 主音量乘进矩阵。规则错了会静默双衰减或音量完全失效。
+        /// </summary>
+        static void CaseFlattenVolumeRules()
+        {
+            Begin("Flatten 音量归属");
+
+            var single = new List<OutputCardModel> { Card("devA", 0, false, "FL", 40) };
+            Check("端点可用 → 矩阵 1.0", LaneRouting.Flatten(single, null)[0].Volume == 100);
+
+            var noEp = new List<OutputCardModel> { Card("devA", 0, false, "FL", 40) };
+            Check("端点不可用 → 矩阵 40", LaneRouting.Flatten(noEp, delegate(string d) { return false; })[0].Volume == 40);
+
+            var multi = new List<OutputCardModel> { Card("devA", 0, true, "FL", 80) };
+            multi[0].Slots.Add(new ChannelSlot { ChannelKey = "FR", Volume = 55 });
+            var lanes = LaneRouting.Flatten(multi, null);
+            Check("多声道 → 2 行", lanes.Count == 2);
+            Check("行音量 80/55", lanes[0].Volume == 80 && lanes[1].Volume == 55);
+            Check("物理声道 0/1", lanes[0].PhysIndex == 0 && lanes[1].PhysIndex == 1);
+
+            multi[0].Volume = 50;   // 主音量 50% + 端点不可用 → 行音量各乘 50%
+            var both = LaneRouting.Flatten(multi, delegate(string d) { return false; });
+            Check("40/28 (行×主)", both[0].Volume == 40 && both[1].Volume == 28);
+        }
+
+        /// <summary>多声道卡片里的空行 → 该物理声道必须静音, 但声道数不能被压缩。</summary>
+        static void CaseSparsePhysSlots()
+        {
+            Begin("空行 / 稀疏物理声道");
+            var cards = new List<OutputCardModel> { Card("devA", 0, true, "FL", 100) };
+            cards[0].Slots.Add(new ChannelSlot { ChannelKey = "", Volume = 100 });      // p1 空
+            cards[0].Slots.Add(new ChannelSlot { ChannelKey = "LFE", Volume = 100 });   // p2
+            var lanes = LaneRouting.Flatten(cards, null);
+            Check("2 行有内容", lanes.Count == 2);
+
+            bool conflict;
+            var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
+            Check("仍是 3ch (p1 留空不被压缩)", m.SinkSpecs[0].OutChannels == 3);
+            var c = m.Compile(m.SinkSpecs, 6);
+            Check("p1 全零", Math.Abs(c.SinkMatrix[0][1, 0]) < 1e-6f && Math.Abs(c.SinkMatrix[0][1, 3]) < 1e-6f);
+            Check("p2 ← 低音", Math.Abs(c.SinkMatrix[0][2, 3] - 1f) < 1e-6f);
         }
 
         /// <summary>立体声规格接三台设备 (如双单声道并播): 全部共享一个 ratio 才不会偏音。</summary>
@@ -354,6 +417,14 @@ namespace StereoSplitter
         static OutputLane Lane(string key, string dev, int delay, int vol)
         {
             return new OutputLane { ChannelKey = key, DeviceId = dev, DelayMs = delay, Volume = vol };
+        }
+
+        /// <summary>一张卡片模型。单声道卡片的主音量就是那一路音量 (界面里两者始终相等)。</summary>
+        static OutputCardModel Card(string dev, int delay, bool multi, string ch, int vol)
+        {
+            var m = new OutputCardModel { DeviceId = dev, DelayMs = delay, Multi = multi, Volume = multi ? 100 : vol };
+            m.Slots.Add(new ChannelSlot { ChannelKey = ch, Volume = vol });
+            return m;
         }
 
         static void Begin(string name)

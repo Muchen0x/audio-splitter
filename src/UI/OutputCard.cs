@@ -6,28 +6,52 @@ using System.Windows.Forms;
 namespace StereoSplitter
 {
     /// <summary>
-    /// 一路输出的模型: 接哪个声道、用哪台设备、延迟/音量/静音。
-    /// 界面上的"输出卡片"是它的视图; ini 里的 Out{n}.* 是它的持久化。
+    /// 内核输入: 一路 = 一个物理声道接一个逻辑声道。
+    /// 由 <see cref="LaneRouting.Flatten"/> 从卡片模型生成 (音量已折算成矩阵增益)。
     /// </summary>
     class OutputLane
     {
         public string ChannelKey = "FL";   // 规格里的声道键: M/FL/FR/C/LFE/SL/SR/BL/BR
         public string DeviceId = "";
         public int DelayMs;
-        public int Volume = 100;           // 0..100; 独占设备时写端点音量, 同设备多卡时进混音增益
+        public int Volume = 100;           // 进混音矩阵的有效音量 (端点承载时为 100)
         public bool Mute;
+        public int PhysIndex = -1;         // 该设备上的物理声道号; -1 = 由内核按顺序分配
+    }
+
+    /// <summary>卡片里的一行 = 该设备的一个物理声道: 接哪个逻辑声道 + 该声道自己的音量。</summary>
+    class ChannelSlot
+    {
+        public string ChannelKey = "";     // "" = 这个物理声道空着 (不出声)
+        public int Volume = 100;
+    }
+
+    /// <summary>
+    /// 一张输出卡片 = **一台设备** (同设备的多路会自动合并成一张)。
+    /// <para>Multi=false: 只有一个声道, Slots[0].ChannelKey 就是卡片声道下拉的值。</para>
+    /// <para>Multi=true: 声道下拉选"多声道", Slots 按物理声道 p0..pN-1 排列,
+    /// 每行各自选逻辑声道并有独立音量条; 卡片主音量 = 设备端点音量。</para>
+    /// </summary>
+    class OutputCardModel
+    {
+        public string DeviceId = "";
+        public int DelayMs;
+        public int Volume = 100;           // 主音量: 写设备端点音量 (端点不可用时回落为增益)
+        public bool Mute;
+        public bool Multi;
+        public readonly List<ChannelSlot> Slots = new List<ChannelSlot>();
     }
 
     /// <summary>
     /// 输出卡片:
-    ///   第一行 [设备▾] [输出声道▾] [延迟][n][ms] [×]
-    ///   第二行 音量 [滑条] n% [静音]
-    ///   × 紧挨延迟组右侧 (整组右对齐, 设备下拉吸收剩余宽度), 互不遮挡。
-    /// 取代旧界面的"左/右声道设备 + 左右延迟 + 左右音量"三组控件。
+    ///   [设备▾] [声道▾/多声道] [延迟][n][ms] [×]
+    ///   音量 [滑条] n% [静音]
+    ///   (多声道时) 每行: p0 [声道▾] [滑条] n%
+    /// 一张卡片对应一台设备; 声道下拉里的"多声道"把该设备的每个物理声道展开成一行。
     /// </summary>
     class OutputCardControl : UserControl
     {
-        public readonly OutputLane Lane;
+        public readonly OutputCardModel Model;
         public readonly NoWheelComboBox cmbDevice;
         public readonly NoWheelComboBox cmbChannel;
         public readonly NumericUpDown nudDelay;
@@ -38,26 +62,40 @@ namespace StereoSplitter
 
         readonly Label lblDelay, lblMs, lblVolTitle;
 
+        /// <summary>多声道行: 每个物理声道一行 (声道下拉 + 音量条 + 百分比)。</summary>
+        sealed class SlotRow
+        {
+            public Label Tag;
+            public NoWheelComboBox Cmb;
+            public VolumeSlider Vol;
+            public Label Lbl;
+        }
+
+        readonly List<SlotRow> rows = new List<SlotRow>();
+
         bool syncing;
 
         /// <summary>结构性/配置变化(换设备/换声道/延迟/静音/音量松手)。</summary>
         public event Action<OutputCardControl> Changed;
-        /// <summary>音量拖动中(连续)。运行中热更新用。</summary>
-        public event Action<OutputCardControl> VolumeScrolled;
+        /// <summary>音量拖动中(连续)。运行中热更新用; 第二参数 true = 拖的是多声道行(增益)。</summary>
+        public event Action<OutputCardControl, bool> VolumeScrolled;
         public event Action<OutputCardControl> RemoveRequested;
 
-        public const int CardHeight = 56;
+        public const int CardHeight = 56;       // 单声道卡片高度
         public const int CardWidth = 500;
+        public const int RowHeight = 26;        // 多声道每行高度
 
         /// <summary>卡片之间的竖向间隙 (与 MainForm 里卡片的 Margin.Bottom 对应)。</summary>
         public const int CardGap = 4;
 
         static readonly Color BorderColor = Color.FromArgb(203, 208, 216);
+        static readonly Color RowLabelColor = Color.FromArgb(120, 126, 136);
         const int CornerRadius = 6;
+        const int RowTop = 58;                  // 多声道首行 y
 
-        public OutputCardControl(OutputLane lane)
+        public OutputCardControl(OutputCardModel model)
         {
-            Lane = lane;
+            Model = model;
             SetStyle(ControlStyles.OptimizedDoubleBuffer, true);
             SetStyle(ControlStyles.ResizeRedraw, true);
             SetStyle(ControlStyles.AllPaintingInWmPaint, true);
@@ -167,7 +205,7 @@ namespace StereoSplitter
                 // 音量到 0 自动勾静音, 拖离 0 取消 (与主音量一致)
                 if (chkMute.Checked != (volTrack.Value == 0)) chkMute.Checked = volTrack.Value == 0;
                 var h = VolumeScrolled;
-                if (h != null) h(this);
+                if (h != null) h(this, false);
             };
             volTrack.MouseUp += (s, e) => Fire();
             volTrack.KeyUp += (s, e) => Fire();
@@ -184,14 +222,129 @@ namespace StereoSplitter
             };
 
             var tip = new ToolTip();
-            tip.SetToolTip(cmbDevice, "这一路输出用哪台设备。\n同一台设备可以承载多路（内核按设备合并成一条输出流，按卡片上下顺序分配物理声道）。");
-            tip.SetToolTip(cmbChannel, "这一路输出规格里的哪个声道。\n角标: 规格行右侧的数字 = 有几路输出接到该声道。");
-            tip.SetToolTip(nudDelay, "本路延迟补偿 (毫秒)。多台设备距离不同时, 给近的加延迟对齐声场。\n同一台设备只有一条延迟线: 该设备上的多张卡片取最小值, 不一致时日志会提示。");
-            tip.SetToolTip(volTrack, "本路音量。独占一台设备的卡写设备端点音量(与系统音量双向同步, 停止时还原);\n同一台设备上有多张卡时, 这些卡在混音层生效(端点音量是设备级单值, 多路共用会互相覆盖)。\n双击百分比可复位 100%。");
-            tip.SetToolTip(btnRemove, "移除这一路输出");
-
-            SyncFromLane();
+            tip.SetToolTip(cmbDevice, "这张卡片输出到哪台设备。\n同一台设备只会有一张卡片: 两张卡片选到同一设备会自动合并成多声道卡片。");
+            tip.SetToolTip(cmbChannel, "这张卡片输出的声道。\n选「多声道」= 该设备的每个物理声道各占一行, 行内可分别选声道、分别调音量。\n角标: 规格行右侧的数字 = 有几个物理声道接到该声道。");
+            tip.SetToolTip(nudDelay, "这张卡片的延迟补偿 (毫秒)。多台设备距离不同时, 给近的加延迟对齐声场。\n延迟是设备级: 合并后取原卡片里的最小值。");
+            tip.SetToolTip(volTrack, "主音量。\n单声道卡片: 写该设备的端点音量(与系统音量条双向同步, 停止时还原)。\n多声道卡片: 同样是设备端点音量; 各声道的微调在下方各行。\n双击百分比可复位 100%。");
+            tip.SetToolTip(btnRemove, "移除这张输出卡片 (整台设备)");
         }
+
+        /// <summary>行数 (多声道行; 单声道为 0)。</summary>
+        public int RowCount { get { return rows.Count; } }
+
+        /// <summary>
+        /// 设置卡片形态: 多声道则按 <paramref name="rowCount"/> 建行。
+        /// <para>行是设备物理声道, 顺序固定 p0..pN-1; 每行的逻辑声道由行内下拉决定。</para>
+        /// </summary>
+        public void SetMulti(bool multi, int rowCount, IList<KeyValuePair<string, string>> channels)
+        {
+            int want = multi ? Math.Max(1, rowCount) : 0;
+            // 行数不变就只刷新下拉选项 (避免重建控件导致焦点/滚动位置跳动)
+            while (rows.Count > want) RemoveRow(rows.Count - 1);
+            while (rows.Count < want) AddRow(rows.Count);
+            foreach (var r in rows) FillSlotChannels(r, channels);
+
+            int h = CardHeight + (rows.Count > 0 ? 4 + rows.Count * RowHeight : 0);
+            if (Height != h)
+            {
+                // FlowLayoutPanel 按控件高度排列, 改高度后必须重排
+                SuspendLayout();
+                Height = h;
+                LayoutControls();
+                ResumeLayout();
+            }
+            LayoutControls();
+        }
+
+        void AddRow(int index)
+        {
+            var r = new SlotRow();
+            r.Tag = new Label
+            {
+                Text = "p" + index,
+                AutoSize = false,
+                Width = 24,
+                Height = 20,
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = RowLabelColor
+            };
+            r.Cmb = new NoWheelComboBox
+            {
+                Width = 92,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            r.Vol = new VolumeSlider
+            {
+                Width = 200,
+                Height = 20,
+                Minimum = 0,
+                Maximum = 100,
+                Value = 100,
+                SmallChange = 5,
+                LargeChange = 5
+            };
+            r.Lbl = new Label
+            {
+                Text = "100%",
+                AutoSize = false,
+                Width = 42,
+                Height = 20,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+
+            r.Cmb.SelectedIndexChanged += (s, e) => { if (!syncing) Fire(); };
+            r.Vol.ValueChanged += (s, e) =>
+            {
+                if (syncing) return;
+                r.Lbl.Text = r.Vol.Value + "%";
+                var h = VolumeScrolled;
+                if (h != null) h(this, true);
+            };
+            r.Vol.MouseUp += (s, e) => Fire();
+            r.Vol.KeyUp += (s, e) => Fire();
+            r.Lbl.DoubleClick += (s, e) => { r.Vol.Value = 100; Fire(); };
+
+            Controls.AddRange(new Control[] { r.Tag, r.Cmb, r.Vol, r.Lbl });
+            rows.Add(r);
+        }
+
+        void RemoveRow(int index)
+        {
+            SlotRow r = rows[index];
+            Controls.Remove(r.Tag);
+            Controls.Remove(r.Cmb);
+            Controls.Remove(r.Vol);
+            Controls.Remove(r.Lbl);
+            r.Tag.Dispose();
+            r.Cmb.Dispose();
+            r.Vol.Dispose();
+            r.Lbl.Dispose();
+            rows.RemoveAt(index);
+        }
+
+        /// <summary>行内声道下拉: 规格声道 + 「(不使用)」。</summary>
+        void FillSlotChannels(SlotRow r, IList<KeyValuePair<string, string>> channels)
+        {
+            syncing = true;
+            try
+            {
+                object keep = r.Cmb.SelectedItem;
+                r.Cmb.Items.Clear();
+                r.Cmb.Items.Add(UnusedText);
+                for (int i = 0; i < channels.Count; i++) r.Cmb.Items.Add(channels[i].Value);
+                // 尽量保住原来选中的文字 (控件重建/换规格时不跳回第一项)
+                int idx = 0;
+                if (keep != null)
+                {
+                    for (int i = 0; i < r.Cmb.Items.Count; i++)
+                        if ((string)r.Cmb.Items[i] == (string)keep) { idx = i; break; }
+                }
+                if (r.Cmb.SelectedIndex != idx) r.Cmb.SelectedIndex = idx;
+            }
+            finally { syncing = false; }
+        }
+
+        public const string UnusedText = "（不使用）";
 
         /// <summary>
         /// 按当前宽度摆放全部子控件。
@@ -202,7 +355,7 @@ namespace StereoSplitter
         {
             int w = Width;
 
-            // 第一行右起排: [×] ← [ms] ← [延迟数字框] ← [延迟] ← [输出声道], 设备下拉占满左侧。
+            // 第一行右起排: [×] ← [ms] ← [延迟数字框] ← [延迟] ← [声道], 设备下拉占满左侧。
             // × 紧挨延迟组右侧 (距 ms 8px), 与单位文字不再互相遮挡。
             btnRemove.Location = new Point(w - 8 - btnRemove.Width, 4);
             lblMs.Location = new Point(btnRemove.Left - 8 - lblMs.Width, 8);
@@ -213,7 +366,7 @@ namespace StereoSplitter
             cmbDevice.Width = Math.Max(90, cmbChannel.Left - 14);
 
             // 第二行: 音量标题 → 滑条(拉满可用宽度) → 百分比 → 静音 (标签与轨道中心对齐)
-            // 卡片高 56 = 上边距4 + 第一行21 + 间隔5 + 第二行20 + 下边距6, 下方不再留空。
+            // 单声道卡片高 56 = 上边距4 + 第一行21 + 间隔5 + 第二行20 + 下边距6, 下方不再留空。
             const int row2 = 30;
             lblVolTitle.Location = new Point(10, row2);
             int volX = lblVolTitle.Right + 6;
@@ -221,6 +374,18 @@ namespace StereoSplitter
             volTrack.Width = Math.Max(120, w - volX - (8 + lblVol.Width + 12 + chkMute.Width + 8));
             lblVol.Location = new Point(volTrack.Right + 8, row2);
             chkMute.Location = new Point(lblVol.Right + 12, row2 - 2);
+
+            // 多声道行: p0 [声道▾] [滑条] n%
+            for (int i = 0; i < rows.Count; i++)
+            {
+                int y = RowTop + i * RowHeight;
+                SlotRow r = rows[i];
+                r.Tag.Location = new Point(10, y + 3);
+                r.Cmb.Location = new Point(38, y);
+                r.Vol.Location = new Point(140, y + 3);
+                r.Vol.Width = Math.Max(100, w - 140 - (8 + r.Lbl.Width + 10));
+                r.Lbl.Location = new Point(r.Vol.Right + 8, y + 3);
+            }
         }
 
         /// <summary>
@@ -246,16 +411,44 @@ namespace StereoSplitter
             }
         }
 
-        /// <summary>用模型值回填控件 (载入/外部改动后调用)。</summary>
-        public void SyncFromLane()
+        /// <summary>用模型值回填控件 (载入/外部改动后调用)。行数须先由 SetMulti 定好。</summary>
+        public void SyncFromModel(IList<KeyValuePair<string, string>> channels)
         {
             syncing = true;
             try
             {
-                nudDelay.Value = Math.Max(nudDelay.Minimum, Math.Min(nudDelay.Maximum, Lane.DelayMs));
-                volTrack.Value = Math.Max(volTrack.Minimum, Math.Min(volTrack.Maximum, Lane.Volume));
-                lblVol.Text = Lane.Volume + "%";
-                chkMute.Checked = Lane.Mute;
+                nudDelay.Value = Math.Max(nudDelay.Minimum, Math.Min(nudDelay.Maximum, Model.DelayMs));
+                volTrack.Value = Math.Max(volTrack.Minimum, Math.Min(volTrack.Maximum, Model.Volume));
+                lblVol.Text = Model.Volume + "%";
+                chkMute.Checked = Model.Mute;
+
+                // 声道: 多声道选哨兵项, 单声道选 Slots[0]
+                int idx = -1;
+                if (Model.Multi)
+                {
+                    for (int i = 0; i < cmbChannel.Items.Count; i++)
+                        if ((string)cmbChannel.Items[i] == LaneRouting.MultiText) { idx = i; break; }
+                }
+                else
+                {
+                    string key = Model.Slots.Count > 0 ? Model.Slots[0].ChannelKey : "";
+                    for (int i = 0; i < channels.Count; i++)
+                        if (channels[i].Key == key) { idx = i; break; }
+                }
+                cmbChannel.SelectedIndex = idx;
+
+                for (int i = 0; i < rows.Count; i++)
+                {
+                    string key = i < Model.Slots.Count ? Model.Slots[i].ChannelKey : "";
+                    int vi = 0;
+                    if (!string.IsNullOrEmpty(key))
+                        for (int k = 0; k < channels.Count; k++)
+                            if (channels[k].Key == key) { vi = k + 1; break; }
+                    rows[i].Cmb.SelectedIndex = vi;
+                    int vol = i < Model.Slots.Count ? Model.Slots[i].Volume : 100;
+                    rows[i].Vol.Value = Math.Max(0, Math.Min(100, vol));
+                    rows[i].Lbl.Text = vol + "%";
+                }
             }
             finally { syncing = false; }
         }
@@ -285,40 +478,62 @@ namespace StereoSplitter
             finally { syncing = false; }
         }
 
-        /// <summary>填充声道下拉 (键 + 显示名) 并选中当前声道。</summary>
-        public void SetChannels(IList<KeyValuePair<string, string>> channels, string selectedKey)
+        /// <summary>填充声道下拉 (规格声道 + 「多声道」)。</summary>
+        public void SetChannels(IList<KeyValuePair<string, string>> channels)
         {
             syncing = true;
             try
             {
+                string keep = cmbChannel.SelectedItem as string;
                 cmbChannel.Items.Clear();
                 for (int i = 0; i < channels.Count; i++) cmbChannel.Items.Add(channels[i].Value);
+                cmbChannel.Items.Add(LaneRouting.MultiText);
                 int idx = -1;
-                for (int i = 0; i < channels.Count; i++)
-                    if (channels[i].Key == selectedKey) { idx = i; break; }
+                if (keep != null)
+                    for (int i = 0; i < cmbChannel.Items.Count; i++)
+                        if ((string)cmbChannel.Items[i] == keep) { idx = i; break; }
                 cmbChannel.SelectedIndex = idx;
             }
             finally { syncing = false; }
         }
 
-        /// <summary>当前选中的声道键 (未选返回 null)。</summary>
+        /// <summary>当前选中的声道键; 选中「多声道」时返回 <see cref="LaneRouting.MultiKey"/>。</summary>
         public string SelectedChannelKey(IList<KeyValuePair<string, string>> channels)
         {
             int i = cmbChannel.SelectedIndex;
-            if (i < 0 || i >= channels.Count) return null;
+            if (i < 0) return null;
+            if (i >= channels.Count) return LaneRouting.MultiKey;
             return channels[i].Key;
         }
 
         public int SelectedDeviceIndex { get { return cmbDevice.SelectedIndex; } }
 
         /// <summary>把控件当前值写回模型。</summary>
-        public void WriteBackToLane(IList<KeyValuePair<string, string>> channels)
+        public void WriteBackToModel(IList<KeyValuePair<string, string>> channels)
         {
             string key = SelectedChannelKey(channels);
-            if (key != null) Lane.ChannelKey = key;
-            Lane.DelayMs = (int)nudDelay.Value;
-            Lane.Volume = volTrack.Value;
-            Lane.Mute = chkMute.Checked;
+            Model.Multi = key == LaneRouting.MultiKey;
+
+            Model.DelayMs = (int)nudDelay.Value;
+            Model.Volume = volTrack.Value;
+            Model.Mute = chkMute.Checked;
+
+            if (!Model.Multi)
+            {
+                if (Model.Slots.Count == 0) Model.Slots.Add(new ChannelSlot());
+                if (key != null) Model.Slots[0].ChannelKey = key;
+                Model.Slots[0].Volume = volTrack.Value;
+                return;   // 多声道行隐藏时不读 (行值仍留在模型里, 切回来即恢复)
+            }
+
+            // 多声道: 行 → Slots (行数由外部按设备声道数维护, 这里只对齐已有行)
+            for (int i = 0; i < rows.Count; i++)
+            {
+                if (i >= Model.Slots.Count) Model.Slots.Add(new ChannelSlot());
+                int ci = rows[i].Cmb.SelectedIndex;
+                Model.Slots[i].ChannelKey = ci <= 0 ? "" : channels[ci - 1].Key;
+                Model.Slots[i].Volume = rows[i].Vol.Value;
+            }
         }
 
         void Fire()
@@ -334,6 +549,7 @@ namespace StereoSplitter
             cmbChannel.Enabled = !structuralLocked;
             nudDelay.Enabled = !structuralLocked;
             btnRemove.Enabled = !structuralLocked;
+            for (int i = 0; i < rows.Count; i++) rows[i].Cmb.Enabled = !structuralLocked;
         }
     }
 }

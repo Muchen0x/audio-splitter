@@ -4,27 +4,29 @@ using System.Collections.Generic;
 namespace StereoSplitter
 {
     /// <summary>
-    /// 把界面模型（输出卡片 = 一路"声道 → 设备"）翻译成内核的 RoutingModel
+    /// 把界面模型（输出卡片 = 一台设备，卡片里一行 = 一个物理声道）翻译成内核的 RoutingModel
     /// （LogicalChannel 抽头 + ChannelBinding 绑定 + SinkSpec 设备）。
     ///
     /// 翻译规则（每一条都对应一个曾经的坑）：
-    ///  1. **按设备分组**: 同一台设备上的多张卡片合成**一路 sink**，卡片的先后顺序就是该设备的
-    ///     物理声道 0/1/2…。内核不能对同一端点开两条 WasapiOut（会互相抢占，其中一路静音），
-    ///     所以"分组"不是优化，是正确性前提。
-    ///  2. **抽头按扬声器位取**: 卡片的声道键（FL/FR/C/LFE/SL/SR/BL/BR）就是逻辑声道键，
-    ///     抽头由 Windows 端点声道顺序表（KSAUDIO_SPEAKER_*）决定。真 5.1 源进来时中置/低音/
-    ///     环绕各取各的源声道；源不够时才按前置派生（与 RoutingModel 模板同一套系数）。
-    ///  3. **延迟是设备级**: 内核每路一条延迟线，所以同一设备的多张卡片只有一个延迟
-    ///     （取最小，宁可少补也不多补），不一致时记一条警告由调用方打印。
-    ///  4. **音量按设备归属**: 一台设备只挂一张卡 → 该卡音量写设备端点（与系统音量条双向同步、
-    ///     停止时还原）；同一台设备挂多张卡 → 这些卡的音量乘进混音矩阵的绑定增益。
-    ///     依据是 Windows 端点音量本身就是设备级的一个值，多路共设备时写端点必然互相覆盖。
+    ///  1. **一张卡片 = 一台设备**: 同设备的多张卡片在界面上就会被合并成一张多声道卡片，
+    ///     这里的分组只是兜底 —— 内核不能对同一端点开两条 WasapiOut（会互相抢占，
+    ///     其中一路静音），所以"分组"不是优化，是正确性前提。
+    ///  2. **卡片里的行 = 物理声道**: 行序 p0/p1/… 就是设备物理声道号（PhysIndex），
+    ///     空行不产生 lane → 该物理声道静音。抽头由 Windows 端点声道顺序表决定。
+    ///  3. **延迟是设备级**: 内核每路一条延迟线，合并时取最小（宁可少补也不多补），
+    ///     不一致时置 delayConflict 由调用方打印。
+    ///  4. **音量归属**: 卡片主音量 = 设备端点音量（端点不可用时回落成增益，见 Flatten）；
+    ///     多声道各行音量是矩阵增益。端点音量是设备级单值，所以只有卡片主音量能写它。
     ///  5. **时钟组**: 立体声/单声道规格下所有设备共享一个校正比例（送的是同一对相关声，
     ///     各自独立算 ratio 会偏音）；多声道规格下每台设备独立成组，否则个体水位发散会让
     ///     设备间对齐随时间漂移（见 docs/多设备声道路由设计.md §5.5）。
     /// </summary>
     static class LaneRouting
     {
+        /// <summary>声道下拉里「多声道」项的哨兵键 / 显示文字。</summary>
+        public const string MultiKey = "*multi*";
+        public const string MultiText = "多声道…";
+
         /// <summary>规格 → 声道清单（键 + 显示名）。键与 Windows 扬声器位对应。</summary>
         public static List<KeyValuePair<string, string>> SpecChannels(int specIndex)
         {
@@ -52,69 +54,147 @@ namespace StereoSplitter
             return key;
         }
 
+        // ---------------------------------------------------------------- 卡片 → lane
+
         /// <summary>
-        /// 音量"归设备端点"的那几张卡片 = 独占一台设备的卡片。
-        /// <para>规则: 按 DeviceId 分组, 组内只有 1 张卡 → 该卡走端点; 组内 ≥2 张 → 谁都不走端点。</para>
-        /// <para>为什么不能多张卡共享端点: Windows 端点音量是设备级单值, 两张卡各写各的会互相覆盖
-        /// （旧实现里"左右选同一设备"时就是两滑条抢一个端点），所以同设备多卡只能走混音增益。</para>
+        /// 卡片模型 → 内核 lane 列表 (启动/热更新/存盘前的唯一出口)。
+        /// <para>音量在这里就折算成矩阵增益: 端点承载的卡片写 1.0（否则双份衰减），
+        /// 端点不可用（HDMI 无音量接口/被独占）的卡片把主音量乘进来。</para>
         /// </summary>
-        public static List<OutputLane> ResolveEndpointLanes(IList<OutputLane> lanes)
+        /// <param name="endpointAvailable">该设备的端点音量是否可用; null = 全部可用。</param>
+        public static List<OutputLane> Flatten(IList<OutputCardModel> cards, Func<string, bool> endpointAvailable)
         {
-            return ResolveEndpointLanes(lanes, null);
-        }
+            var list = new List<OutputLane>();
+            if (cards == null) return list;
 
-        /// <param name="skipDevices">端点打不开的设备 (如没有音量控制的 HDMI): 其卡片退回混音增益。</param>
-        public static List<OutputLane> ResolveEndpointLanes(IList<OutputLane> lanes, ICollection<string> skipDevices)
-        {
-            var result = new List<OutputLane>();
-            if (lanes == null || lanes.Count == 0) return result;
-
-            var count = new Dictionary<string, int>(StringComparer.Ordinal);
-            for (int i = 0; i < lanes.Count; i++)
+            for (int i = 0; i < cards.Count; i++)
             {
-                string d = lanes[i].DeviceId ?? "";
-                if (d.Length == 0) continue;
-                int n;
-                count.TryGetValue(d, out n);
-                count[d] = n + 1;
+                OutputCardModel c = cards[i];
+                string dev = c.DeviceId ?? "";
+                bool ep = dev.Length > 0 && (endpointAvailable == null || endpointAvailable(dev));
+
+                if (!c.Multi)
+                {
+                    ChannelSlot s = c.Slots.Count > 0 ? c.Slots[0] : null;
+                    var lane = new OutputLane
+                    {
+                        ChannelKey = (s != null && !string.IsNullOrEmpty(s.ChannelKey)) ? s.ChannelKey : "",
+                        DeviceId = dev,
+                        DelayMs = Math.Max(0, c.DelayMs),
+                        PhysIndex = 0,
+                        Volume = 100,
+                        Mute = false
+                    };
+                    if (!ep) { lane.Volume = Math.Max(0, Math.Min(100, c.Volume)); lane.Mute = c.Mute; }
+                    if (lane.ChannelKey.Length > 0) list.Add(lane);
+                    continue;
+                }
+
+                for (int p = 0; p < c.Slots.Count; p++)
+                {
+                    ChannelSlot s = c.Slots[p];
+                    if (s == null || string.IsNullOrEmpty(s.ChannelKey)) continue;   // 空行 = 该物理声道静音
+                    int vol = Math.Max(0, Math.Min(100, s.Volume));
+                    // 端点不可用 → 主音量的衰减只能落到矩阵上 (先乘后舍, 少一次量化)
+                    if (!ep) vol = (int)Math.Round(vol * Math.Max(0, Math.Min(100, c.Volume)) / 100.0);
+                    list.Add(new OutputLane
+                    {
+                        ChannelKey = s.ChannelKey,
+                        DeviceId = dev,
+                        DelayMs = Math.Max(0, c.DelayMs),
+                        Volume = vol,
+                        Mute = !ep && c.Mute,
+                        PhysIndex = p
+                    });
+                }
             }
-            for (int i = 0; i < lanes.Count; i++)
-            {
-                string d = lanes[i].DeviceId ?? "";
-                if (d.Length == 0) continue;
-                if (skipDevices != null && skipDevices.Contains(d)) continue;
-                if (count[d] == 1) result.Add(lanes[i]);
-            }
-            return result;
+            return list;
         }
 
-        /// <summary>该卡片是否独占其设备（= 音量/静音写设备端点）。</summary>
-        public static bool IsEndpointLane(IList<OutputLane> lanes, OutputLane lane)
-        {
-            if (lane == null) return false;
-            string d = lane.DeviceId ?? "";
-            if (d.Length == 0) return false;
-            int n = 0;
-            for (int i = 0; i < lanes.Count; i++)
-                if ((lanes[i].DeviceId ?? "") == d) n++;
-            return n == 1;
-        }
+        // ---------------------------------------------------------------- 合并同设备卡片
 
         /// <summary>
-        /// 卡片 → 内核模型。
-        /// <para>srcCh: 捕获源声道数（0 = 还不知道，按立体声上混；启动后拿到真值应重建一次并热替换）。</para>
-        /// <para>音量归属由 <see cref="ResolveEndpointLanes"/> 内部决定, 调用方不必传。</para>
+        /// 把指向同一台设备的多张卡片合并成一张多声道卡片（就地改列表）。
+        /// <para>合并是**响度无损**的: 原来的每张卡片变成新卡片的一行（物理声道），声道照旧;
+        /// 设备集合不变 → 声音不变。合并后该设备只剩一张卡片, 主音量才有唯一归属（端点音量）。</para>
+        /// <para>注意音量归属: 单声道卡片的音量**就是**该设备的端点音量（镜像同一个值），
+        /// 不是逐声道增益。所以合并时单声道来源的行增益一律回到 100 ——
+        /// 端点音量交给合并后卡片的主音量唯一承载。不这么做就会双份衰减
+        /// (12% 端点 × 12% 增益 = 1.44%)。原本就是多声道卡片的行增益是真增益, 照旧保留。</para>
+        /// </summary>
+        /// <returns>合并掉了几张卡片 (0 = 没有同设备重复)。</returns>
+        public static int MergeSameDevice(IList<OutputCardModel> cards)
+        {
+            if (cards == null || cards.Count < 2) return 0;
+
+            var kept = new List<OutputCardModel>();
+            var byDevice = new Dictionary<string, OutputCardModel>(StringComparer.Ordinal);
+            int removed = 0;
+
+            for (int i = 0; i < cards.Count; i++)
+            {
+                OutputCardModel c = cards[i];
+                string dev = c.DeviceId ?? "";
+                if (dev.Length == 0 || !byDevice.ContainsKey(dev))
+                {
+                    if (dev.Length > 0) byDevice[dev] = c;
+                    kept.Add(c);
+                    continue;
+                }
+
+                // 已有同一台设备的卡片 → 把这一张并进去
+                MergeInto(byDevice[dev], c);
+                removed++;
+            }
+
+            if (removed == 0) return 0;
+            cards.Clear();
+            for (int i = 0; i < kept.Count; i++) cards.Add(kept[i]);
+            return removed;
+        }
+
+        /// <summary>把 <paramref name="src"/> 的各行追加到 <paramref name="host"/>。</summary>
+        static void MergeInto(OutputCardModel host, OutputCardModel src)
+        {
+            if (host.Slots.Count == 0) host.Slots.Add(new ChannelSlot());
+            // 合并前是单声道卡片 → 它的行音量只是端点音量的镜像, 合并后由主音量接管, 行增益回 100
+            bool hostWasSingle = !host.Multi;
+            host.Multi = true;
+            if (hostWasSingle)
+                for (int i = 0; i < host.Slots.Count; i++) host.Slots[i].Volume = 100;
+
+            if (src.DelayMs < host.DelayMs) host.DelayMs = src.DelayMs;   // 设备级延迟取最小
+
+            if (src.Multi)
+            {
+                for (int i = 0; i < src.Slots.Count; i++) host.Slots.Add(Copy(src.Slots[i]));
+            }
+            else
+            {
+                ChannelSlot s = Copy(src.Slots.Count > 0 ? src.Slots[0] : new ChannelSlot());
+                s.Volume = 100;    // 同上: 端点音量不重复计入行增益
+                host.Slots.Add(s);
+            }
+        }
+
+        static ChannelSlot Copy(ChannelSlot s)
+        {
+            return new ChannelSlot
+            {
+                ChannelKey = s == null ? "" : s.ChannelKey,
+                Volume = s == null ? 100 : s.Volume
+            };
+        }
+
+        // ---------------------------------------------------------------- 卡片 → 内核模型
+
+        /// <summary>
+        /// 卡片模型 → 内核模型。
+        /// <para>srcCh: 捕获源声道数（0 = 还不知道，按立体声上混；启动后拿到真值会重建一次并热替换）。</para>
         /// <para>delayConflict: 同一设备上出现不同延迟时置 true（调用方据此打一条警告）。</para>
         /// </summary>
         public static RoutingModel Build(IList<OutputLane> lanes, int specIndex, int srcCh,
             Func<string, string> deviceNameOf, out bool delayConflict)
-        {
-            return Build(lanes, specIndex, srcCh, deviceNameOf, null, out delayConflict);
-        }
-
-        /// <param name="skipDevices">端点音量不可用的设备: 其卡片按混音增益处理, 不再双份衰减。</param>
-        public static RoutingModel Build(IList<OutputLane> lanes, int specIndex, int srcCh,
-            Func<string, string> deviceNameOf, ICollection<string> skipDevices, out bool delayConflict)
         {
             delayConflict = false;
             var model = new RoutingModel
@@ -125,7 +205,6 @@ namespace StereoSplitter
 
             // ---- 逻辑声道: 规格里的每个声道一个, 抽头按扬声器位取 ----
             // srcCh=0 (还没启动, 拿不到捕获格式) 按立体声假设: 与两路时代的上混结果一致。
-            // 启动后拿到真实声道数会用真值重建一次并热替换 (AudioEngine.SetRouting)。
             int effectiveSrc = srcCh <= 0 ? 2 : srcCh;
             var chans = SpecChannels(specIndex);
             var map = RoutingModel.MapOf(effectiveSrc);
@@ -139,27 +218,22 @@ namespace StereoSplitter
 
             if (lanes == null || lanes.Count == 0) return model;
 
-            // 音量归属: 独占一台设备的卡片走端点, 同设备多卡走混音增益 (见 ResolveEndpointLanes)
-            var endpointLanes = ResolveEndpointLanes(lanes, skipDevices);
-
-            // ---- 按设备分组 → 每台设备一路 sink ----
-            var sinkOfDevice = new Dictionary<string, SinkSpec>(StringComparer.Ordinal);
-            var physCount = new Dictionary<string, int>(StringComparer.Ordinal);
             // 共享 ratio 的时机: 所有设备送的都是**同一对相关声** (立体声/单声道规格, 哪怕接了 3 台)
             // → 必须同组, 否则各自算 ratio 会让插值方向不一致、长期平均增益有差 → 偏音。
             // 多声道规格 (2.1/四声道/5.1) 每台设备各持**不同**声道 → 必须独立组, 否则个体水位发散
             // 会让设备间对齐随时间漂移 (docs/多设备声道路由设计.md §5.5)。
             bool shareClock = specIndex <= 1;
 
+            var sinkOfDevice = new Dictionary<string, SinkSpec>(StringComparer.Ordinal);
+            var usedPhys = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal);
+
             for (int i = 0; i < lanes.Count; i++)
             {
                 var lane = lanes[i];
                 string dev = lane.DeviceId ?? "";
                 SinkSpec sink;
-                int phys;
                 if (sinkOfDevice.TryGetValue(dev, out sink))
                 {
-                    phys = physCount[dev];
                     // 设备级延迟: 取最小（少补总比多补好：多补会把这一路推后于其它设备）
                     if (lane.DelayMs != sink.DelayMs)
                     {
@@ -170,33 +244,39 @@ namespace StereoSplitter
                 else
                 {
                     string key = "s" + sinkOfDevice.Count;
-                    string label = DisplayName(specIndex, lane.ChannelKey);
-                    // 同名标签会让日志分不清是哪一路 → 同显式补序号
+                    string label = string.IsNullOrEmpty(lane.ChannelKey)
+                        ? "输出" + (sinkOfDevice.Count + 1)
+                        : DisplayName(specIndex, lane.ChannelKey);
+                    // 同名标签会让日志分不清是哪一路 → 显式补序号
                     foreach (var s in sinkOfDevice.Values)
                         if (s.Label == label) label = label + (sinkOfDevice.Count + 1);
-                    sink = new SinkSpec(key, label, dev, 1, Math.Max(0, lane.DelayMs));
+                    sink = new SinkSpec(key, label, dev, 0, Math.Max(0, lane.DelayMs));
                     sink.Volume = 1f;                 // 音量进绑定增益 / 端点，不走这一层
                     sink.ClockGroupId = shareClock ? "g0" : "";
                     sink.CachedName = deviceNameOf == null ? "" : (deviceNameOf(dev) ?? "");
                     sinkOfDevice[dev] = sink;
-                    physCount[dev] = 0;
+                    usedPhys[dev] = new HashSet<int>();
                     model.SinkSpecs.Add(sink);
-                    phys = 0;
                 }
-                physCount[dev] = phys + 1;
-                sink.OutChannels = physCount[dev];
 
-                // 音量/静音: 独占该设备的卡片由端点音量负责（矩阵必须 1.0，否则双份衰减）；
-                // 同设备多卡进矩阵（端点音量是设备级单值，多路写会互相覆盖）
-                bool endpointVolume = endpointLanes.Count > 0 && endpointLanes.Contains(lane);
-                float gain = 1f;
-                if (!endpointVolume)
+                // 物理声道: 卡片行号优先, 冲突/未指定时取该设备的最小空闲号
+                HashSet<int> used = usedPhys[dev];
+                int phys = lane.PhysIndex;
+                if (phys < 0 || used.Contains(phys))
                 {
-                    int vol = Math.Max(0, Math.Min(100, lane.Volume));
-                    gain = lane.Mute ? 0f : vol / 100f;
+                    phys = 0;
+                    while (used.Contains(phys)) phys++;
                 }
+                used.Add(phys);
+                if (phys + 1 > sink.OutChannels) sink.OutChannels = phys + 1;
+
+                float gain = lane.Mute ? 0f : Math.Max(0, Math.Min(100, lane.Volume)) / 100f;
                 model.Bindings.Add(new ChannelBinding(lane.ChannelKey, sink.Key, phys, gain));
             }
+
+            // 没有任何 lane 的设备不参与输出 (OutChannels 会停在 0)
+            for (int i = model.SinkSpecs.Count - 1; i >= 0; i--)
+                if (model.SinkSpecs[i].OutChannels <= 0) model.SinkSpecs.RemoveAt(i);
 
             return model;
         }

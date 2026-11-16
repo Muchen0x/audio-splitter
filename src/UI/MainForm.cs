@@ -17,9 +17,11 @@ namespace StereoSplitter
     {
         NoWheelComboBox cmbDefault, cmbLatency, cmbSpec;
         NumericUpDown nudWaterInterval;
-        // 输出卡片: 每张卡片 = 一路输出 (输出声道 + 设备 + 延迟 + 音量 + 静音)
-        readonly List<OutputLane> lanes = new List<OutputLane>();
-        readonly List<OutputCardControl> cards = new List<OutputCardControl>();
+        // 输出卡片: 每张卡片 = 一台设备 (声道 + 延迟 + 主音量 + 静音; 多声道时另有每行声道与音量)
+        readonly List<OutputCardModel> models = new List<OutputCardModel>();   // UI/持久化的权威模型
+        readonly List<OutputCardControl> cards = new List<OutputCardControl>();// 控件, 与 models 一一对应
+        readonly List<OutputLane> lanes = new List<OutputLane>();              // 内核输入, 由 models 扁平化得到
+        bool normalizing;        // 合并/行数校正期间屏蔽卡片事件重入
         FlowLayoutPanel cardHost;
         FlowLayoutPanel flwSpecChannels;
         bool fittingWidths;      // FitCardWidths 重入保护
@@ -785,56 +787,43 @@ namespace StereoSplitter
 
         /// <summary>
         /// 绑定各输出设备的端点音量 (音量/静音双向同步 + 停止时还原)。
-        /// <para>只绑"独占一台设备"的卡片: 同设备多卡时端点音量是共享的, 谁写谁覆盖,
-        /// 那些卡的音量改走混音增益 (见 LaneRouting.ResolveEndpointLanes)。</para>
+        /// <para>一张卡片 = 一台设备 → 卡片主音量就是该设备的端点音量;
+        /// 多声道卡片的各行音量是混音增益, 不碰端点 (端点音量是设备级单值, 分不了声道)。</para>
         /// </summary>
         bool BindEndpointVolumeSync(string stage)
         {
             SyncLanesFromCards();
             noEndpointVolumeDevices.Clear();
-            var wanted = LaneRouting.ResolveEndpointLanes(lanes);
 
             // 设备集合可能已变 (换设备/删卡) → 先按旧基线还原并释放, 再按新集合重绑;
             // 同一设备仍在 → BindSink 复用原对象, 还原基线不会被冲掉
             bindings.UnbindSinks(true);
 
-            for (int i = 0; i < wanted.Count; i++)
+            for (int i = 0; i < models.Count; i++)
             {
-                OutputLane lane = wanted[i];
-                string role = ChannelNameOf(lane.ChannelKey);
-                var b = bindings.BindSink(lane.DeviceId, role, SinkNotify(lane.DeviceId));
+                OutputCardModel m = models[i];
+                if (string.IsNullOrEmpty(m.DeviceId)) continue;
+                string role = CardRole(m);
+                var b = bindings.BindSink(m.DeviceId, role, SinkNotify(m.DeviceId));
                 if (b == null)
                 {
-                    // 端点打不开(端点无音量接口/被独占)不该拖垮整个启动: 这一路退回混音增益,
+                    // 端点打不开(端点无音量接口/被独占)不该拖垮整个启动: 这张卡片退回混音增益,
                     // 音量照常可调, 只是不写设备端点、停止时也无需还原
-                    noEndpointVolumeDevices.Add(lane.DeviceId);
-                    Log("[警告] " + stage + " " + role + " 端点音量不可用: " + FindNameById(lane.DeviceId) +
-                        " (该路音量改在混音层生效，不写设备端点)");
+                    noEndpointVolumeDevices.Add(m.DeviceId);
+                    Log("[警告] " + stage + " " + role + " 端点音量不可用: " + FindNameById(m.DeviceId) +
+                        " (该卡片音量改在混音层生效，不写设备端点)");
                     continue;
                 }
                 b.Invalidated -= OnBindingInvalidated;
                 b.Invalidated += OnBindingInvalidated;
 
                 int v = (int)Math.Round(b.ReadVolume() * 100);
-                Log(stage + " " + role + " 音量绑定 → [" + FindIdxById(lane.DeviceId) + "] " + b.DeviceName +
+                Log(stage + " " + role + " 音量绑定 → [" + FindIdxById(m.DeviceId) + "] " + b.DeviceName +
                     " (设备值 " + v + "%" + (b.ReadMuted() ? ", 静音" : "") + "，启动时按 UI 值写入，停止时还原回此值)");
             }
 
-            // 同设备多卡: 这些路的音量只能进混音层, 明确告诉用户为什么没绑设备
-            var shared = new List<string>();
-            for (int i = 0; i < lanes.Count; i++)
-            {
-                string dev = lanes[i].DeviceId ?? "";
-                if (dev.Length == 0) continue;
-                int n = 0;
-                for (int k = 0; k < lanes.Count; k++) if ((lanes[k].DeviceId ?? "") == dev) n++;
-                if (n < 2) continue;
-                string line = FindNameById(dev) + " (" + n + " 路)";
-                if (!shared.Contains(line)) shared.Add(line);
-            }
-            if (shared.Count > 0)
-                Log("[提示] " + string.Join(" / ", shared.ToArray()) +
-                    " 上有多路共用一台设备，这些路的音量在混音层生效（设备端点音量本是该设备所有路共享的）");
+            // 端点可用性可能刚变化 (有的绑不上) → 重新扁平化: 那些设备的音量改走矩阵增益
+            RebuildLanes();
             return true;
         }
 
@@ -875,20 +864,20 @@ namespace StereoSplitter
             finally { volSyncing = false; }
         }
 
-        /// <summary>某设备上那张卡 (独占设备 → 唯一; 未找到 → null)。</summary>
+        /// <summary>某设备上那张卡 (一张卡片一台设备 → 唯一; 未找到 → null)。</summary>
         OutputCardControl CardOfDevice(string deviceId)
         {
             if (string.IsNullOrEmpty(deviceId)) return null;
-            for (int i = 0; i < cards.Count && i < lanes.Count; i++)
-                if ((lanes[i].DeviceId ?? "") == deviceId) return cards[i];
+            for (int i = 0; i < cards.Count && i < models.Count; i++)
+                if ((models[i].DeviceId ?? "") == deviceId) return cards[i];
             return null;
         }
 
-        /// <summary>某卡片对应的 lane (卡片由 lanes 重建, 两者一一对应)。</summary>
-        OutputLane LaneOf(OutputCardControl card)
+        /// <summary>某卡片对应的模型 (控件与 models 一一对应)。</summary>
+        OutputCardModel ModelOf(OutputCardControl card)
         {
             int i = cards.IndexOf(card);
-            return (i >= 0 && i < lanes.Count) ? lanes[i] : null;
+            return (i >= 0 && i < models.Count) ? models[i] : null;
         }
 
         /// <summary>各输出设备端点绑定的摘要 (日志用)。</summary>
@@ -933,9 +922,9 @@ namespace StereoSplitter
 
                 // 3. 输出目标: 只在"未选/失效"时补默认。
                 //    用户已选的设备一律不动 —— 静默改选会让人以为"选好的设备自己变了"。
-                //    N 路: 先登记已选设备, 再从候选池轮流补。设备不够时允许复用同一台 ——
-                //    内核按设备分组, 每台端点只开一条 WasapiOut, 多张卡片共用一台设备是合法用法。
-                if (cards.Count == 0 || lanes.Count == 0)
+                //    设备不够时允许复用同一台: 复用后两张卡片会合并成一张多声道卡片
+                //    (内核每台端点只开一条 WasapiOut, 这是唯一合法形态)。
+                if (cards.Count == 0 || models.Count == 0)
                 {
                     Log("[错误] 配置 3/4 没有输出卡片。");
                     return false;
@@ -953,7 +942,7 @@ namespace StereoSplitter
                     if (cards[i].cmbDevice.SelectedIndex >= 0) usedIdx.Add(cards[i].cmbDevice.SelectedIndex);
 
                 int filled = 0;
-                for (int i = 0; i < cards.Count; i++)
+                for (int i = 0; i < cards.Count && i < models.Count; i++)
                 {
                     if (cards[i].cmbDevice.SelectedIndex >= 0) continue;
                     int chosen = -1;
@@ -962,15 +951,16 @@ namespace StereoSplitter
                         int c = cand[(filled + k) % cand.Count];
                         if (!usedIdx.Contains(c)) { chosen = c; break; }
                     }
-                    if (chosen < 0) chosen = cand[filled % cand.Count];   // 设备不够 → 复用
+                    if (chosen < 0) chosen = cand[filled % cand.Count];   // 设备不够 → 复用 (随后合并)
                     cards[i].SetDeviceIndex(chosen);
-                    if (i < lanes.Count) lanes[i].DeviceId = DeviceIdAt(chosen);
+                    models[i].DeviceId = DeviceIdAt(chosen);
                     usedIdx.Add(chosen);
                     filled++;
-                    Log("[配置] 3/4 输出目标: 第 " + (i + 1) + " 路（" +
-                        (i < lanes.Count ? ChannelNameOf(lanes[i].ChannelKey) : "?") + "）未选择 → 自动补选 [" +
+                    Log("[配置] 3/4 输出目标: 第 " + (i + 1) + " 张卡片（" + CardRole(models[i]) + "）未选择 → 自动补选 [" +
                         chosen + "] " + Devices[chosen].FriendlyName);
                 }
+                // 复用同一台设备会让卡片合并, 界面要跟着重建
+                if (filled > 0 && NormalizeModels()) { RebuildCards(); SyncLanesFromCards(); }
                 if (filled == 0)
                     Log("[配置] 3/4 输出目标: 保持手动选择 (" + LaneSummary() + ")");
 
@@ -981,17 +971,18 @@ namespace StereoSplitter
                     return false;
                 }
 
-                // 回环检查 (只报错, 不改用户的选择): 任一路指向捕获设备都会采到自己的输出
+                // 回环检查 (只报错, 不改用户的选择): 指向捕获设备都会采到自己的输出
                 int badLane = -1;
                 for (int i = 0; i < cards.Count; i++)
                     if (cards[i].cmbDevice.SelectedIndex == defIdx) { badLane = i; break; }
                 if (badLane >= 0)
                 {
-                    Log("[错误] 回环检查未通过: 第 " + (badLane + 1) + " 路与捕获设备相同 [" + defIdx + "] " +
+                    Log("[错误] 回环检查未通过: 第 " + (badLane + 1) + " 张卡片（" +
+                        (badLane < models.Count ? CardRole(models[badLane]) : "?") + "）与捕获设备相同 [" + defIdx + "] " +
                         dev.FriendlyName + "，请改选输出设备 (程序不会替你改)。");
                     return false;
                 }
-                Log("[配置] 回环检查通过 (捕获输出与 " + cards.Count + " 路输出无冲突)");
+                Log("[配置] 回环检查通过 (捕获输出与 " + cards.Count + " 张输出卡片无冲突)");
 
                 return true;
             }
@@ -1066,28 +1057,30 @@ namespace StereoSplitter
             return key;
         }
 
-        /// <summary>左输出卡片: 规格里的 FL (单声道规格时 M)。</summary>
-        OutputCardControl LeftCard()
+        /// <summary>含该声道的卡片 (多声道卡片里任意一行算)</summary>
+        OutputCardControl CardWithChannel(string key)
         {
-            for (int i = 0; i < lanes.Count && i < cards.Count; i++) if (lanes[i].ChannelKey == "FL") return cards[i];
-            for (int i = 0; i < lanes.Count && i < cards.Count; i++) if (lanes[i].ChannelKey == "M") return cards[i];
-            return cards.Count > 0 ? cards[0] : null;
+            if (string.IsNullOrEmpty(key)) return null;
+            for (int i = 0; i < cards.Count && i < models.Count; i++)
+                for (int s = 0; s < models[i].Slots.Count; s++)
+                    if (models[i].Slots[s].ChannelKey == key) return cards[i];
+            return null;
         }
 
-        /// <summary>右输出卡片: FR; 单声道规格时第二张 M 卡; 都没有则取与左不同的第一张。</summary>
+        /// <summary>左输出卡片: 含 FL 的卡片 (单声道规格时 M)。</summary>
+        OutputCardControl LeftCard()
+        {
+            return CardWithChannel("FL") ?? CardWithChannel("M") ?? (cards.Count > 0 ? cards[0] : null);
+        }
+
+        /// <summary>右输出卡片: 含 FR 的另一张; 都不行则取与左不同的第一张。</summary>
         OutputCardControl RightCard()
         {
-            // 左卡片先定下来 —— 右卡片绝不能和它是同一张:
-            // 两张"卡片"指向同一对象时, 左右设备必然相同, 会被误判成
-            // "左右选同一设备" 而触发自动改选, 设备就被悄悄换掉了。
             OutputCardControl l = LeftCard();
-            for (int i = 0; i < lanes.Count && i < cards.Count; i++)
-                if (lanes[i].ChannelKey == "FR" && cards[i] != l) return cards[i];
-            int seen = 0;
-            for (int i = 0; i < lanes.Count && i < cards.Count; i++)
-                if (lanes[i].ChannelKey == "M" && cards[i] != l) { seen++; if (seen == 2) return cards[i]; }
+            OutputCardControl r = CardWithChannel("FR");
+            if (r != null && r != l) return r;
             for (int i = 0; i < cards.Count; i++) if (cards[i] != l) return cards[i];
-            return l ?? (cards.Count > 1 ? cards[1] : null);
+            return l;
         }
 
         string SafeDeviceId(int idx)
@@ -1110,37 +1103,221 @@ namespace StereoSplitter
         string LaneSummary()
         {
             var parts = new List<string>();
-            for (int i = 0; i < lanes.Count && i < cards.Count; i++)
+            for (int i = 0; i < cards.Count && i < models.Count; i++)
             {
                 string name = "未选";
                 int idx = cards[i].cmbDevice.SelectedIndex;
                 if (idx >= 0 && idx < Devices.Count) name = Devices[idx].FriendlyName;
-                parts.Add(ChannelNameOf(lanes[i].ChannelKey) + "->" + name);
+                parts.Add(CardRole(models[i]) + "->" + name);
             }
             return string.Join(" ", parts.ToArray());
         }
 
-        /// <summary>把控件当前值写回模型 (存盘/启动前调用)。</summary>
+        /// <summary>
+        /// 控件 → 卡片模型 (控件是权威源) → 内核 lane 列表。
+        /// <para>lane 是派生值: 一张卡片可能产生多行 (多声道), 也可能一行都不产生 (空声道)。</para>
+        /// </summary>
         void SyncLanesFromCards()
         {
             var chans = CurrentSpecChannels();
-            for (int i = 0; i < cards.Count && i < lanes.Count; i++)
+            for (int i = 0; i < cards.Count && i < models.Count; i++)
             {
-                cards[i].WriteBackToLane(chans);
-                lanes[i].DeviceId = SafeDeviceId(cards[i].cmbDevice.SelectedIndex);
+                cards[i].WriteBackToModel(chans);
+                models[i].DeviceId = SafeDeviceId(cards[i].SelectedDeviceIndex);
+            }
+            RebuildLanes();
+        }
+
+        /// <summary>卡片模型 → 内核 lane 列表 (音量已折算成矩阵增益)。</summary>
+        void RebuildLanes()
+        {
+            lanes.Clear();
+            lanes.AddRange(LaneRouting.Flatten(models, EndpointVolumeAvailable));
+        }
+
+        /// <summary>该设备的端点音量是否可用 (绑不上时音量改走混音增益)。</summary>
+        bool EndpointVolumeAvailable(string deviceId)
+        {
+            return !string.IsNullOrEmpty(deviceId) && !noEndpointVolumeDevices.Contains(deviceId);
+        }
+
+        /// <summary>卡片的显示角色 (日志/兼容键用): 单声道 → 声道名; 多声道 → "N 声道(…)";</summary>
+        string CardRole(OutputCardModel m)
+        {
+            if (m == null) return "?";
+            if (!m.Multi)
+                return m.Slots.Count > 0 ? ChannelNameOf(m.Slots[0].ChannelKey) : "未选声道";
+            var names = new List<string>();
+            for (int i = 0; i < m.Slots.Count; i++)
+                if (!string.IsNullOrEmpty(m.Slots[i].ChannelKey)) names.Add(ChannelNameOf(m.Slots[i].ChannelKey));
+            return m.Slots.Count + " 声道" + (names.Count > 0 ? "(" + string.Join("/", names.ToArray()) + ")" : "");
+        }
+
+        string DevNameFor(string id)
+        {
+            string n = FindNameById(id);
+            return string.IsNullOrEmpty(n) ? "(未选设备)" : n;
+        }
+
+        string DescribeCards()
+        {
+            var parts = new List<string>();
+            for (int i = 0; i < models.Count; i++)
+                parts.Add(CardRole(models[i]) + "→" + DevNameFor(models[i].DeviceId));
+            return string.Join(" ", parts.ToArray());
+        }
+
+        // ==================== 合并与行数 ====================
+
+        /// <summary>
+        /// 模型规范化: 同设备的多张卡片合并成一张多声道卡片 + 校正多声道卡片的行数。
+        /// <returns>true = 卡片集合/形态变了, 调用方需要重建界面。</returns>
+        /// </summary>
+        bool NormalizeModels()
+        {
+            if (normalizing) return false;
+            normalizing = true;
+            try
+            {
+                bool changed = false;
+
+                // 1. 行数: 多声道卡片 = 该设备物理声道数, 单声道卡片 = 1 行
+                for (int i = 0; i < models.Count; i++)
+                    if (EnsureSlots(models[i])) changed = true;
+
+                // 2. 合并同设备。合并前先记下哪几台设备是重复的 —— 只有它们的主音量需要重新取初值
+                var dup = new List<string>();
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                for (int i = 0; i < models.Count; i++)
+                {
+                    string d = models[i].DeviceId ?? "";
+                    if (d.Length > 0 && !seen.Add(d) && !dup.Contains(d)) dup.Add(d);
+                }
+
+                int merged = LaneRouting.MergeSameDevice(models);
+                if (merged > 0)
+                {
+                    changed = true;
+                    for (int i = 0; i < models.Count; i++)
+                    {
+                        if (!models[i].Multi || !dup.Contains(models[i].DeviceId ?? "")) continue;
+                        // 合并后主音量接管设备端点 → 取端点当前值, 保证"合并不改变响度"
+                        int before = models[i].Volume;
+                        models[i].Volume = ReadEndpointPercent(models[i].DeviceId, before);
+                        models[i].Mute = false;
+                        EnsureSlots(models[i]);
+                        Log("[输出] " + DevNameFor(models[i].DeviceId) + " 的主音量取端点当前值 " +
+                            models[i].Volume + "%（合并前 " + before + "%，设备端点音量从此由这张卡片控制）");
+                    }
+                    Log("[输出] 同设备的多张卡片已合并为多声道卡片: " + DescribeCards());
+                }
+
+                if (changed) RebuildLanes();
+                return changed;
+            }
+            finally { normalizing = false; }
+        }
+
+        /// <summary>
+        /// 行数对齐: 多声道卡片 = 该设备物理声道数 (读不到按规格声道数), 单声道卡片 = 1 行。
+        /// <returns>true = 行数变了。</returns>
+        /// </summary>
+        bool EnsureSlots(OutputCardModel m)
+        {
+            int want = m.Multi ? DeviceChannelCount(m.DeviceId) : 1;
+            bool changed = false;
+            if (m.Slots.Count > want)
+            {
+                int dropped = 0;
+                for (int i = want; i < m.Slots.Count; i++)
+                    if (!string.IsNullOrEmpty(m.Slots[i].ChannelKey)) dropped++;
+                m.Slots.RemoveRange(want, m.Slots.Count - want);
+                if (dropped > 0)
+                    Log("[输出] " + DevNameFor(m.DeviceId) + " 的可用声道减少，丢弃了 " + dropped + " 个多声道行");
+                changed = true;
+            }
+            while (m.Slots.Count < want)
+            {
+                m.Slots.Add(new ChannelSlot { ChannelKey = NextFreeChannelKey(m), Volume = 100 });
+                changed = true;
+            }
+            return changed;
+        }
+
+        /// <summary>该设备能用的物理声道数 (读不到就按当前规格的声道数)。</summary>
+        int DeviceChannelCount(string deviceId)
+        {
+            int n = EndpointChannels(deviceId);
+            if (n <= 0) n = CurrentSpecChannels().Count;
+            return Math.Max(1, Math.Min(8, n));
+        }
+
+        /// <summary>卡片里下一个还没用到的规格声道; 用完了返回 "" (空行)。</summary>
+        string NextFreeChannelKey(OutputCardModel m)
+        {
+            var chans = CurrentSpecChannels();
+            for (int i = 0; i < chans.Count; i++)
+            {
+                bool used = false;
+                for (int k = 0; k < m.Slots.Count; k++)
+                    if (m.Slots[k].ChannelKey == chans[i].Key) { used = true; break; }
+                if (!used) return chans[i].Key;
+            }
+            return "";
+        }
+
+        /// <summary>读某设备端点当前音量 (合并卡片时给主音量取初值)。失败返回 fallback。</summary>
+        int ReadEndpointPercent(string deviceId, int fallback)
+        {
+            if (catalog == null || string.IsNullOrEmpty(deviceId)) return fallback;
+            MMDevice d = null;
+            EndpointVolumeBinding b = null;
+            try
+            {
+                d = catalog.Open(deviceId);
+                if (d == null) return fallback;
+                b = new EndpointVolumeBinding(d, "读取", Log);
+                return b.IsValid ? Math.Max(0, Math.Min(100, (int)Math.Round(b.ReadVolume() * 100))) : fallback;
+            }
+            catch { return fallback; }
+            finally
+            {
+                // EndpointVolumeBinding 自己释放它持有的 MMDevice; 绑定没建起来才由这里释放
+                if (b != null) { try { b.Dispose(); } catch { } }
+                else if (d != null) { try { d.Dispose(); } catch { } }
             }
         }
 
-        /// <summary>声道键必须落在当前规格里。force=true 时按顺序重排 (换规格用)。</summary>
+        /// <summary>
+        /// 声道键必须落在当前规格里。force=true 时按顺序重排 (换规格用), 规格声道用完之后的行置空。
+        /// </summary>
         void ReassignLanesToSpec(bool force)
         {
             var chans = CurrentSpecChannels();
             if (chans.Count == 0) return;
-            for (int i = 0; i < lanes.Count; i++)
+            var used = new HashSet<string>(StringComparer.Ordinal);
+
+            for (int i = 0; i < models.Count; i++)
             {
-                bool ok = false;
-                for (int k = 0; k < chans.Count; k++) if (chans[k].Key == lanes[i].ChannelKey) { ok = true; break; }
-                if (force || !ok) lanes[i].ChannelKey = chans[i % chans.Count].Key;
+                OutputCardModel m = models[i];
+                int n = Math.Max(1, m.Slots.Count);
+                for (int s = 0; s < n; s++)
+                {
+                    if (s >= m.Slots.Count) m.Slots.Add(new ChannelSlot());
+                    ChannelSlot slot = m.Slots[s];
+                    bool ok = false;
+                    for (int k = 0; k < chans.Count; k++)
+                        if (chans[k].Key == slot.ChannelKey) { ok = true; break; }
+                    if (!force && ok) { used.Add(slot.ChannelKey); continue; }
+
+                    string next = "";
+                    for (int k = 0; k < chans.Count; k++)
+                        if (!used.Contains(chans[k].Key)) { next = chans[k].Key; break; }
+                    // 单声道卡片不能没有声道 (否则整张卡不出声), 规格排完了就复用第一个
+                    if (next.Length == 0 && !m.Multi) next = chans[0].Key;
+                    slot.ChannelKey = next;
+                    if (next.Length > 0) used.Add(next);
+                }
             }
         }
 
@@ -1160,15 +1337,19 @@ namespace StereoSplitter
             var devTexts = new List<string>();
             for (int i = 0; i < Devices.Count; i++) devTexts.Add("[" + i + "] " + Devices[i].FriendlyName);
 
-            for (int i = 0; i < lanes.Count; i++)
+            for (int i = 0; i < models.Count; i++)
             {
-                var card = new OutputCardControl(lanes[i]);
+                OutputCardModel m = models[i];
+                var card = new OutputCardControl(m);
+                card.SetDevices(devTexts);
+                card.SetDeviceIndex(catalog == null ? -1 : catalog.IndexOf(m.DeviceId));
+                card.SetChannels(chans);
+                // 行控件要先建出来, SyncFromModel 才填得进值
+                card.SetMulti(m.Multi, m.Multi ? m.Slots.Count : 0, chans);
+                card.SyncFromModel(chans);
                 card.Changed += OnCardChanged;
                 card.VolumeScrolled += OnCardVolumeScrolled;
                 card.RemoveRequested += OnCardRemoveRequested;
-                card.SetDevices(devTexts);
-                card.SetDeviceIndex(catalog == null ? -1 : catalog.IndexOf(lanes[i].DeviceId));
-                card.SetChannels(chans, lanes[i].ChannelKey);
                 // 卡片自带圆角外框, 竖向靠紧 (间隙 = Margin.Bottom), 左右由 cardHost.Padding 撑开
                 card.Margin = new Padding(0, 0, 0, OutputCardControl.CardGap);
                 card.Width = CardWidth();
@@ -1253,62 +1434,104 @@ namespace StereoSplitter
             finally { fittingWidths = false; }
         }
 
-        void AddLaneCard(OutputLane preset)
+        void AddLaneCard(OutputCardModel preset)
         {
             var chans = CurrentSpecChannels();
-            var lane = preset ?? new OutputLane();
+            var m = preset ?? new OutputCardModel();
             if (preset == null)
             {
-                // 新卡片接第一个还没人接的声道; 都有人接则接第一个声道
+                // 新卡片接第一个还没人接的声道 (都有人接则接第一个)
                 string key = chans.Count > 0 ? chans[0].Key : "FL";
+                var usedKeys = new HashSet<string>(StringComparer.Ordinal);
+                for (int i = 0; i < models.Count; i++)
+                    for (int s = 0; s < models[i].Slots.Count; s++)
+                        usedKeys.Add(models[i].Slots[s].ChannelKey);
                 for (int i = 0; i < chans.Count; i++)
-                {
-                    bool used = false;
-                    for (int k = 0; k < lanes.Count; k++) if (lanes[k].ChannelKey == chans[i].Key) { used = true; break; }
-                    if (!used) { key = chans[i].Key; break; }
-                }
-                lane.ChannelKey = key;
-                // 新卡片默认沿用上一路的设备: 一块 6ch 声卡接 5.1 时不必重复选六次
-                if (lanes.Count > 0) lane.DeviceId = lanes[lanes.Count - 1].DeviceId;
+                    if (!usedKeys.Contains(chans[i].Key)) { key = chans[i].Key; break; }
+                m.Slots.Add(new ChannelSlot { ChannelKey = key, Volume = 100 });
+
+                // 新卡片默认接"还没被占用"的设备: 选到已被占用的设备会立刻并进那张多声道卡片,
+                // 用户按"加一路"却看不到卡片变多, 容易以为坏了。设备都用完了就留空让用户自己选。
+                m.DeviceId = FirstFreeDeviceId();
             }
-            lanes.Add(lane);
+            models.Add(m);
+            NormalizeModels();
             RebuildCards();
             SaveSettings();
-            Log("[输出] 新增一路: " + ChannelNameOf(lane.ChannelKey) + " (共 " + lanes.Count + " 路)");
-            // 运行中加卡: 该设备可能从"独占"变成"多路共用", 音量归属要跟着改 (绑端点 ⇄ 混音增益)
+            Log("[输出] 新增卡片: " + (m.Slots.Count > 0 ? ChannelNameOf(m.Slots[0].ChannelKey) : "未选声道") +
+                " → " + DevNameFor(m.DeviceId) + " (共 " + models.Count + " 张)");
+            // 运行中加卡: 该设备可能刚接入端点音量, 归属要跟着改 (绑端点 ⇄ 混音增益)
             if (running) SyncEndpointBindingsWhileRunning();
+        }
+
+        /// <summary>还没被任何卡片占用的设备 ID (没有则返回 "")。</summary>
+        string FirstFreeDeviceId()
+        {
+            if (catalog == null) return "";
+            var used = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < models.Count; i++) used.Add(models[i].DeviceId ?? "");
+            for (int i = 0; i < Devices.Count; i++)
+            {
+                string id = DeviceIdAt(i);
+                if (!used.Contains(id)) return id;
+            }
+            return "";
         }
 
         void OnCardChanged(OutputCardControl card)
         {
-            if (loadingSettings || loadingDevices) return;
+            if (loadingSettings || loadingDevices || normalizing) return;
+            // 形态切换前先记下旧形态: 单声道卡片的音量 == 设备端点音量, 多声道行音量 == 矩阵增益。
+            // 两者的归属不同, 切换时要把衰减从一个容器搬到另一个, 否则会双份相乘 (12%×12%=1.44%)。
+            bool wasMulti = card.Model.Multi;
+            int oldRow0 = card.Model.Slots.Count > 0 ? card.Model.Slots[0].Volume : 100;
+
             SyncLanesFromCards();
+            OutputCardModel m = card.Model;
+            if (!wasMulti && m.Multi)
+            {
+                // 单 → 多: 主音量继续承载端点, 各行增益复位 (行是新出现的, 不该继承端点值)
+                for (int i = 0; i < m.Slots.Count; i++) m.Slots[i].Volume = 100;
+                RebuildLanes();
+                Log("[输出] " + DevNameFor(m.DeviceId) + " 切到多声道: 主音量 " + m.Volume +
+                    "% 仍由设备端点承载, 各行增益复位 100%");
+            }
+            else if (wasMulti && !m.Multi)
+            {
+                // 多 → 单: 把原 p0 行的增益折进主音量, 切回单声道不跳响度
+                m.Volume = Math.Max(0, Math.Min(100, (int)Math.Round(m.Volume * oldRow0 / 100.0)));
+                if (m.Slots.Count > 0) m.Slots[0].Volume = 100;
+                RebuildLanes();
+                Log("[输出] " + DevNameFor(m.DeviceId) + " 切回单声道: 原 p0 行增益 " + oldRow0 +
+                    "% 已折进主音量 → " + m.Volume + "%");
+            }
+
+            // 声道下拉切到/切离「多声道」, 或换到已被占用的设备 → 形态变了, 必须先重建卡片再存盘
+            // (models 已被合并/改行数, 旧 cards 再写回模型就会写到错误的卡片上)
+            bool structural = NormalizeModels();
+            if (structural) RebuildCards();
             SaveSettings();
             RefreshSpecBadges();
-            // 换设备/加卡/删卡: 先把被弃设备的音量还原, 再按新集合绑端点 (否则旧设备永久停在分流音量)
+            if (structural) return;
+
+            // 换设备: 先把被弃设备的音量还原, 再按新集合绑端点 (否则旧设备永久停在分流音量)
             if (running) SyncEndpointBindingsWhileRunning();
-            // 独占设备的卡片: 静音写设备端点 (与音量同一套双向绑定/还原基线); 其余卡片走混音增益
+            // 卡片主音量 = 设备端点音量 → 静音也写端点 (与音量同一套双向绑定/还原基线)
             if (running && bindings != null && !volSyncing)
             {
-                OutputLane lane = LaneOf(card);
-                if (lane != null && LaneRouting.IsEndpointLane(lanes, lane))
-                {
-                    var b = bindings.SinkOf(lane.DeviceId);
-                    if (b != null && b.IsValid && b.ReadMuted() != card.chkMute.Checked)
-                        b.WriteMute(card.chkMute.Checked);
-                }
+                var b = bindings.SinkOf(card.Model.DeviceId);
+                if (b != null && b.IsValid && b.ReadMuted() != card.chkMute.Checked)
+                    b.WriteMute(card.chkMute.Checked);
             }
             if (running) ApplyRoutingHot("卡片改动", false);
         }
 
-        void OnCardVolumeScrolled(OutputCardControl card)
+        void OnCardVolumeScrolled(OutputCardControl card, bool isSlot)
         {
             if (volSyncing) return;
-            // 独占该设备的卡片: 音量写设备端点 (双向绑定); 同设备多卡: 音量进混音增益
-            OutputLane lane = LaneOf(card);
-            var b = (lane != null && bindings != null) ? bindings.SinkOf(lane.DeviceId) : null;
-            bool endpoint = b != null && b.IsValid && LaneRouting.IsEndpointLane(lanes, lane);
-            if (endpoint)
+            // 主滑条 = 设备端点音量; 行滑条 = 混音增益 (端点音量是设备级单值, 分不了声道)
+            var b = (bindings != null) ? bindings.SinkOf(card.Model.DeviceId) : null;
+            if (!isSlot && b != null && b.IsValid)
             {
                 b.WriteVolume(card.volTrack.Value / 100f);
                 if (card.volTrack.Value > 0 && b.ReadMuted()) b.WriteMute(false);
@@ -1322,14 +1545,14 @@ namespace StereoSplitter
         {
             if (loadingSettings) return;
             int idx = cards.IndexOf(card);
-            if (idx < 0) return;
-            if (lanes.Count <= 1) { Log("[输出] 至少保留一路输出"); return; }
-            string who = ChannelNameOf(lanes[idx].ChannelKey);
-            lanes.RemoveAt(idx);
+            if (idx < 0 || idx >= models.Count) return;
+            if (models.Count <= 1) { Log("[输出] 至少保留一张输出卡片"); return; }
+            string who = CardRole(models[idx]) + " → " + DevNameFor(models[idx].DeviceId);
+            models.RemoveAt(idx);
             RebuildCards();
             SaveSettings();
-            Log("[输出] 已移除: " + who + " (剩 " + lanes.Count + " 路)");
-            // 运行中删卡: 若该设备不再有任何卡, 它的端点音量必须立刻还原
+            Log("[输出] 已移除: " + who + " (剩 " + models.Count + " 张)");
+            // 运行中删卡: 该设备的端点音量必须立刻还原
             if (running) SyncEndpointBindingsWhileRunning();
         }
 
@@ -1346,8 +1569,11 @@ namespace StereoSplitter
                 var chans = CurrentSpecChannels();
                 for (int i = 0; i < chans.Count; i++)
                 {
+                    // 角标 = 有几个物理声道接到该声道 (多声道卡片的每一行各算一个)
                     int n = 0;
-                    for (int k = 0; k < lanes.Count; k++) if (lanes[k].ChannelKey == chans[i].Key) n++;
+                    for (int k = 0; k < models.Count; k++)
+                        for (int s = 0; s < models[k].Slots.Count; s++)
+                            if (models[k].Slots[s].ChannelKey == chans[i].Key) n++;
                     var name = new Label
                     {
                         Text = chans[i].Value,
@@ -1379,7 +1605,7 @@ namespace StereoSplitter
         /// <summary>从 ini 装载输出模型: 优先 Out* 新键, 没有则用旧的左右键合成两路。</summary>
         void LoadLanes()
         {
-            lanes.Clear();
+            models.Clear();
             cmbSpec.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("Spec", 1)));
 
             int count = GetInt("OutCount", 0);
@@ -1388,38 +1614,72 @@ namespace StereoSplitter
                 for (int i = 0; i < count && i < 16; i++)
                 {
                     string pk = "Out" + i + ".";
-                    lanes.Add(new OutputLane
+                    var m = new OutputCardModel
                     {
-                        ChannelKey = StrOrDefault(settings.GetStr(pk + "Channel"), "FL"),
                         DeviceId = settings.GetStr(pk + "DeviceId") ?? "",
                         DelayMs = Math.Max(0, Math.Min(2000, GetInt(pk + "DelayMs", 0))),
                         Volume = Math.Max(0, Math.Min(100, GetInt(pk + "Volume", 100))),
                         Mute = GetInt(pk + "Mute", 0) != 0
-                    });
+                    };
+                    string channel = StrOrDefault(settings.GetStr(pk + "Channel"), "FL");
+                    bool multi = GetInt(pk + "Multi", 0) != 0 || channel == LaneRouting.MultiKey;
+
+                    int n = Math.Max(0, Math.Min(8, GetInt(pk + "ChCount", 0)));
+                    for (int s = 0; s < n; s++)
+                    {
+                        string ck = pk + "Ch" + s + ".";
+                        m.Slots.Add(new ChannelSlot
+                        {
+                            ChannelKey = settings.GetStr(ck + "Channel") ?? "",
+                            Volume = Math.Max(0, Math.Min(100, GetInt(ck + "Volume", 100)))
+                        });
+                    }
+
+                    if (multi)
+                    {
+                        m.Multi = true;                 // 行数由 NormalizeModels 按设备声道数补齐
+                        if (m.Slots.Count == 0) m.Slots.Add(new ChannelSlot { ChannelKey = "FL", Volume = 100 });
+                    }
+                    else
+                    {
+                        // 旧 ini (没有 Multi/Ch*): 一路 = 一张单声道卡片, 同设备的会在 Normalize 里合并
+                        m.Slots.Add(new ChannelSlot
+                        {
+                            ChannelKey = channel,
+                            Volume = Math.Max(0, Math.Min(100, GetInt(pk + "Volume", 100)))
+                        });
+                    }
+                    models.Add(m);
                 }
             }
             else
             {
-                // 老配置 (DeviceLeft/DeviceRight 那套) → 左右两路
-                lanes.Add(new OutputLane
+                // 老配置 (DeviceLeft/DeviceRight 那套) → 左右两张卡片
+                var l = new OutputCardModel
                 {
-                    ChannelKey = "FL",
                     DeviceId = GetStr("DeviceLeft") ?? "",
                     DelayMs = Math.Max(0, Math.Min(2000, GetInt("DelayLeft", 0))),
                     Volume = Math.Max(0, Math.Min(100, GetInt("VolumeLeft", 100))),
                     Mute = GetInt("MuteLeft", 0) != 0
-                });
-                lanes.Add(new OutputLane
+                };
+                l.Slots.Add(new ChannelSlot { ChannelKey = "FL", Volume = l.Volume });
+                models.Add(l);
+
+                var r = new OutputCardModel
                 {
-                    ChannelKey = "FR",
                     DeviceId = GetStr("DeviceRight") ?? "",
                     DelayMs = Math.Max(0, Math.Min(2000, GetInt("DelayRight", 0))),
                     Volume = Math.Max(0, Math.Min(100, GetInt("VolumeRight", 100))),
                     Mute = GetInt("MuteRight", 0) != 0
-                });
+                };
+                r.Slots.Add(new ChannelSlot { ChannelKey = "FR", Volume = r.Volume });
+                models.Add(r);
             }
 
             ReassignLanesToSpec(false);   // 只修正落不进规格的声道键
+            // 这里**不合并**: 构造期 catalog 还没建, 读不到端点音量, 合并出来的主音量会是 100%
+            // (老 ini 里同设备两张卡各自是"混音增益", 主音量一旦按 100% 写端点就会突然变响)。
+            // 合并放在 RefreshDevices 里做 —— 那时能读到端点真值, 合并不改响度。
             RebuildCards();
         }
 
@@ -1484,16 +1744,27 @@ namespace StereoSplitter
                 settings.Put("LatencyProfile", Math.Max(0, cmbLatency.SelectedIndex).ToString());
                 settings.Put("Spec", cmbSpec.SelectedIndex < 0 ? "1" : cmbSpec.SelectedIndex.ToString());
                 SyncLanesFromCards();
-                settings.RemovePrefix("Out");   // 先清干净, 删过的路不留孤儿键
-                settings.Put("OutCount", lanes.Count.ToString());
-                for (int li = 0; li < lanes.Count && li < 16; li++)
+                settings.RemovePrefix("Out");   // 先清干净, 删过的卡/行不留孤儿键
+                settings.Put("OutCount", models.Count.ToString());
+                for (int li = 0; li < models.Count && li < 16; li++)
                 {
+                    OutputCardModel m = models[li];
                     string pk = "Out" + li + ".";
-                    settings.Put(pk + "Channel", lanes[li].ChannelKey);
-                    settings.Put(pk + "DeviceId", lanes[li].DeviceId ?? "");
-                    settings.Put(pk + "DelayMs", lanes[li].DelayMs.ToString());
-                    settings.Put(pk + "Volume", lanes[li].Volume.ToString());
-                    settings.Put(pk + "Mute", lanes[li].Mute ? "1" : "0");
+                    // Channel 仍是"卡片声道": 单声道写声道键, 多声道写哨兵 (旧版本读到哨兵会退回第一行)
+                    settings.Put(pk + "Channel",
+                        m.Multi ? LaneRouting.MultiKey : (m.Slots.Count > 0 ? m.Slots[0].ChannelKey : "FL"));
+                    settings.Put(pk + "DeviceId", m.DeviceId ?? "");
+                    settings.Put(pk + "DelayMs", m.DelayMs.ToString());
+                    settings.Put(pk + "Volume", m.Volume.ToString());
+                    settings.Put(pk + "Mute", m.Mute ? "1" : "0");
+                    settings.Put(pk + "Multi", m.Multi ? "1" : "0");
+                    settings.Put(pk + "ChCount", m.Slots.Count.ToString());
+                    for (int s = 0; s < m.Slots.Count && s < 8; s++)
+                    {
+                        string ck = pk + "Ch" + s + ".";
+                        settings.Put(ck + "Channel", m.Slots[s].ChannelKey ?? "");
+                        settings.Put(ck + "Volume", m.Slots[s].Volume.ToString());
+                    }
                 }
                 settings.Put("WaterIntervalSec", ((int)nudWaterInterval.Value).ToString());
                 settings.Put("Gain", volGain.Value.ToString());
@@ -1558,12 +1829,12 @@ namespace StereoSplitter
 
             // 存量设置音量为0 → 补勾静音 (与拖到0自动静音规则一致)
             if (volMaster.Value == 0) chkMuteMaster.Checked = true;
-            for (int i = 0; i < lanes.Count; i++)
-                if (lanes[i].Volume == 0) lanes[i].Mute = true;
+            for (int i = 0; i < models.Count; i++)
+                if (models[i].Volume == 0) models[i].Mute = true;
 
             if (any)
                 Log("[初始化] 设置已加载: 主=" + volMaster.Value + "%/" + (chkMuteMaster.Checked ? "静音" : "开") +
-                    " 输出 " + lanes.Count + " 路 (" + LaneSummary() + ")" +
+                    " 输出 " + models.Count + " 张卡片 (" + LaneSummary() + ")" +
                     " 增益=" + volGain.Value + "%" +
                     (chkMuteCapture.Checked ? " 捕获消音=开" : ""));
         }
@@ -1677,25 +1948,22 @@ namespace StereoSplitter
         {
             if (bindings == null || volSyncing) return;
             SyncLanesFromCards();
-            var wanted = LaneRouting.ResolveEndpointLanes(lanes);
 
-            // 期望集合 vs 已绑集合 双向比对
-            bool same = true;
-            for (int i = 0; i < wanted.Count; i++)
-                if (bindings.SinkOf(wanted[i].DeviceId) == null) { same = false; break; }
-            if (same)
+            // 期望集合 = 各卡片的设备; 已绑集合 = bindings 里的端点。双向比对
+            var wanted = new List<string>();
+            for (int i = 0; i < models.Count; i++)
             {
-                int boundCount = 0;
-                foreach (var b in bindings.Sinks())
-                {
-                    boundCount++;
-                    bool stillWanted = false;
-                    for (int i = 0; i < wanted.Count; i++)
-                        if (wanted[i].DeviceId == b.DeviceId) { stillWanted = true; break; }
-                    if (!stillWanted) { same = false; break; }
-                }
-                if (boundCount == 0 && wanted.Count > 0) same = false;
+                string d = models[i].DeviceId ?? "";
+                if (d.Length > 0 && !wanted.Contains(d)) wanted.Add(d);
             }
+            bool same = true;
+            int boundCount = 0;
+            foreach (var b in bindings.Sinks())
+            {
+                boundCount++;
+                if (!wanted.Contains(b.DeviceId)) { same = false; break; }
+            }
+            if (same && boundCount != wanted.Count) same = false;
             if (same) return;
 
             Log("[变更] 输出设备已变，同步端点绑定（被弃设备的音量立即还原）");
@@ -1707,16 +1975,11 @@ namespace StereoSplitter
         // 数值标签有效/无效视觉: 深色 = 音量由设备端点承载(双向绑定生效), 灰色 = 走混音增益/未绑定
         void SetVolumeBindVisual(bool bound)
         {
-            for (int i = 0; i < cards.Count; i++)
+            for (int i = 0; i < cards.Count && i < models.Count; i++)
             {
                 if (cards[i].lblVol == null) continue;
-                bool ep = bound && i < lanes.Count && LaneRouting.IsEndpointLane(lanes, lanes[i]);
-                if (ep && bindings != null)
-                {
-                    // 端点绑定可能已失效 / 该设备当初就没绑上 → 也算"不生效"
-                    var b = bindings.SinkOf(lanes[i].DeviceId);
-                    ep = b != null && b.IsValid;
-                }
+                var b = bindings != null ? bindings.SinkOf(models[i].DeviceId) : null;
+                bool ep = bound && b != null && b.IsValid;
                 cards[i].lblVol.ForeColor = ep ? SystemColors.ControlText : SystemColors.GrayText;
             }
             if (lblVolMaster != null) lblVolMaster.ForeColor = bound ? SystemColors.ControlText : SystemColors.GrayText;
@@ -1777,19 +2040,19 @@ namespace StereoSplitter
                 SyncLanesFromCards();
                 bindings.WriteMaster(volMaster.Value, chkMuteCapture.Checked);
 
-                var eps = LaneRouting.ResolveEndpointLanes(lanes);
                 var parts = new List<string>();
                 parts.Add("主=" + volMaster.Value + "%");
-                for (int i = 0; i < eps.Count; i++)
+                for (int i = 0; i < models.Count; i++)
                 {
-                    OutputLane lane = eps[i];
-                    string role = ChannelNameOf(lane.ChannelKey);
-                    var b = bindings.SinkOf(lane.DeviceId);
+                    OutputCardModel m = models[i];
+                    if (string.IsNullOrEmpty(m.DeviceId)) continue;
+                    string role = CardRole(m);
+                    var b = bindings.SinkOf(m.DeviceId);
                     if (b == null || !b.IsValid) { parts.Add(role + "=(未绑定)"); continue; }
-                    int vol = Math.Max(0, Math.Min(100, lane.Volume));
+                    int vol = Math.Max(0, Math.Min(100, m.Volume));
                     b.WriteVolume(vol / 100f);
-                    if (b.ReadMuted() != lane.Mute) b.WriteMute(lane.Mute);
-                    parts.Add(role + "=" + vol + "%" + (lane.Mute ? "(静音)" : ""));
+                    if (b.ReadMuted() != m.Mute) b.WriteMute(m.Mute);
+                    parts.Add(role + "=" + vol + "%" + (m.Mute ? "(静音)" : ""));
                 }
                 Log("[启动] 按UI值写入端点: " + string.Join(" ", parts.ToArray()) +
                     " (捕获消音=" + (chkMuteCapture.Checked ? "是" : "否") + ")");
@@ -1834,24 +2097,26 @@ namespace StereoSplitter
                 // 恢复 ini 保存的设备选择 (按设备 ID, 找不到则保留上面的默认)
                 RestoreDeviceSelection("DeviceDefault", cmbDefault, "捕获输出");
 
-                // 输出卡片: 逐张填充设备下拉并按 Lane.DeviceId 恢复
-                for (int ci = 0; ci < cards.Count && ci < lanes.Count; ci++)
+                // 输出卡片: 逐张填充设备下拉并按模型的 DeviceId 恢复
+                for (int ci = 0; ci < cards.Count && ci < models.Count; ci++)
                 {
                     cards[ci].SetDevices(devTexts);
-                    int idx = catalog.IndexOf(lanes[ci].DeviceId);
-                    if (idx < 0 && lanes[ci].DeviceId != "")
+                    int idx = catalog.IndexOf(models[ci].DeviceId);
+                    if (idx < 0 && models[ci].DeviceId != "")
                     {
-                        Log("[初始化] 输出 " + (ci + 1) + " 的设备已失效: " + lanes[ci].DeviceId);
+                        Log("[初始化] 输出 " + (ci + 1) + " 的设备已失效: " + models[ci].DeviceId);
                     }
                     if (idx < 0 && cards[ci].cmbDevice.Items.Count > 0)
                     {
                         // 未选/失效 → 默认接前两张卡用 0/1 号设备 (与旧版一致)
                         idx = ci < 2 ? ci : 0;
                         if (idx >= cards[ci].cmbDevice.Items.Count) idx = 0;
-                        lanes[ci].DeviceId = DeviceIdAt(idx);
+                        models[ci].DeviceId = DeviceIdAt(idx);
                     }
                     cards[ci].SetDeviceIndex(idx);
                 }
+                // 刷新后设备列表变了 → 可能有两张卡片落到同一台设备, 合并掉
+                if (cards.Count > 0 && NormalizeModels()) { RebuildCards(); SyncLanesFromCards(); }
 
                 Log("[初始化] 发现 " + Devices.Count + " 个输出设备，默认输出: [" + defIdx + "] " + defName);
             }
@@ -1902,28 +2167,27 @@ namespace StereoSplitter
                 return;
             }
 
-            if (lanes.Count == 0 || cards.Count == 0)
+            if (models.Count == 0 || cards.Count == 0)
             {
                 StartFailed();
-                MessageBox.Show("没有可用的输出卡片，请先添加至少一路输出。", "提示");
+                MessageBox.Show("没有可用的输出卡片，请先添加至少一张输出卡片。", "提示");
                 return;
             }
-            // N 路: 每一路都必须选好设备; 同一设备承载多路是合法用法 (内核按设备分组,
-            // 每台端点只开一条 WasapiOut), 因此不再禁止"多张卡片选中同一设备"。
-            for (int i = 0; i < lanes.Count && i < cards.Count; i++)
+            // 每张卡片（= 一台设备）都必须选好设备; 同设备多路已合并成一张多声道卡片
+            for (int i = 0; i < cards.Count && i < models.Count; i++)
             {
                 if (cards[i].cmbDevice.SelectedIndex < 0)
                 {
                     StartFailed();
-                    MessageBox.Show("第 " + (i + 1) + " 路输出（" + ChannelNameOf(lanes[i].ChannelKey) +
+                    MessageBox.Show("第 " + (i + 1) + " 张卡片（" + CardRole(models[i]) +
                         "）还没有选择设备。", "提示");
                     return;
                 }
             }
 
             int defIdx = catalog.IndexOf(catalog.DefaultRenderId());
-            // 回环检查 (逐路): 任一路指向捕获设备 → 采集自己的输出, 立刻啸叫
-            for (int i = 0; i < lanes.Count && i < cards.Count; i++)
+            // 回环检查 (逐张): 指向捕获设备 → 采集自己的输出, 立刻啸叫
+            for (int i = 0; i < cards.Count && i < models.Count; i++)
             {
                 if (cards[i].cmbDevice.SelectedIndex != defIdx) continue;
                 var others = new List<string>();
@@ -1931,9 +2195,9 @@ namespace StereoSplitter
                     if (k != defIdx) others.Add("[" + k + "] " + Devices[k].FriendlyName);
                 StartFailed();
                 MessageBox.Show(
-                    "第 " + (i + 1) + " 路（" + ChannelNameOf(lanes[i].ChannelKey) + "）指向了捕获设备 [" + defIdx + "] " +
+                    "第 " + (i + 1) + " 张卡片（" + CardRole(models[i]) + "）指向了捕获设备 [" + defIdx + "] " +
                     Devices[defIdx].FriendlyName + "，会造成声音回环！\n\n" +
-                    "请把「捕获(虚拟)」改为虚拟设备(如 CABLE Input)，或给这一路换别的输出。\n其它可选:\n" +
+                    "请把「捕获(虚拟)」改为虚拟设备(如 CABLE Input)，或给这张卡片换别的输出。\n其它可选:\n" +
                     string.Join("\n", others),
                     "设备冲突");
                 return;
@@ -2004,7 +2268,7 @@ namespace StereoSplitter
             bool conflict;
             var model = LaneRouting.Build(lanes, cmbSpec.SelectedIndex, srcCh,
                 delegate (string id) { return catalog == null ? "" : catalog.NameOf(id); },
-                noEndpointVolumeDevices, out conflict);
+                out conflict);
             if (conflict && logDelayConflict)
                 Log("[提示] 同一设备上的多路延迟不一致，已按最小值生效（内核每台设备只有一条延迟线）");
             return model;
@@ -2056,14 +2320,14 @@ namespace StereoSplitter
             finally { if (d != null) { try { d.Dispose(); } catch { } } }
         }
 
-        /// <summary>本次运行打开的全部输出端点 (= 路由模型里启用路的设备)。</summary>
+        /// <summary>本次运行打开的全部输出端点 (= 启用卡片的设备)。</summary>
         void FillRunSinkIds()
         {
             runSinkIds.Clear();
             SyncLanesFromCards();
-            for (int i = 0; i < lanes.Count; i++)
+            for (int i = 0; i < models.Count; i++)
             {
-                string id = lanes[i].DeviceId;
+                string id = models[i].DeviceId;
                 if (!string.IsNullOrEmpty(id) && !runSinkIds.Contains(id)) runSinkIds.Add(id);
             }
         }

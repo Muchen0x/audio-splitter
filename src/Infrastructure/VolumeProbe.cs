@@ -79,10 +79,20 @@ namespace StereoSplitter.Infrastructure
                     {
                         string p = "Out" + i + ".";
                         string id = st.GetStr(p + "DeviceId");
-                        sb.AppendLine("  Out" + i + " 声道=" + st.GetStr(p + "Channel") +
-                            " 音量=" + st.GetInt(p + "Volume", 100) + "%" +
+                        bool multi = st.GetInt(p + "Multi", 0) != 0 || st.GetStr(p + "Channel") == LaneRouting.MultiKey;
+                        sb.AppendLine("  Out" + i + (multi ? " [多声道]" : "") +
+                            " 声道=" + st.GetStr(p + "Channel") +
+                            " 主音量=" + st.GetInt(p + "Volume", 100) + "%" +
                             (st.GetInt(p + "Mute", 0) != 0 ? " 静音" : "") +
+                            " 延迟=" + st.GetInt(p + "DelayMs", 0) + "ms" +
                             " 设备=" + catalog.NameOf(id));
+                        int ch = st.GetInt(p + "ChCount", 0);
+                        for (int s = 0; s < ch; s++)
+                        {
+                            string ck = p + "Ch" + s + ".";
+                            sb.AppendLine("      p" + s + " 声道=" + st.GetStr(ck + "Channel") +
+                                " 音量=" + st.GetInt(ck + "Volume", 100) + "%");
+                        }
                     }
                 }
                 catch (Exception ex)
