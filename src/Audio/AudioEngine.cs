@@ -241,6 +241,7 @@ namespace StereoSplitter
 
             // 时钟组: 同一 ClockGroupId 的路共享 ratio; 空 ID = 每路独立组
             var groups = new Dictionary<string, ClockGroup>();
+            var memberGroup = new ClockGroup[specs.Count];
             var memberId = new int[specs.Count];
             int maxGroupSize = 1;
             for (int i = 0; i < specs.Count; i++)
@@ -252,6 +253,7 @@ namespace StereoSplitter
                     g = new ClockGroup(driftTargetSamples, wf.SampleRate, LogThrottled);
                     g.MemberCount = 1;
                     memberId[i] = 0;
+                    memberGroup[i] = g;
                 }
                 else
                 {
@@ -265,6 +267,7 @@ namespace StereoSplitter
                     memberId[i] = g.MemberCount;
                     g.MemberCount = g.MemberCount + 1;
                     if (g.MemberCount > maxGroupSize) maxGroupSize = g.MemberCount;
+                    memberGroup[i] = g;
                 }
             }
             var compiled = model.Compile(specs, wf.Channels);
@@ -272,8 +275,9 @@ namespace StereoSplitter
             sinks.Clear();
             for (int i = 0; i < specs.Count; i++)
             {
-                string gid = specs[i].ClockGroupId ?? "";
-                ClockGroup g = gid.Length == 0 ? null : groups[gid];
+                // 独立组也要把组传下去: 传 null 会让该路永远不做漂移校正 (ratio 恒 1.0),
+                // 多声道规格下设备间时钟差会无限累积成左右偏移。
+                ClockGroup g = memberGroup[i];
                 var sink = new SinkRuntime(specs[i], devs[i], wf, driftTargetSamples, fillTargetSamples,
                     outLatencyMs, driftMode, fixedPpm, memberId[i], g, LogThrottled);
                 sink.Matrix = compiled.SinkMatrix[i];
