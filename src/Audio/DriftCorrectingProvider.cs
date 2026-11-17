@@ -183,6 +183,23 @@ namespace StereoSplitter
             return sr > 0 ? (int)((long)frames * 1000 / sr) : 0;
         }
 
+        // ---- 输出电平 (RMS): 诊断"程序写的是真音频还是静音" ----
+        readonly object rmsSync = new object();
+        long rmsSumSq;      // 输出样本平方和 ×1e9 (定点累加, 避免跨线程 double 撕裂)
+        long rmsCount;
+
+        /// <summary>
+        /// 取自上次调用以来的输出 RMS (0~1, 已含增益/主音量/联动), 同时清零重计。
+        /// 返回 -1 = 统计窗口内没有写入任何样本 (流未跑)。
+        /// </summary>
+        public double TakeLevelRms()
+        {
+            long sq, n;
+            lock (rmsSync) { sq = rmsSumSq; n = rmsCount; rmsSumSq = 0; rmsCount = 0; }
+            if (n == 0) return -1;
+            return Math.Sqrt(sq / (double)n / 1e9);
+        }
+
         public int Read(float[] samples, int offset, int countRequested)
         {
             long t0 = Stopwatch.GetTimestamp();
@@ -209,6 +226,8 @@ namespace StereoSplitter
             lastReadTs = t0;
             float g = gain;
             float m = master;
+            double sqAcc = 0;   // 本块输出样本平方和 (RMS 诊断)
+            int nAcc = 0;
 
             for (int f = 0; f < frames; f++)
             {
@@ -234,6 +253,7 @@ namespace StereoSplitter
                             if (lo > -1e-5f && lo < 1e-5f) lo = 0f;
                             lastOut[c] = lo;
                             samples[baseIdx + c] = lo;
+                            sqAcc += lo * lo; nAcc++;
                         }
                         if (++updateCounter >= UpdateSamples) { updateCounter = 0; UpdateRatio(); }
                         continue;
@@ -252,6 +272,7 @@ namespace StereoSplitter
                     if (fadeIn < 1f) v *= fadeIn;   // 欠载恢复淡入: 与 lastOut 的衰减对称
                     lastOut[c] = v;
                     samples[baseIdx + c] = v;
+                    sqAcc += v * v; nAcc++;
                 }
                 if (fadeIn < 1f)
                 {
@@ -279,6 +300,8 @@ namespace StereoSplitter
                 slowReads++;
                 if (durMs > maxDurMs) maxDurMs = durMs;
             }
+            if (nAcc > 0)
+                lock (rmsSync) { rmsSumSq += (long)(sqAcc * 1e9); rmsCount += nAcc; }
             return countRequested;
         }
 

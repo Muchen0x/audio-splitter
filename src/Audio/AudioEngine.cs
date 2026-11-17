@@ -504,6 +504,8 @@ namespace StereoSplitter
                         " 最低 L=" + minL + "ms R=" + minR + "ms";
                     long ul = a.UnderrunSamples, ur = b.UnderrunSamples;
                     if (ul > 0 || ur > 0) s += " 欠载 L=" + ul + " R=" + ur;
+                    double lv = a.TakeLevelRms(), rv = b.TakeLevelRms();
+                    s += " 电平 L=" + LevelPct(lv) + "% R=" + LevelPct(rv) + "%";
                     string tl = a.TimingInfo, tr = b.TimingInfo;
                     if (tl != null) s += " 左" + tl;
                     if (tr != null) s += " 右" + tr;
@@ -518,6 +520,8 @@ namespace StereoSplitter
                     sb.Append(specs[i].Label).Append(' ')
                       .Append(p.RegulatedMs).Append('/').Append(p.TakeMinBufferedMs()).Append("ms ")
                       .Append(Ppm(p.RatioPpm));
+                    double lvl = p.TakeLevelRms();
+                    if (lvl >= 0) sb.Append(" 电平").Append(LevelPct(lvl)).Append('%');
                     if (p.UnderrunSamples > 0) sb.Append(" 欠载").Append(p.UnderrunSamples);
                 }
                 return sb.ToString();
@@ -528,6 +532,12 @@ namespace StereoSplitter
         static string Ppm(double v)
         {
             return v.ToString("+0;-0;0") + "ppm";
+        }
+
+        /// <summary>电平 RMS 转百分比显示; -1 (窗口内无样本) 显示 0。</summary>
+        static string LevelPct(double rms)
+        {
+            return rms < 0 ? "0" : Math.Round(rms * 100, 1).ToString("0.#");
         }
 
         // 停止事件在音频线程触发; stopping 期间(自己停的)一律忽略

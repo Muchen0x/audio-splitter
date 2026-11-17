@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using NAudio.CoreAudioApi;
+using NAudio.Wave;
 using StereoSplitter.Devices;
 
 namespace StereoSplitter.Infrastructure
@@ -133,6 +134,54 @@ namespace StereoSplitter.Infrastructure
                 return 0;
             }
             catch (Exception ex) { Console.WriteLine("列出端点异常: " + ex.Message); return 9; }
+            finally { if (catalog != null) { try { catalog.Dispose(); } catch { } } }
+        }
+
+        /// <summary>
+        /// 向指定端点放一段测试音（`--playtest "名字片段" [秒]`）。
+        /// 用途: 程序链路健康但某一路没声时，绕开程序直接驱动该设备 ——
+        /// 听得到 = 端点/硬件/会话层正常，问题在程序侧；听不到 = 设备本身或系统会话层。
+        /// 共享模式播放，不动端点音量/静音，不与正在运行的实例冲突。
+        /// 返回 0 = 播放完成。
+        /// </summary>
+        public static int PlayTest(string needle, double seconds)
+        {
+            DeviceCatalog catalog = null;
+            try
+            {
+                catalog = new DeviceCatalog();
+                catalog.Refresh();
+                List<EndpointInfo> hits = FindAllByName(catalog, needle);
+                if (hits.Count == 0) { Console.WriteLine("[失败] 找不到设备: " + needle); return 5; }
+                if (hits.Count > 1) { PrintAmbiguous(needle, hits); return 8; }
+                EndpointInfo ep = hits[0];
+                MMDevice dev = catalog.Open(ep.ID);
+                if (dev == null) { Console.WriteLine("[失败] 打不开: " + ep.FriendlyName); return 6; }
+                try
+                {
+                    WaveFormat fmt = dev.AudioClient.MixFormat;
+                    var gen = new NAudio.Wave.SampleProviders.SignalGenerator(
+                        fmt.SampleRate, fmt.Channels)
+                    {
+                        Frequency = 440f,
+                        Gain = 0.18
+                    };
+                    using (var player = new WasapiOut(dev, AudioClientShareMode.Shared, true, 50))
+                    {
+                        player.Init(gen);
+                        player.Play();
+                        Console.WriteLine("[测试] 正在向 " + ep.FriendlyName + " 播放 " +
+                            seconds.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) +
+                            " 秒 440Hz 测试音 (" + fmt.SampleRate + "Hz/" + fmt.Channels + "ch)……");
+                        System.Threading.Thread.Sleep((int)(seconds * 1000));
+                        player.Stop();
+                    }
+                    Console.WriteLine("[完成] 若该设备没发出声音, 检查: 音箱电源/音量旋钮/Windows 音量合成器里本程序的会话音量。");
+                    return 0;
+                }
+                finally { if (dev != null) { try { dev.Dispose(); } catch { } } }
+            }
+            catch (Exception ex) { Console.WriteLine("测试音播放异常: " + ex.Message); return 9; }
             finally { if (catalog != null) { try { catalog.Dispose(); } catch { } } }
         }
 

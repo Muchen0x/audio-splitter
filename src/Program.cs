@@ -84,6 +84,26 @@ namespace StereoSplitter
                 return;
             }
 
+            // 端点测试音: SplitterGUI.exe --playtest "设备名片段" [--sec 1.5]
+            // 用途: 程序链路健康但某路没声时, 绕开程序直接向该端点放测试音 ——
+            //       听得到 = 硬件/端点正常, 问题在程序或会话层; 听不到 = 硬件/端点层。
+            if (argv != null && argv.Length > 0 && HasSwitch(argv, "--playtest"))
+            {
+                try { AttachConsole(ATTACH_PARENT_PROCESS); } catch { }
+                string needle = null;
+                double sec = 1.5;
+                for (int i = 0; i < argv.Length; i++)
+                {
+                    if (string.Equals(argv[i], "--playtest", StringComparison.OrdinalIgnoreCase) && i + 1 < argv.Length)
+                        needle = argv[++i];
+                    else if (string.Equals(argv[i], "--sec", StringComparison.OrdinalIgnoreCase) && i + 1 < argv.Length)
+                        double.TryParse(argv[++i], System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out sec);
+                }
+                Environment.ExitCode = StereoSplitter.Infrastructure.EndpointAdmin.PlayTest(needle, sec);
+                return;
+            }
+
             // 端点维护 (会写端点, 只在显式给参数时执行):
             //   SplitterGUI.exe --setvol "Xiaomi9:20" --setvol "CABLE:6"
             //   SplitterGUI.exe --setdefault "Realtek"
