@@ -44,13 +44,13 @@ namespace StereoSplitter
         // 时钟环稳态目标 (ms): 档位越小目标越低, 上限 100ms。
         // 余量按"捕获端交货间隙一次消耗 ~35ms (USB/HDMI 大块粒度实测) + 输出周期"校准,
         // 各档稳态剩余余量 ≥10ms, 避免瞬时水位探底穿零产生欠载:
-        //   标准 100/低延迟 80/极低 65/超低 60/极限 55 → 剩余 15/15/10/15/15ms。
+        //   标准 100/低延迟 80/极低 65/超低 60/极限 60 → 剩余 15/15/10/15/20ms。
         public static int DriftTargetMs(int preMs, int outMs)
         {
             int margin = (preMs >= 100 || outMs >= 50) ? 25 :
                          (preMs >= 50 || outMs >= 30) ? 30 :
                          (preMs >= 25 || outMs >= 20) ? 40 :
-                         (preMs >= 10 || outMs >= 10) ? 45 : 50;
+                         (preMs >= 10 || outMs >= 10) ? 45 : 55;
             return Math.Min(100, Math.Max(preMs, outMs) + margin);
         }
 
