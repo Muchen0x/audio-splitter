@@ -107,8 +107,12 @@ namespace StereoSplitter
         /// <summary>链路意外中断 (参数为人话原因)。在音频线程触发, 订阅方须自行回 UI 线程。</summary>
         public event Action<AudioEngine, string> Stalled;
 
-        // 起播余量: 覆盖输出端起播时对缓冲的预拉取。
-        const int PrePullGuardMs = 80;
+        // 起播余量: 覆盖输出端起播时对缓冲的预拉取 + 捕获端起播供应延迟。
+        // 80 -> 20 (2026-11-18): 余量过大时校正环要用顶格 +5000ppm 放水 1~3 分钟才进稳态。
+        // 20 -> 40 (同日实测): 20ms 时起播第 1 秒瞬时水位探到 9ms 并穿零一次 (欠载 460 样本,
+        // 实测起播瞬间供缺口约 69ms); 40ms 完整覆盖该缺口, 放水段仅 ~8 秒。
+        // 头几秒的剩余抖动由 holding 闸门 + 3ms 淡入淡出兜底。
+        const int PrePullGuardMs = 40;
 
         public AudioEngine(string leftDevId, string rightDevId, Action<string> log, int driftMode, int fixedPpm)
         {
