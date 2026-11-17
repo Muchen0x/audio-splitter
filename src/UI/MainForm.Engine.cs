@@ -300,7 +300,10 @@ namespace StereoSplitter
                         engine = eng;
                         // 订阅放在赋值之后: 处理函数会按引用校验"还是不是当前引擎", 防止旧引擎的迟到事件触发二次重建
                         eng.Stalled += OnEngineStalledFromAudio;
-                        runCaptureId = eng.CaptureId;
+                        // CaptureId getter 在 COM 对象失效时会 catch 后返回 null —— 不能让 null 覆盖
+                        // 启动时已知的正确值 (103 行), 否则断流自动重建会因 runCaptureId 为空而放弃
+                        string startedCap = eng.CaptureId;
+                        if (!string.IsNullOrEmpty(startedCap)) runCaptureId = startedCap;
                         runModel = p.Model;
                         ResetWatchdog();
                         runSinceTick = Environment.TickCount;
@@ -558,9 +561,27 @@ namespace StereoSplitter
 
             if (string.IsNullOrEmpty(capId) || runSinkIds.Count == 0)
             {
-                Log("[错误] 缺少运行期设备信息，无法自动重建；请手动重新开始");
-                GiveUp();
-                return;
+                // 运行期设备信息意外缺失 (2026-11-17 实测发生过): UI 仍持有权威状态, 先尝试就地恢复,
+                // 恢复不了才放弃。恢复逻辑与 BtnStart_Click 相同: 捕获=当前默认选择, 输出=各卡片设备。
+                Log("[恢复] 运行期设备信息缺失 (捕获ID=" + (capId ?? "空") +
+                    ", 输出端点=" + runSinkIds.Count + " 个) → 尝试按当前界面状态恢复");
+                try
+                {
+                    capId = DeviceIdAt(cmbDefault.SelectedIndex);
+                    FillRunSinkIds();
+                }
+                catch (Exception ex)
+                {
+                    Log("[错误] 按界面恢复设备信息失败: " + ex.Message);
+                }
+                if (string.IsNullOrEmpty(capId) || runSinkIds.Count == 0)
+                {
+                    Log("[错误] 无法自动重建（捕获/输出设备信息仍缺失）；请手动重新开始");
+                    GiveUp();
+                    return;
+                }
+                runCaptureId = capId;
+                Log("[恢复] 已恢复运行期设备信息: 捕获 1 台 + 输出 " + runSinkIds.Count + " 台");
             }
             string missing = FindMissingEndpoint(runSinkIds.ToArray());
             if (missing != null)

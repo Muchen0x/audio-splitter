@@ -120,7 +120,8 @@ namespace StereoSplitter.Infrastructure
                         int pct = (int)Math.Round(vol.MasterVolumeLevelScalar * 100);
                         Console.WriteLine("[" + i + "] " + pct.ToString().PadLeft(3) + "%" +
                             (vol.Mute ? " 静音 " : "     ") +
-                            (ep.ID == defId ? "[默认] " : "       ") + ep.FriendlyName);
+                            (ep.ID == defId ? "[默认] " : "       ") + ep.FriendlyName +
+                            "  <" + ep.ID + ">");
                     }
                     catch (Exception ex)
                     {
