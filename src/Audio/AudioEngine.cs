@@ -42,14 +42,15 @@ namespace StereoSplitter
         internal const int CaptureLatencyEstimateMs = 10;
 
         // 时钟环稳态目标 (ms): 档位越小目标越低, 上限 100ms。
-        // 安全余量分四档: 校正环稳态摆动 std 8ms + 块锯齿 18ms; 极限档额外加 15ms
-        // —— 大块粒度捕获端点 (USB/HDMI) 交货间隙长, 45ms 时余量不足会周期性见底(欠载),
-        //    60ms 换 ~0.15% 的毛刺消失 (实测 70 样本/秒欠载率, 2026-11-18)。
+        // 余量按"捕获端交货间隙一次消耗 ~35ms (USB/HDMI 大块粒度实测) + 输出周期"校准,
+        // 各档稳态剩余余量 ≥10ms, 避免瞬时水位探底穿零产生欠载:
+        //   标准 100/低延迟 80/极低 65/超低 60/极限 60 → 剩余 15/15/10/15/20ms。
         public static int DriftTargetMs(int preMs, int outMs)
         {
-            int margin = (preMs >= 50 || outMs >= 50) ? 25 :
-                         (preMs >= 25 || outMs >= 25) ? 30 :
-                         (preMs >= 10 || outMs >= 10) ? 40 : 55;
+            int margin = (preMs >= 100 || outMs >= 50) ? 25 :
+                         (preMs >= 50 || outMs >= 30) ? 30 :
+                         (preMs >= 25 || outMs >= 20) ? 40 :
+                         (preMs >= 10 || outMs >= 10) ? 45 : 55;
             return Math.Min(100, Math.Max(preMs, outMs) + margin);
         }
 
