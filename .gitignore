@@ -18,3 +18,6 @@ SplitterGUI.ini
 .vs/
 *.user
 *.suo
+
+# 文档与代码审查报告: 只在本地保留, 不纳入版本库 / 不上传
+docs/
