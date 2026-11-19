@@ -40,6 +40,8 @@ namespace StereoSplitter
             CaseMergeVolumeOwnership();
             CaseFlattenVolumeRules();
             CaseSparsePhysSlots();
+            CaseTailAndEmptySlots();
+            CaseMergeLoudnessWhenNoEndpoint();
             CaseDelayConflict();
             CaseValidateWarnings();
             CaseIniRoundTrip();
@@ -311,7 +313,9 @@ namespace StereoSplitter
             cards[0].Slots.Add(new ChannelSlot { ChannelKey = "", Volume = 100 });      // p1 空
             cards[0].Slots.Add(new ChannelSlot { ChannelKey = "LFE", Volume = 100 });   // p2
             var lanes = LaneRouting.Flatten(cards, null);
-            Check("2 行有内容", lanes.Count == 2);
+            // F-05 后空行保留为静音占位 lane (3 行) —— 这样尾部空/全空时声道数不被压缩
+            Check("3 行 (p1 空也占位)", lanes.Count == 3);
+            Check("p1 占位行无 ChannelKey", lanes[1].ChannelKey == "");
 
             bool conflict;
             var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
@@ -319,6 +323,96 @@ namespace StereoSplitter
             var c = m.Compile(m.SinkSpecs, 6);
             Check("p1 全零", Math.Abs(c.SinkMatrix[0][1, 0]) < 1e-6f && Math.Abs(c.SinkMatrix[0][1, 3]) < 1e-6f);
             Check("p2 ← 低音", Math.Abs(c.SinkMatrix[0][2, 3] - 1f) < 1e-6f);
+        }
+
+        /// <summary>
+        /// F-05: 尾部行置空 / 全部行置空 → 保持原物理声道数与 sink，用全零矩阵表达静音。
+        /// 否则 OutChannels 缩小 → SameLinkShape 判为链路变化 → 热更新被拒 → UI 说静音但实际仍出声。
+        /// </summary>
+        static void CaseTailAndEmptySlots()
+        {
+            Begin("尾部/全空行保持声道数 (F-05)");
+
+            // p0=FL, p1="" → 必须仍是 2ch，p1 全零
+            var tail = new List<OutputCardModel> { Card("devA", 0, true, "FL", 100) };
+            tail[0].Slots.Add(new ChannelSlot { ChannelKey = "", Volume = 100 });
+            var tailLanes = LaneRouting.Flatten(tail, null);
+            bool conflict;
+            var mt = LaneRouting.Build(tailLanes, 1, 2, null, out conflict);
+            Check("尾部空 → sink 保留", mt.SinkSpecs.Count == 1);
+            Check("尾部空 → 仍 2ch", mt.SinkSpecs.Count == 1 && mt.SinkSpecs[0].OutChannels == 2);
+            var ct = mt.Compile(mt.SinkSpecs, 2);
+            Check("p0 ← 左", Math.Abs(ct.SinkMatrix[0][0, 0] - 1f) < 1e-6f);
+            Check("p1 全零", Math.Abs(ct.SinkMatrix[0][1, 0]) < 1e-6f && Math.Abs(ct.SinkMatrix[0][1, 1]) < 1e-6f);
+
+            // 全部行置空 → sink 仍在、声道数不变、矩阵全零 (静音而非删卡)
+            var empty = new List<OutputCardModel> { Card("devA", 0, true, "", 100) };
+            empty[0].Slots.Add(new ChannelSlot { ChannelKey = "", Volume = 100 });
+            var emptyLanes = LaneRouting.Flatten(empty, null);
+            var me = LaneRouting.Build(emptyLanes, 1, 2, null, out conflict);
+            Check("全空 → sink 仍在", me.SinkSpecs.Count == 1);
+            Check("全空 → 仍 2ch", me.SinkSpecs.Count == 1 && me.SinkSpecs[0].OutChannels == 2);
+            var ce = me.Compile(me.SinkSpecs, 2);
+            bool allZero = true;
+            for (int p = 0; p < ce.SinkMatrix[0].GetLength(0); p++)
+                for (int s = 0; s < ce.SinkMatrix[0].GetLength(1); s++)
+                    if (Math.Abs(ce.SinkMatrix[0][p, s]) > 1e-6f) allZero = false;
+            Check("全空 → 全零矩阵", allZero);
+
+            // 单声道卡片声道置空 → sink 保留、全零、1ch
+            var single = new List<OutputCardModel> { Card("devA", 0, false, "", 40) };
+            var sl = LaneRouting.Flatten(single, null);
+            var ms = LaneRouting.Build(sl, 1, 2, null, out conflict);
+            Check("单声道空 → sink 保留 1ch", ms.SinkSpecs.Count == 1 && ms.SinkSpecs[0].OutChannels == 1);
+            var cs = ms.Compile(ms.SinkSpecs, 2);
+            Check("单声道空 → 全零", Math.Abs(cs.SinkMatrix[0][0, 0]) < 1e-6f && Math.Abs(cs.SinkMatrix[0][0, 1]) < 1e-6f);
+
+            // 链路形状稳定: 从"有内容"改到"尾部空"应通过 SameLinkShape(由 OutChannels 相等间接验证)
+            var full = new List<OutputCardModel> { Card("devA", 0, true, "FL", 100) };
+            full[0].Slots.Add(new ChannelSlot { ChannelKey = "FR", Volume = 100 });
+            var mf = LaneRouting.Build(LaneRouting.Flatten(full, null), 1, 2, null, out conflict);
+            Check("链路形状: 有内容2ch == 尾部空2ch",
+                mf.SinkSpecs[0].OutChannels == mt.SinkSpecs[0].OutChannels);
+        }
+
+        /// <summary>
+        /// F-08: 同设备合并必须"响度无损"。端点不可用时，各卡主音量(含静音)要折进各自行增益，
+        /// 否则静音的那一路会突然按别人的音量发声；端点可用时维持旧逻辑(端点唯一承载主音量)。
+        /// </summary>
+        static void CaseMergeLoudnessWhenNoEndpoint()
+        {
+            Begin("端点不可用时的合并响度 (F-08)");
+
+            // A: 40% 未静音, B: 60% 但静音 → 端点不可用时有效值为 40% 和 0
+            var a = Card("devA", 0, false, "FL", 40);
+            var b = Card("devA", 0, false, "FR", 60);
+            b.Mute = true;
+            var cards = new List<OutputCardModel> { a, b };
+
+            Func<string, bool> noEp = delegate(string d) { return false; };
+            int merged = LaneRouting.MergeSameDevice(cards, noEp);
+            Check("合并 1 张", merged == 1 && cards.Count == 1);
+            Check("合并后中性主音量 100", cards[0].Volume == 100 && !cards[0].Mute);
+            Check("两行增益 40 / 0", cards[0].Slots[0].Volume == 40 && cards[0].Slots[1].Volume == 0);
+
+            // Flatten 端点不可用 → 矩阵增益应还原合并前的有效值：FL=40%, FR=0
+            var lanes = LaneRouting.Flatten(cards, noEp);
+            Check("2 行 lane", lanes.Count == 2);
+            Check("FL 行音量 40", lanes[0].Volume == 40);
+            Check("FR 行静音(音量0)", lanes[1].Volume == 0);
+            bool conflict;
+            var m = LaneRouting.Build(lanes, 1, 2, null, out conflict);
+            var c = m.Compile(m.SinkSpecs, 2);
+            Check("矩阵 p0 ← L 增益 0.4", Math.Abs(c.SinkMatrix[0][0, 0] - 0.4f) < 1e-6f);
+            Check("矩阵 p1 全零", Math.Abs(c.SinkMatrix[0][1, 0]) < 1e-6f && Math.Abs(c.SinkMatrix[0][1, 1]) < 1e-6f);
+
+            // 端点可用时维持旧逻辑: 单声道来源行增益回 100, 由端点承载主音量
+            var a2 = Card("devA", 0, false, "FL", 40);
+            var b2 = Card("devA", 0, false, "FR", 60);
+            var cards2 = new List<OutputCardModel> { a2, b2 };
+            int merged2 = LaneRouting.MergeSameDevice(cards2);   // 默认 = 端点全可用
+            Check("端点可用仍合并", merged2 == 1 && cards2.Count == 1);
+            Check("端点可用: 行增益回 100", cards2[0].Slots[0].Volume == 100 && cards2[0].Slots[1].Volume == 100);
         }
 
         /// <summary>立体声规格接三台设备 (如双单声道并播): 全部共享一个 ratio 才不会偏音。</summary>

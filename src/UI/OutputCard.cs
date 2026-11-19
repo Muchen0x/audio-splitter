@@ -506,6 +506,15 @@ namespace StereoSplitter
             finally { syncing = false; }
         }
 
+        /// <summary>
+        /// 在下拉末尾追加"已保存设备当前不可用"占位项 (F-07)。该项下标 ≥ 真实设备数，
+        /// 上层据此保留模型里保存的设备 ID，不自动换设备、不覆盖保存。
+        /// </summary>
+        public void AppendMissingDeviceItem(string text)
+        {
+            cmbDevice.Items.Add(text);
+        }
+
         /// <summary>填充声道下拉 (规格声道 + 「多声道」)。</summary>
         public void SetChannels(IList<KeyValuePair<string, string>> channels)
         {

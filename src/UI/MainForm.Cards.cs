@@ -112,7 +112,10 @@ namespace StereoSplitter
             for (int i = 0; i < cards.Count && i < models.Count; i++)
             {
                 cards[i].WriteBackToModel(chans);
-                models[i].DeviceId = SafeDeviceId(cards[i].SelectedDeviceIndex);
+                int idx = cards[i].SelectedDeviceIndex;
+                // F-07: 占位项(索引 ≥ 真实设备数)表示"已保存设备当前不可用" → 保留原 ID，不写空、不换设备
+                if (idx >= Devices.Count && !string.IsNullOrEmpty(models[i].DeviceId)) continue;
+                models[i].DeviceId = SafeDeviceId(idx);
             }
             RebuildLanes();
         }
@@ -122,6 +125,25 @@ namespace StereoSplitter
         {
             lanes.Clear();
             lanes.AddRange(LaneRouting.Flatten(models, EndpointVolumeAvailable));
+        }
+
+        /// <summary>
+        /// 给卡片填设备下拉并恢复选择 (F-07)。保存的设备 ID 当前没枚举到时，不自动换成别的设备，
+        /// 而是在末尾加一个占位项并选中它 —— 这样模型里的 DeviceId 原样保留，等 USB/蓝牙设备
+        /// 完成枚举或重新插入后刷新即可恢复，不会被静默改写、也不会因落到同一设备被误合并。
+        /// </summary>
+        void SetCardDeviceSelection(OutputCardControl card, OutputCardModel model, IList<string> devTexts)
+        {
+            card.SetDevices(devTexts);
+            int idx = catalog == null ? -1 : catalog.IndexOf(model.DeviceId);
+            if (idx < 0 && !string.IsNullOrEmpty(model.DeviceId))
+            {
+                // 占位项索引 = 真实设备数，超出 catalog 范围 → SyncLanesFromCards 据此保留模型 ID
+                card.AppendMissingDeviceItem("[已保存设备当前不可用] " + DevNameFor(model.DeviceId));
+                card.SetDeviceIndex(devTexts.Count);
+                return;
+            }
+            card.SetDeviceIndex(idx);
         }
 
         /// <summary>该设备的端点音量是否可用 (绑不上时音量改走混音增益)。</summary>
@@ -183,20 +205,31 @@ namespace StereoSplitter
                     if (d.Length > 0 && !seen.Add(d) && !dup.Contains(d)) dup.Add(d);
                 }
 
-                int merged = LaneRouting.MergeSameDevice(models);
+                int merged = LaneRouting.MergeSameDevice(models, EndpointVolumeAvailable);
                 if (merged > 0)
                 {
                     changed = true;
                     for (int i = 0; i < models.Count; i++)
                     {
                         if (!models[i].Multi || !dup.Contains(models[i].DeviceId ?? "")) continue;
-                        // 合并后主音量接管设备端点 → 取端点当前值, 保证"合并不改变响度"
-                        int before = models[i].Volume;
-                        models[i].Volume = ReadEndpointPercent(models[i].DeviceId, before);
-                        models[i].Mute = false;
+                        string devId = models[i].DeviceId ?? "";
                         EnsureSlots(models[i]);
-                        Log("[输出] " + DevNameFor(models[i].DeviceId) + " 的主音量取端点当前值 " +
-                            models[i].Volume + "%（合并前 " + before + "%，设备端点音量从此由这张卡片控制）");
+                        if (EndpointVolumeAvailable(devId))
+                        {
+                            // 端点可用 → 主音量接管设备端点，取端点当前值保证"合并不改变响度"
+                            int before = models[i].Volume;
+                            models[i].Volume = ReadEndpointPercent(devId, before);
+                            models[i].Mute = false;
+                            Log("[输出] " + DevNameFor(devId) + " 的主音量取端点当前值 " +
+                                models[i].Volume + "%（合并前 " + before + "%，设备端点音量从此由这张卡片控制）");
+                        }
+                        else
+                        {
+                            // F-08: 端点不可用 → 各卡主音量(含静音)已在 MergeInto 折进对应行增益,
+                            // 主音量已是中性的 100/Mute=false, 不能再读端点也不再覆盖, 否则静音路会突然发声。
+                            Log("[输出] " + DevNameFor(devId) +
+                                " 端点音量不可用，各卡音量（含静音）已折进各自声道行增益，合并响度无损");
+                        }
                     }
                     Log("[输出] 同设备的多张卡片已合并为多声道卡片: " + DescribeCards());
                 }
@@ -336,8 +369,7 @@ namespace StereoSplitter
             {
                 OutputCardModel m = models[i];
                 var card = new OutputCardControl(m);
-                card.SetDevices(devTexts);
-                card.SetDeviceIndex(catalog == null ? -1 : catalog.IndexOf(m.DeviceId));
+                SetCardDeviceSelection(card, m, devTexts);
                 card.SetChannels(chans);
                 // 行控件要先建出来, SyncFromModel 才填得进值
                 card.SetMulti(m.Multi, m.Multi ? m.Slots.Count : 0, chans);
@@ -764,13 +796,24 @@ namespace StereoSplitter
             if (volSyncing) return;
             // 主滑条 = 设备端点音量; 行滑条 = 混音增益 (端点音量是设备级单值, 分不了声道)
             var b = (bindings != null) ? bindings.SinkOf(card.Model.DeviceId) : null;
+            bool wroteEndpoint = false;
             if (!isSlot && b != null && b.IsValid)
             {
-                b.WriteVolume(card.volTrack.Value / 100f);
-                if (card.volTrack.Value > 0 && b.ReadMuted()) b.WriteMute(false);
+                bool ok = b.WriteVolume(card.volTrack.Value / 100f);
+                if (ok && card.volTrack.Value > 0 && b.ReadMuted()) ok = b.WriteMute(false);
+                if (!ok)
+                {
+                    // F-06: 端点写失败 → 回退混音增益, 让滑条仍生效
+                    FallbackEndpointToMix(card.Model.DeviceId, "音量写入");
+                }
+                else
+                {
+                    wroteEndpoint = true;
+                    // 端点承载音量, 矩阵里的主音量不重复计入 (Flatten 已按 noEndpointVolumeDevices 决定)
+                }
             }
             // 拖动中的热更新: 只改增益, 不记日志 (一次拖动几十次事件, 记了就是刷屏)
-            else if (running) ApplyRoutingHot("音量", true);
+            if (!wroteEndpoint && running) ApplyRoutingHot("音量", true);
             SaveSettings();
         }
 

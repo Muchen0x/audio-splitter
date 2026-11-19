@@ -861,7 +861,9 @@ namespace StereoSplitter
             return catalog.NameOf(id);
         }
 
-        // 端点绑定失效 (设备拔出/端点被拆) → 标记 UI 失效并提示, 不停止分流 (与原"仅警告"策略一致)
+        // 端点绑定失效 (设备拔出/端点被拆) → 回退到混音增益: 该设备音量不再写端点,
+        // 改由卡片音量乘进矩阵, 否则卡片滑条/静音全部失效 (端点对象已废, 写进去没反应)。
+        // 不停止分流 (与原"仅警告"策略一致)。
         void OnBindingInvalidated(EndpointVolumeBinding b)
         {
             if (IsDisposed || !IsHandleCreated) return;
@@ -869,8 +871,17 @@ namespace StereoSplitter
             {
                 BeginInvoke(new Action(delegate
                 {
+                    if (IsDisposed) return;
                     SetVolumeBindVisual(false);
-                    Log("[警告] 「" + b.Role + "」端点绑定已失效 (" + b.DeviceName + ")，该路数字标签已置灰，请停止分流并刷新设备");
+                    string devId = b == null ? null : b.DeviceId;
+                    if (!string.IsNullOrEmpty(devId) && noEndpointVolumeDevices.Add(devId))
+                    {
+                        RebuildLanes();   // 该设备音量改走矩阵增益
+                        if (running) ApplyRoutingHot("端点失效，回退混音增益");
+                    }
+                    Log("[警告] 「" + (b == null ? "?" : b.Role) + "」端点绑定已失效 (" +
+                        (b == null ? "?" : b.DeviceName) +
+                        ")，该设备音量已改由混音增益承载，请停止分流并刷新设备");
                 }));
             }
             catch { }
@@ -1074,12 +1085,16 @@ namespace StereoSplitter
                 }
                 var usedIdx = new HashSet<int>();
                 for (int i = 0; i < cards.Count; i++)
-                    if (cards[i].cmbDevice.SelectedIndex >= 0) usedIdx.Add(cards[i].cmbDevice.SelectedIndex);
+                {
+                    int si = cards[i].cmbDevice.SelectedIndex;
+                    if (si >= 0 && si < Devices.Count) usedIdx.Add(si);   // F-07: 占位项不算已选
+                }
 
                 int filled = 0;
                 for (int i = 0; i < cards.Count && i < models.Count; i++)
                 {
-                    if (cards[i].cmbDevice.SelectedIndex >= 0) continue;
+                    int si = cards[i].cmbDevice.SelectedIndex;
+                    if (si >= 0 && si < Devices.Count) continue;   // F-07: 占位项(缺失设备)交给下面重选
                     int chosen = -1;
                     for (int k = 0; k < cand.Count; k++)
                     {
@@ -1233,6 +1248,19 @@ namespace StereoSplitter
         }
 
         // 把 UI 当前音量值写入已绑定端点 (点开始分流时, UI 为唯一权威源)
+        /// <summary>
+        /// 端点写入失败 → 该设备音量改走混音增益 (F-06)。写失败通常由 binding 内部的 Fail() 顺带
+        /// 触发 Invalidated → OnBindingInvalidated 已完成回退；这里再判一次返回值，覆盖
+        /// "写入静默失败但事件没送到 UI" 的竞态，避免卡片音量/静音完全失效。
+        /// </summary>
+        void FallbackEndpointToMix(string deviceId, string what)
+        {
+            if (string.IsNullOrEmpty(deviceId) || !noEndpointVolumeDevices.Add(deviceId)) return;
+            RebuildLanes();
+            if (running) ApplyRoutingHot("端点" + what + "失败，回退混音增益");
+            Log("[警告] " + DevNameFor(deviceId) + " 端点" + what + "失败，该设备音量已改由混音增益承载");
+        }
+
         void WriteUIValuesToDevice()
         {
             volSyncing = true;
@@ -1249,10 +1277,11 @@ namespace StereoSplitter
                     if (string.IsNullOrEmpty(m.DeviceId)) continue;
                     string role = CardRole(m);
                     var b = bindings.SinkOf(m.DeviceId);
-                    if (b == null || !b.IsValid) { parts.Add(role + "=(未绑定)"); continue; }
+                    if (b == null || !b.IsValid) { FallbackEndpointToMix(m.DeviceId, "未绑定"); parts.Add(role + "=(混音增益)"); continue; }
                     int vol = Math.Max(0, Math.Min(100, m.Volume));
-                    b.WriteVolume(vol / 100f);
-                    if (b.ReadMuted() != m.Mute) b.WriteMute(m.Mute);
+                    bool volOk = b.WriteVolume(vol / 100f);
+                    bool muteOk = !b.IsValid || b.ReadMuted() == m.Mute || b.WriteMute(m.Mute);
+                    if (!volOk || !muteOk) { FallbackEndpointToMix(m.DeviceId, "写入"); parts.Add(role + "=" + vol + "%(混音增益)"); continue; }
                     parts.Add(role + "=" + vol + "%" + (m.Mute ? "(静音)" : ""));
                 }
                 Log("[启动] 按UI值写入端点: " + string.Join(" ", parts.ToArray()) +
@@ -1301,22 +1330,24 @@ namespace StereoSplitter
                 // 输出卡片: 逐张填充设备下拉并按模型的 DeviceId 恢复
                 for (int ci = 0; ci < cards.Count && ci < models.Count; ci++)
                 {
-                    cards[ci].SetDevices(devTexts);
                     int idx = catalog.IndexOf(models[ci].DeviceId);
-                    if (idx < 0 && models[ci].DeviceId != "")
+                    if (idx < 0 && string.IsNullOrEmpty(models[ci].DeviceId) && devTexts.Count > 0)
                     {
-                        Log("[初始化] 输出 " + (ci + 1) + " 的设备已失效: " + models[ci].DeviceId);
-                    }
-                    if (idx < 0 && cards[ci].cmbDevice.Items.Count > 0)
-                    {
-                        // 未选/失效 → 默认接前两张卡用 0/1 号设备 (与旧版一致)
+                        // 仅"配置原本为空"才按旧版自动分配前两张卡 (明确的新建行为)
                         idx = ci < 2 ? ci : 0;
-                        if (idx >= cards[ci].cmbDevice.Items.Count) idx = 0;
+                        if (idx >= devTexts.Count) idx = 0;
                         models[ci].DeviceId = DeviceIdAt(idx);
                     }
-                    cards[ci].SetDeviceIndex(idx);
+                    else if (idx < 0)
+                    {
+                        // F-07: 保存的 ID 当前没枚举到 → 保留，不做破坏性替换
+                        Log("[初始化] 输出 " + (ci + 1) + " 已保存的设备当前不可用: " + models[ci].DeviceId +
+                            "（保留原配置，等该设备出现后刷新即可恢复）");
+                    }
+                    SetCardDeviceSelection(cards[ci], models[ci], devTexts);
                 }
-                // 刷新后设备列表变了 → 可能有两张卡片落到同一台设备, 合并掉
+                // 刷新后设备列表变了 → 可能有两张卡片落到同一台设备, 合并掉。
+                // 注意: 缺失设备的卡片保留了各自的原 ID, 不会落到同一台真实设备被误合并 (F-07)。
                 if (cards.Count > 0 && NormalizeModels()) { RebuildCards(); SyncLanesFromCards(); }
 
                 Log("[初始化] 发现 " + Devices.Count + " 个输出设备，默认输出: [" + defIdx + "] " + defName);

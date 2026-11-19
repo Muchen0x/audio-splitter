@@ -76,34 +76,41 @@ namespace StereoSplitter
                 if (!c.Multi)
                 {
                     ChannelSlot s = c.Slots.Count > 0 ? c.Slots[0] : null;
+                    bool empty = s == null || string.IsNullOrEmpty(s.ChannelKey);
                     var lane = new OutputLane
                     {
-                        ChannelKey = (s != null && !string.IsNullOrEmpty(s.ChannelKey)) ? s.ChannelKey : "",
+                        ChannelKey = empty ? "" : s.ChannelKey,
                         DeviceId = dev,
                         DelayMs = Math.Max(0, c.DelayMs),
                         PhysIndex = 0,
-                        Volume = 100,
-                        Mute = false
+                        // F-05: 空声道也要一条"静音占位 lane"撑住 sink 与物理声道数。
+                        // ChannelKey="" → Build 不产生绑定 → Compile 全零矩阵, 但该路仍存在。
+                        Volume = empty ? 0 : 100,
+                        Mute = empty
                     };
-                    if (!ep) { lane.Volume = Math.Max(0, Math.Min(100, c.Volume)); lane.Mute = c.Mute; }
-                    if (lane.ChannelKey.Length > 0) list.Add(lane);
+                    if (!ep && !empty) { lane.Volume = Math.Max(0, Math.Min(100, c.Volume)); lane.Mute = c.Mute; }
+                    // 未选设备 + 空声道没必要造一个 dev="" 的假 sink (会触发 ValidateSinks 报错)。
+                    if (!empty || dev.Length > 0) list.Add(lane);
                     continue;
                 }
 
                 for (int p = 0; p < c.Slots.Count; p++)
                 {
                     ChannelSlot s = c.Slots[p];
-                    if (s == null || string.IsNullOrEmpty(s.ChannelKey)) continue;   // 空行 = 该物理声道静音
-                    int vol = Math.Max(0, Math.Min(100, s.Volume));
+                    bool empty = s == null || string.IsNullOrEmpty(s.ChannelKey);
+                    // F-05: 保留空行占位 (有设备时), 使 OutChannels 取自卡片实际行数而非最后一个非空 lane。
+                    // 仅当设备都没选时跳过, 避免建出 dev="" 的虚假 sink。
+                    if (empty && dev.Length == 0) continue;
+                    int vol = empty ? 0 : Math.Max(0, Math.Min(100, s.Volume));
                     // 端点不可用 → 主音量的衰减只能落到矩阵上 (先乘后舍, 少一次量化)
-                    if (!ep) vol = (int)Math.Round(vol * Math.Max(0, Math.Min(100, c.Volume)) / 100.0);
+                    if (!ep && !empty) vol = (int)Math.Round(vol * Math.Max(0, Math.Min(100, c.Volume)) / 100.0);
                     list.Add(new OutputLane
                     {
-                        ChannelKey = s.ChannelKey,
+                        ChannelKey = empty ? "" : s.ChannelKey,
                         DeviceId = dev,
                         DelayMs = Math.Max(0, c.DelayMs),
                         Volume = vol,
-                        Mute = !ep && c.Mute,
+                        Mute = empty ? true : (!ep && c.Mute),
                         PhysIndex = p
                     });
                 }
@@ -125,6 +132,18 @@ namespace StereoSplitter
         /// <returns>合并掉了几张卡片 (0 = 没有同设备重复)。</returns>
         public static int MergeSameDevice(IList<OutputCardModel> cards)
         {
+            return MergeSameDevice(cards, null);
+        }
+
+        /// <summary>
+        /// 同 <see cref="MergeSameDevice(IList{OutputCardModel})"/>，但合并时知道每台设备的端点音量是否可用。
+        /// <para>F-08：端点不可用时主音量既写不进端点、也不写进矩阵 carrier，必须在合并那一刻把
+        /// 每张来源卡的"有效主音量"（静音→0）折进它自己的行增益，否则合并后统一乘新主音量，
+        /// 原本静音的那一路会突然按别人的音量发声。</para>
+        /// </summary>
+        /// <param name="endpointAvailable">null = 全部端点可用（旧行为）。</param>
+        public static int MergeSameDevice(IList<OutputCardModel> cards, Func<string, bool> endpointAvailable)
+        {
             if (cards == null || cards.Count < 2) return 0;
 
             var kept = new List<OutputCardModel>();
@@ -142,8 +161,9 @@ namespace StereoSplitter
                     continue;
                 }
 
-                // 已有同一台设备的卡片 → 把这一张并进去
-                MergeInto(byDevice[dev], c);
+                // 同一台设备的端点可用性对两张卡相同，取一次即可
+                bool ep = endpointAvailable == null || endpointAvailable(dev);
+                MergeInto(byDevice[dev], c, ep);
                 removed++;
             }
 
@@ -154,28 +174,60 @@ namespace StereoSplitter
         }
 
         /// <summary>把 <paramref name="src"/> 的各行追加到 <paramref name="host"/>。</summary>
-        static void MergeInto(OutputCardModel host, OutputCardModel src)
+        static void MergeInto(OutputCardModel host, OutputCardModel src, bool endpointAvailable)
         {
             if (host.Slots.Count == 0) host.Slots.Add(new ChannelSlot());
-            // 合并前是单声道卡片 → 它的行音量只是端点音量的镜像, 合并后由主音量接管, 行增益回 100
             bool hostWasSingle = !host.Multi;
             host.Multi = true;
-            if (hostWasSingle)
-                for (int i = 0; i < host.Slots.Count; i++) host.Slots[i].Volume = 100;
+
+            if (endpointAvailable)
+            {
+                // 端点承载主音量：单声道来源的行音量只是端点镜像，回 100 交给端点唯一承载（避免双衰减）
+                if (hostWasSingle)
+                    for (int i = 0; i < host.Slots.Count; i++) host.Slots[i].Volume = 100;
+            }
+            else
+            {
+                // F-08：端点不可用 → 把 host 的有效主音量（静音→0）折进它现有的每一行。
+                // 单声道卡的行音量是主音量镜像，直接用主音量；多声道卡的行是真增益，按主音量缩放。
+                int hostEff = host.Mute ? 0 : ClampVol(host.Volume);
+                for (int i = 0; i < host.Slots.Count; i++)
+                    host.Slots[i].Volume = hostWasSingle
+                        ? hostEff
+                        : (int)Math.Round(ClampVol(host.Slots[i].Volume) * hostEff / 100.0);
+            }
 
             if (src.DelayMs < host.DelayMs) host.DelayMs = src.DelayMs;   // 设备级延迟取最小
 
             if (src.Multi)
             {
-                for (int i = 0; i < src.Slots.Count; i++) host.Slots.Add(Copy(src.Slots[i]));
+                int srcEff = endpointAvailable ? 100 : (src.Mute ? 0 : ClampVol(src.Volume));
+                for (int i = 0; i < src.Slots.Count; i++)
+                {
+                    ChannelSlot s = Copy(src.Slots[i]);
+                    if (!endpointAvailable)
+                        s.Volume = (int)Math.Round(ClampVol(s.Volume) * srcEff / 100.0);
+                    host.Slots.Add(s);
+                }
             }
             else
             {
                 ChannelSlot s = Copy(src.Slots.Count > 0 ? src.Slots[0] : new ChannelSlot());
-                s.Volume = 100;    // 同上: 端点音量不重复计入行增益
+                // 单声道来源的行音量是端点镜像：端点可用→回 100；不可用→折进有效主音量
+                s.Volume = endpointAvailable ? 100 : (src.Mute ? 0 : ClampVol(src.Volume));
                 host.Slots.Add(s);
             }
+
+            if (!endpointAvailable)
+            {
+                // 主音量与静音都已折进各行 → 合并后主音量中性化，Flatten 的 !ep 分支不再二次衰减。
+                // 绝不无条件 Mute=false：静音语义已体现在各行增益里，这里的 Mute 只是不再生效的中性值。
+                host.Volume = 100;
+                host.Mute = false;
+            }
         }
+
+        static int ClampVol(int v) { return Math.Max(0, Math.Min(100, v)); }
 
         static ChannelSlot Copy(ChannelSlot s)
         {
