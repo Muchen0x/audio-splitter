@@ -691,6 +691,12 @@ namespace StereoSplitter
 
         void AddLaneCard(OutputCardModel preset)
         {
+            // F-24: 达到持久化上限就拒绝新增, 否则第 17 张卡本次可见、重启后静默消失
+            if (models.Count >= Infrastructure.LaneSettingsCodec.MaxOutputCards)
+            {
+                Log("[输出] 已达输出卡上限 " + Infrastructure.LaneSettingsCodec.MaxOutputCards + " 张，无法继续添加");
+                return;
+            }
             var chans = CurrentSpecChannels();
             var m = preset ?? new OutputCardModel();
             if (preset == null)

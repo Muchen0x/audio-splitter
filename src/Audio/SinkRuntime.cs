@@ -24,7 +24,16 @@ namespace StereoSplitter
         readonly string label;
 
         // ---- 重建管线所需的原始参数: 单路重建时按原样重新装配, 不再向引擎/UI 要 ----
-        readonly int driftTargetSamples, fillTargetSamples, outLatencyMs, driftMode, fixedPpm, memberId;
+        readonly int driftTargetSamples, fillTargetSamples, outLatencyMs, memberId;
+        // F-10: 漂移设置用不可变快照整体替换, 保证 SetMode 后重建拿到的是"新模式+新 ppm",
+        // 不会读到"新模式+旧 ppm"的撕裂组合 (mode 与 ppm 必须同生共死)。
+        sealed class DriftSnapshot
+        {
+            public readonly int Mode;
+            public readonly int Ppm;
+            public DriftSnapshot(int mode, int ppm) { Mode = mode; Ppm = ppm; }
+        }
+        volatile DriftSnapshot drift;
         readonly ClockGroup group;
         // 捕获线程与本类的重建互斥: Feed 持锁写延迟线, Rebuild 先在 paused 置位后抢同一把锁,
         // 保证拆卸瞬间没有在途 Write (否则会往已释放的缓冲里 memcpy)。
@@ -102,8 +111,7 @@ namespace StereoSplitter
             this.driftTargetSamples = Math.Max(1, driftTargetSamples);
             this.fillTargetSamples = fillTargetSamples;
             this.outLatencyMs = outLatencyMs;
-            this.driftMode = driftMode;
-            this.fixedPpm = fixedPpm;
+            this.drift = new DriftSnapshot(driftMode, fixedPpm);
             this.memberId = memberId;
             this.group = group;
 
@@ -127,7 +135,8 @@ namespace StereoSplitter
                 // 1000ms 容量: 远大于稳态目标 (≤100ms), 给"堆积→削峰"留出可丢的余量;
                 // 封装层保证三线程 (捕获写 / 输出读 / UI 修剪) 不撕裂。
                 p.Buffer = new PcmRingBuffer(OutFormat, 1000);
-                p.Provider = new DriftCorrectingProvider(p.Buffer, driftTargetSamples, OutCh, driftMode, fixedPpm,
+                var d = drift;   // 一次读取快照, mode/ppm 必配对
+                p.Provider = new DriftCorrectingProvider(p.Buffer, driftTargetSamples, OutCh, d.Mode, d.Ppm,
                     log, label, memberId, group);
                 p.Provider.Gain = gainNow;
                 p.Provider.Master = masterNow;
@@ -506,7 +515,13 @@ namespace StereoSplitter
             if (Provider != null) Provider.Master = m;
         }
 
-        public void SetDriftMode(int mode, int ppm) { if (Provider != null) Provider.SetMode(mode, ppm); }
+        public void SetDriftMode(int mode, int ppm)
+        {
+            // F-10: 先整体替换快照(重建读它), 再应用到当前 provider。顺序保证:
+            // 之后任何时刻重建都拿到刚设的 mode+ppm, 不会因为只读了旧字段而悄悄恢复启动模式。
+            drift = new DriftSnapshot(mode, ppm);
+            if (Provider != null) Provider.SetMode(mode, ppm);
+        }
 
         public void Start() { if (Output != null) Output.Play(); }
 

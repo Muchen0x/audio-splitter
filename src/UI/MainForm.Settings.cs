@@ -22,13 +22,17 @@ namespace StereoSplitter
             get { return Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "SplitterGUI.ini"); }
         }
         Infrastructure.SettingsStore settings;
+        // F-34: 配置读取失败 → 进入只读恢复模式, 禁止把默认值/半成品写回原文件。
+        bool settingsLoadFailed;
 
         void LoadSettings()
         {
             settings.Load();
             // ini 损坏/被占用时 Load 会静默回默认值: 这里留痕, 否则用户看到的是"设置全丢了"却查不到原因
-            if (settings.LastLoadError != null)
-                Log("[警告] 配置文件读取失败(" + settings.LastLoadError + ")，本次以默认值启动: " + IniPath);
+            settingsLoadFailed = settings.LastLoadError != null;
+            if (settingsLoadFailed)
+                Log("[警告] 配置文件读取失败(" + settings.LastLoadError +
+                    ")，本次以默认值启动且不会覆盖原文件（配置进入只读恢复模式）: " + IniPath);
 
             chkMinimizeToTray.Checked = GetInt("MinimizeToTray", 0) != 0;
             cmbLatency.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("LatencyProfile", 0)));
@@ -70,8 +74,10 @@ namespace StereoSplitter
         {
             // 初始化阶段(读ini/Bind回读/覆盖回写)不落盘, 防止把ini冲成端点回读值
             if (loadingSettings) return;
+            // F-34: 配置读取失败 → 只读恢复模式, 不写盘 (否则默认值覆盖原配置)
+            if (settingsLoadFailed) { WarnSettingsReadOnly(); return; }
             // 字典立即同步: RefreshDevices 等按字典恢复选中, 不能等写盘
-            SyncSettingsDict();
+            if (!SyncSettingsDict()) return;   // 同步失败 → 本次不写盘, 避免缺键配置落盘
             // 文件写盘 debounce 300ms: 拖动滑条时避免每次移动都写盘
             if (saveDebounce != null)
             {
@@ -83,7 +89,8 @@ namespace StereoSplitter
         void FlushSettings()
         {
             if (loadingSettings) return;
-            SyncSettingsDict();
+            if (settingsLoadFailed) { WarnSettingsReadOnly(); return; }
+            if (!SyncSettingsDict()) return;
 
             string err;
             if (settings.WriteAll(out err))
@@ -93,13 +100,26 @@ namespace StereoSplitter
             }
 
             // 失败限流: 60 秒最多一条, 避免拖动滑条时刷屏
+            WarnSettingsWrite(err);
+        }
+
+        void WarnSettingsReadOnly()
+        {
+            if (lastSaveWarnTick != 0 && unchecked(Environment.TickCount - lastSaveWarnTick) < 60000) return;
+            lastSaveWarnTick = Environment.TickCount;
+            Log("[警告] 配置读取曾失败，当前为只读恢复模式，改动不会写盘以免覆盖原文件 (" + IniPath + ")");
+        }
+
+        void WarnSettingsWrite(string err)
+        {
             int now = Environment.TickCount;
             if (lastSaveWarnTick != 0 && unchecked(now - lastSaveWarnTick) < 60000) return;
             lastSaveWarnTick = now;
             Log("[警告] 设置写入失败: " + err + "；本次运行的改动可能不会保留 (" + IniPath + ")");
         }
 
-        void SyncSettingsDict()
+        /// <summary>F-34: 返回本次控件→字典同步是否完整成功; false 时调用方必须放弃写盘。</summary>
+        bool SyncSettingsDict()
         {
             try
             {
@@ -125,15 +145,18 @@ namespace StereoSplitter
                 settings.Put("MuteCapture", chkMuteCapture.Checked ? "1" : "0");
                 settings.Put("DriftMode", driftMode.ToString());
                 settings.Put("FixedRatioPpm", fixedPpm.ToString());
+                return true;
             }
             catch (Exception ex)
             {
-                // 控件读取失败会让这次保存缺键: 留痕。每会话只提示一次, 防止持续异常时刷屏。
+                // F-34: 同步失败 → 返回 false 让调用方放弃写盘, 否则缺键配置会覆盖完整原文件。
+                // 每会话只提示一次, 防止持续异常时刷屏。
                 if (!syncDictWarned)
                 {
                     syncDictWarned = true;
-                    Log("[警告] 保存设置时读取控件状态失败: " + ex.Message + "（本次保存可能缺键）");
+                    Log("[警告] 保存设置时读取控件状态失败: " + ex.Message + "（本次已放弃写盘，避免缺键配置覆盖原文件）");
                 }
+                return false;
             }
         }
 

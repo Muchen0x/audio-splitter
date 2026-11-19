@@ -494,17 +494,50 @@ namespace StereoSplitter
         public bool SetRouting(RoutingModel model)
         {
             if (model == null || sinks.Count == 0) return false;
-            var compiled = model.Compile(specs, captureChannels);
-            bool any = false;
+
+            // F-14: 编译用的 SinkSpec 以"运行中的链路"为准(稳定键/设备/声道数/延迟都不可热换),
+            // 但把新模型同名 spec 的 Volume 复制进来 —— 否则 SinkSpec.Volume 的热更新永远进不了矩阵。
+            var compileSpecs = new List<SinkSpec>(specs.Count);
+            for (int i = 0; i < specs.Count; i++)
+            {
+                var run = specs[i];
+                var fresh = FindSinkByKey(model.SinkSpecs, run.Key);
+                if (fresh == null) return false;                       // 新模型缺了某一路 → 整体拒绝
+                if (!string.Equals(fresh.DeviceId, run.DeviceId, StringComparison.Ordinal)) return false;
+                if (fresh.OutChannels != run.OutChannels) return false;
+                if (fresh.DelayMs != run.DelayMs) return false;
+                if (!fresh.Enabled) return false;
+                var copy = run.Clone();                                // 链路级参数保持运行值
+                copy.Volume = fresh.Volume;                            // 唯一允许热换的 spec 级量
+                compileSpecs.Add(copy);
+            }
+            if (compileSpecs.Count != sinks.Count) return false;       // 路数不符 → 整体拒绝
+
+            var compiled = model.Compile(compileSpecs, captureChannels);
+            // 全验证: 每一路都必须能在编译结果里找到且声道数匹配, 才允许提交任何矩阵。
+            // 原实现逐路检查逐路替换, 前几路生效后发现不匹配仍可能返回 true, 留下半成品。
+            var newMatrices = new float[sinks.Count][,];
             for (int i = 0; i < sinks.Count; i++)
             {
                 int idx = compiled.IndexOf(specs[i].Key);
-                if (idx < 0) continue;
-                if (compiled.SinkOutCh[idx] != sinks[i].OutCh) continue;   // 声道数变了, 不能热换
-                sinks[i].Matrix = compiled.SinkMatrix[idx];
-                any = true;
+                if (idx < 0) return false;
+                if (compiled.SinkOutCh[idx] != sinks[i].OutCh) return false;
+                newMatrices[i] = compiled.SinkMatrix[idx];
             }
-            return any;
+            // 全部通过 → 一次性提交 (sinks[i].Matrix 是引用替换, 逐路之间也不撕裂)
+            for (int i = 0; i < sinks.Count; i++) sinks[i].Matrix = newMatrices[i];
+            return true;
+        }
+
+        static SinkSpec FindSinkByKey(IList<SinkSpec> list, string key)
+        {
+            if (list == null || key == null) return null;
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (!string.Equals(list[i].Key, key, StringComparison.Ordinal)) continue;
+                if (list[i].Enabled) return list[i];
+            }
+            return null;
         }
 
         public void SetGain(float gain)

@@ -45,6 +45,8 @@ namespace StereoSplitter
             CaseDelayConflict();
             CaseValidateWarnings();
             CaseIniRoundTrip();
+            CaseLaneSettingsCodecBounds();
+            CaseCompileUsesFreshSinkVolume();
             CaseDriftProviderOverfill();
             CasePcmRingBufferShortRead();
             CaseClockGroupAlignment();
@@ -511,6 +513,92 @@ namespace StereoSplitter
             Check("延迟保留", back.SinkSpecs[2].DelayMs == 40);
             Check("中置增益保留 (C 卡 60% → 已进绑定增益)",
                 Math.Abs(back.Bindings[2].Gain - 0.6f) < 1e-3f);
+        }
+
+        /// <summary>
+        /// F-24: LaneSettingsCodec 直接往返 + 上限边界。超限必须拒绝(不静默截断),
+        /// 且 OutCount/ChCount 写成实际持久化数量, 否则重启后静默丢卡/丢声道。
+        /// </summary>
+        static void CaseLaneSettingsCodecBounds()
+        {
+            Begin("设置编解码边界 (F-24)");
+
+            // 16 卡 / 8 行: 合法上限, 往返完整
+            var models = new List<OutputCardModel>();
+            for (int i = 0; i < LaneSettingsCodec.MaxOutputCards; i++)
+            {
+                var c = new OutputCardModel { DeviceId = "dev" + i, DelayMs = i, Multi = true, Volume = 100 };
+                for (int s = 0; s < LaneSettingsCodec.MaxSlotsPerCard; s++)
+                    c.Slots.Add(new ChannelSlot { ChannelKey = "FL", Volume = 40 + s });
+                models.Add(c);
+            }
+            Check("16 卡校验通过", LaneSettingsCodec.Validate(models) == null);
+            var store = new SettingsStore(Path.Combine(Path.GetTempPath(), "selftest_codec.ini"));
+            try
+            {
+                LaneSettingsCodec.Encode(store, models);
+                Check("OutCount=16", store.GetInt("OutCount", -1) == 16);
+                Check("Out0.ChCount=8", store.GetInt("Out0.ChCount", -1) == 8);
+
+                var back = new List<OutputCardModel>();
+                LaneSettingsCodec.Decode(store, back);
+                Check("回读 16 卡", back.Count == 16);
+                Check("回读 8 行", back[15].Slots.Count == 8);
+                Check("回读行音量 47", back[15].Slots[7].Volume == 47);
+            }
+            finally { }
+
+            // 17 卡: 必须拒绝, 且一个键都不写 (不留半张路由表)
+            var over = new List<OutputCardModel>(models);
+            over.Add(new OutputCardModel { DeviceId = "devX" });
+            Check("17 卡校验报错", LaneSettingsCodec.Validate(over) != null);
+            var store2 = new SettingsStore(Path.Combine(Path.GetTempPath(), "selftest_codec2.ini"));
+            try { LaneSettingsCodec.Encode(store2, over); Check("17 卡被拒绝", false); }
+            catch (InvalidOperationException) { Check("17 卡被拒绝", true); }
+            Check("拒绝时不写 OutCount", !store2.Has("OutCount"));
+
+            // 9 行: 必须拒绝
+            var nine = new List<OutputCardModel> { new OutputCardModel { DeviceId = "devA", Multi = true } };
+            for (int s = 0; s < 9; s++) nine[0].Slots.Add(new ChannelSlot { ChannelKey = "FL" });
+            Check("9 行校验报错", LaneSettingsCodec.Validate(nine) != null);
+        }
+
+        /// <summary>
+        /// F-14: 编译矩阵必须使用传入的 SinkSpec.Volume (新模型的值)。SetRouting 用新模型 spec
+        /// 的 Volume 覆盖编译用 spec —— 若沿用启动时的旧 spec, 热更新里 SinkSpec.Volume 永远失效。
+        /// 这里直接验证 Compile 对 Volume 的语义。
+        /// </summary>
+        static void CaseCompileUsesFreshSinkVolume()
+        {
+            Begin("编译使用新 SinkSpec.Volume (F-14)");
+
+            var lanes = new List<OutputLane> { Lane("FL", "devA", 0, 100) };
+            bool conflict;
+            var model = LaneRouting.Build(lanes, 1, 2, null, out conflict);
+            var spec = model.SinkSpecs[0];
+
+            spec.Volume = 1f;
+            var c1 = model.Compile(model.SinkSpecs, 2);
+            Check("Volume=1 → 增益 1.0", Math.Abs(c1.SinkMatrix[0][0, 0] - 1f) < 1e-6f);
+
+            spec.Volume = 0.5f;
+            var c2 = model.Compile(model.SinkSpecs, 2);
+            Check("Volume=0.5 → 增益 0.5", Math.Abs(c2.SinkMatrix[0][0, 0] - 0.5f) < 1e-6f);
+
+            // 与 SetRouting 的做法一致: Clone 运行 spec, 只把新 Volume 复制进去
+            var runSpec = spec.Clone();
+            runSpec.Volume = 0.8f;
+            var fresh = spec.Clone();
+            fresh.Volume = 0.3f;
+            var compileSpecs = new List<SinkSpec> { runSpec };
+            compileSpecs[0].Volume = fresh.Volume;
+            var c3 = model.Compile(compileSpecs, 2);
+            Check("仅换 Volume → 增益跟随 0.3", Math.Abs(c3.SinkMatrix[0][0, 0] - 0.3f) < 1e-6f);
+
+            // 夹取: 越界 Volume 不推出量程
+            runSpec.Volume = SinkSpec.ClampVolume(999f);
+            var c4 = model.Compile(new List<SinkSpec> { runSpec }, 2);
+            Check("Volume 夹到 2.0", Math.Abs(c4.SinkMatrix[0][0, 0] - 2f) < 1e-6f);
         }
 
         // ---------------------------------------------------------------- 工具

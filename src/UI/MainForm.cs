@@ -601,7 +601,7 @@ namespace StereoSplitter
             btnRefresh.Enabled = !busy && !run;
             cmbLatency.Enabled = !busy && !run;
             cmbSpec.Enabled = !busy && !run;
-            btnAddOutput.Enabled = !busy && !run;
+            btnAddOutput.Enabled = !busy && !run && models.Count < Infrastructure.LaneSettingsCodec.MaxOutputCards;  // F-24: 达上限禁用
 
             volMaster.Enabled = !busy;
             volGain.Enabled = !busy;
