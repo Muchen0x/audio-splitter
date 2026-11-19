@@ -278,6 +278,9 @@ namespace StereoSplitter
         {
             startAbort = false;
             startFinished.Reset();
+            // F-03: 这一代启动的所有回调都带上编号; 期间若又拆了引擎/启动了新的一代,
+            // 旧回调在入口就被丢弃, 不会把上一代的结果写进新状态。
+            int gen = Interlocked.Increment(ref engineGeneration);
             ThreadPool.QueueUserWorkItem(delegate
             {
                 AudioEngine eng = null;
@@ -289,14 +292,15 @@ namespace StereoSplitter
                     AudioEngine.StartOutcome outcome = eng.Start(p.Model, p.Gain, p.Master, p.PreMs, p.OutMs,
                         delegate { return startAbort; }, expectCap);
 
-                    if (exiting || IsDisposed || !IsHandleCreated)
-                    {   // 关窗等待期间完成 → 只释放引擎, 不碰UI
+                    if (exiting || IsDisposed || !IsHandleCreated || gen != Volatile.Read(ref engineGeneration))
+                    {   // 关窗等待期间完成, 或期间又换了一代 → 只释放引擎, 不碰UI
                         try { eng.Dispose(); } catch { }
                         return;
                     }
                     BeginInvoke(new Action(delegate
                     {
-                        if (exiting) { try { eng.Dispose(); } catch { } return; }
+                        if (exiting || gen != Volatile.Read(ref engineGeneration))
+                        { try { eng.Dispose(); } catch { } return; }
                         engine = eng;
                         // 订阅放在赋值之后: 处理函数会按引用校验"还是不是当前引擎", 防止旧引擎的迟到事件触发二次重建
                         eng.Stalled += OnEngineStalledFromAudio;
@@ -329,13 +333,13 @@ namespace StereoSplitter
                 catch (Exception ex)
                 {
                     try { if (eng != null) eng.Dispose(); } catch { }
-                    if (exiting || IsDisposed || !IsHandleCreated) return;
+                    if (exiting || IsDisposed || !IsHandleCreated || gen != Volatile.Read(ref engineGeneration)) return;
                     string reason = AudioErrors.Describe(ex);
                     try
                     {
                         BeginInvoke(new Action(delegate
                         {
-                            if (exiting) return;
+                            if (exiting || gen != Volatile.Read(ref engineGeneration)) return;
                             Log("[错误] 启动失败: " + reason);
                             if (autoRestart)
                             {
@@ -381,6 +385,9 @@ namespace StereoSplitter
         // 只拆引擎, 不动状态/绑定/设备ID (自动重建要沿用这些)
         void TearDownEngine()
         {
+            // F-03: 先作废旧代的全部后台回调, 再拆引擎。ClearRunState 随后会重置
+            // sinkRestarting 数组; 若旧回调先落地就会写进新数组, 递增编号让它们一律被丢弃。
+            Interlocked.Increment(ref engineGeneration);
             var eng = engine;
             engine = null;
             if (eng == null) return;
@@ -790,6 +797,12 @@ namespace StereoSplitter
             sinkRestarting[index] = true;
 
             int idx = index;
+            int gen = Volatile.Read(ref engineGeneration);
+            // F-03: 跟踪在途任务, FormClosing 会等它们退出再放 UI 状态。
+            // Reset/Increment 都在 UI 线程, 与后台的 Decrement/Set 不会倒序。
+            sinkRestartFinished.Reset();
+            Interlocked.Increment(ref sinkRestartInFlight);
+
             ThreadPool.QueueUserWorkItem(delegate
             {
                 string err = null;
@@ -797,14 +810,22 @@ namespace StereoSplitter
                 bool ok = false;
                 try { ok = eng.RestartSink(idx, out err, out gone); }
                 catch (Exception ex) { err = ex.Message; }
+                finally
+                {
+                    if (Interlocked.Decrement(ref sinkRestartInFlight) == 0) sinkRestartFinished.Set();
+                }
 
                 try
                 {
                     BeginInvoke(new Action(delegate
                     {
+                        // F-03: 必须**先**验证代际与引擎引用, 再改任何数组。旧实现把
+                        // sinkRestarting[idx]=false 放在校验之前, 上一代的迟到回调会清掉
+                        // 新一代同下标的"正在重建"标记, 让新链路的看门狗以为它还在重建。
+                        // 回调可能仍排在消息队列里, 但 gen 不符时一律原地丢弃。
+                        if (gen != Volatile.Read(ref engineGeneration) || !ReferenceEquals(eng, engine)) return;
                         if (idx < sinkRestarting.Length) sinkRestarting[idx] = false;
                         if (exiting || IsDisposed) return;
-                        if (!ReferenceEquals(eng, engine)) return;   // 期间整链路已换掉, 这次结果无意义
 
                         if (ok)
                         {
@@ -834,8 +855,9 @@ namespace StereoSplitter
                 }
                 catch
                 {
-                    // 窗体已销毁 → 没人接手, 至少把标志复位, 免得看门狗永久停摆
-                    if (idx < sinkRestarting.Length) sinkRestarting[idx] = false;
+                    // 窗体已销毁 → 没人接手; 只在仍是同一代时复位, 免得看门狗永久停摆
+                    if (gen == Volatile.Read(ref engineGeneration) && idx < sinkRestarting.Length)
+                        sinkRestarting[idx] = false;
                 }
             });
         }

@@ -63,6 +63,13 @@ namespace StereoSplitter
         volatile bool startAbort = false;
         // 启动完成信号: 替代关闭流程里的 Sleep(20)×100 忙等 (Set = 已结束/空闲)
         readonly ManualResetEventSlim startFinished = new ManualResetEventSlim(true);
+        // F-03: 每代链路一个编号, 换引擎/拆引擎时递增。所有后台回调必须先比对编号再改 UI 状态,
+        // 否则上一代迟到的单路重建结果会清掉新一代同下标的 sinkRestarting 标记。
+        // 读写都走 Interlocked / Volatile, 故意不加 volatile 以免 Interlocked 触发 CS0420 警告。
+        int engineGeneration;
+        // 在途单路重建任务的完成信号 (Set = 没有在途任务); 关窗时等它们退出。
+        readonly ManualResetEventSlim sinkRestartFinished = new ManualResetEventSlim(true);
+        int sinkRestartInFlight;
         bool trayTipShown = false;
         bool loadingSettings = true;
         // ini 写盘失败告警限流: 拖动滑条会连续触发 FlushSettings, 不限流会刷屏
@@ -1361,6 +1368,11 @@ namespace StereoSplitter
             }
 
             StopEngine();
+
+            // F-03: 单路重建是线程池任务, 可能正卡在 RestartSink 的生命周期锁上。
+            // TearDownEngine 已置取消标志并同步释放引擎, 这里再等所有任务真正退出,
+            // 避免它们的回调在窗体销毁途中碰到已重置的 UI 状态。超时不阻塞关窗。
+            if (!sinkRestartFinished.IsSet) sinkRestartFinished.Wait(2000);
 
             // 恢复默认输出
             try

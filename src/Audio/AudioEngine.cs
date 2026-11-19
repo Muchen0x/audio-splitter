@@ -111,8 +111,10 @@ namespace StereoSplitter
         // 按下标分开记, 否则第一路报过之后第二路就永远报不出来 (两路同时掉线时只剩一路被救)。
         int[] stallNotified = new int[0];
         int captureStalled;             // 捕获级故障同样只报一次 (Stop 时置位, 引擎实例随之弃用)
-        // 同一时刻只允许一个单路重建: 两路同时故障时串行处理, 避免交叉拆装
-        readonly object rebuildGate = new object();
+        // F-03: 同一时刻只允许一个单路重建, 且 Dispose 必须取同一把锁才能释放 sinks。
+        // 用 LifecycleGate 而不是裸 lock: 取消标志要在取锁前就对在途重建可见, 且"关闭+释放"
+        // 必须是一次原子认领, 否则关窗 / GiveUp / FormClosing 三条路径并发时会重复释放端点。
+        readonly LifecycleGate lifecycle = new LifecycleGate();
 
         // 起播余量: 覆盖输出端起播时对缓冲的预拉取 + 捕获端起播供应延迟。
         // 80 -> 20 (2026-11-18): 余量过大时校正环要用顶格放水 1~3 分钟才进稳态。
@@ -624,43 +626,61 @@ namespace StereoSplitter
         /// </summary>
         public bool RestartSink(int index, out string error, out bool endpointGone)
         {
+            // out 参数不能进闭包, 先用局部变量收集, 出临界区再回填。
+            string err = null;
+            bool gone = false;
+            bool ok = lifecycle.Run(
+                delegate { return RestartSinkCore(index, ref err, ref gone); },
+                delegate { err = "引擎已停止"; return false; });
+            error = err;
+            endpointGone = gone;
+            return ok;
+        }
+
+        /// <summary>
+        /// RestartSink 的临界区主体。整个函数由 LifecycleGate.Run 包住: Dispose 取不到同一把锁
+        /// 就不会动 sinks, 所以这里从 SinkAt 到 Rebuild 结束看到的都是同一批运行时对象。
+        /// </summary>
+        bool RestartSinkCore(int index, ref string error, ref bool endpointGone)
+        {
             error = null;
             endpointGone = false;
             if (disposed || stopping) { error = "引擎已停止"; return false; }
             var rt = SinkAt(index);
             if (rt == null || rt.Spec == null) { error = "路号无效"; return false; }
 
-            lock (rebuildGate)
+            MMDevice dev = null;
+            try
             {
-                if (disposed || stopping) { error = "引擎已停止"; return false; }
-
-                MMDevice dev = null;
-                try
+                using (var enumerator = new MMDeviceEnumerator())
                 {
-                    using (var enumerator = new MMDeviceEnumerator())
+                    // 端点不在活动列表里 (拔了/被禁用) 就别白折腾, 由调用方决定是等还是拆
+                    var one = new List<SinkSpec>();
+                    one.Add(rt.Spec);
+                    if (FindMissingSink(enumerator, one) != null)
                     {
-                        // 端点不在活动列表里 (拔了/被禁用) 就别白折腾, 由调用方决定是等还是拆
-                        var one = new List<SinkSpec>();
-                        one.Add(rt.Spec);
-                        if (FindMissingSink(enumerator, one) != null)
-                        {
-                            endpointGone = true;
-                            error = "端点已不在活动设备列表中（可能已拔出或被禁用）";
-                            // F-04: 以前在这里直接返回, 捕获回调会继续对死管线做混音/写缓冲,
-                            // 旧 WasapiOut 挂着不拆, 故障前的 holding 与 err 也一直留在组里。
-                            // 现在先暂停 Feed、拆掉无效管线、把成员摘出共享校正。
-                            rt.SuspendForMissingEndpoint();
-                            return false;
-                        }
-                        dev = enumerator.GetDevice(rt.Spec.DeviceId);
+                        endpointGone = true;
+                        error = "端点已不在活动设备列表中（可能已拔出或被禁用）";
+                        // F-04: 以前在这里直接返回, 捕获回调会继续对死管线做混音/写缓冲,
+                        // 旧 WasapiOut 挂着不拆, 故障前的 holding 与 err 也一直留在组里。
+                        // 现在先暂停 Feed、拆掉无效管线、把成员摘出共享校正。
+                        rt.SuspendForMissingEndpoint();
+                        return false;
                     }
+                    dev = enumerator.GetDevice(rt.Spec.DeviceId);
                 }
-                catch (Exception ex)
-                {
-                    error = "打开端点失败: " + ex.Message;
-                    return false;
-                }
+            }
+            catch (Exception ex)
+            {
+                error = "打开端点失败: " + ex.Message;
+                return false;
+            }
 
+            // 从这里起 dev 是一个真实的 COM 端点: 走哪条分支都必须有人负责释放,
+            // 否则中途一次异常就泄漏一个 IMMDevice。handedOff = 所有权已移交 Rebuild。
+            bool handedOff = false;
+            try
+            {
                 // F-02: 共享时钟组的恢复单位必须是"组", 不能只重建这一路。
                 // 单路重建只等新管自己的预缓冲 (含额外的 PrePullGuardMs), 健康旧路已在
                 // 低水位稳态; 两路随后共享同一 ratio, 水位差没有独立控制量能消除。
@@ -669,55 +689,79 @@ namespace StereoSplitter
                 // 独立组 (MemberCount==1) 仍走下面的单路重建, 其它路不断音。
                 if (rt.Group != null && rt.Group.MemberCount > 1)
                 {
-                    if (dev != null && !ReferenceEquals(dev, rt.Device)) { try { dev.Dispose(); } catch { } }
+                    // 这条分支不会调用 Rebuild, dev 的所有权仍在自己手里 → 就地释放
+                    if (dev != null) { try { dev.Dispose(); } catch { } dev = null; }
+                    handedOff = true;
                     rt.SuspendForMissingEndpoint();
                     error = "共享时钟组需整组对齐（升级为整链路重建）";
                     return false;
                 }
 
+                // dev 的所有权在这里转移给 rt.Rebuild: 无论成功、失败还是中途被取消,
+                // 都由它就地完整回收, 调用方不再碰 dev。F-03 原实现在失败分支用
+                // ReferenceEquals(dev, rt.Device) 判断要不要释放, 而 CreatePipeline 早已把新
+                // device 写进公开字段, "相等"反而让这个新端点永远没人释放。
+                handedOff = true;
                 bool ok;
                 try { ok = rt.Rebuild(dev, delegate { return stopping || disposed; }); }
                 catch (Exception ex) { error = "重建异常: " + ex.Message; ok = false; }
 
                 if (!ok)
                 {
-                    if (dev != null && !ReferenceEquals(dev, rt.Device)) { try { dev.Dispose(); } catch { } }
                     if (error == null) error = "装配音频管线失败（端点可能被独占）";
                     return false;
                 }
                 ResetStallFlag(index);
                 return true;
             }
+            finally
+            {
+                // 只有"尚未移交、也尚未就地释放"的端点归这里兜底
+                if (!handedOff && dev != null) { try { dev.Dispose(); } catch { } }
+            }
         }
 
         public void Stop()
         {
-            stopping = true; // 先置位: 下面的 Stop 会同步触发 Stopped 事件
+            // 先置位: 在途 Rebuild 的 cancelled 每 5ms 检查一次, 立刻退出等待循环;
+            // 下面的 StopCore 会同步触发 Stopped 事件, 也要让它们按"自己停的"忽略。
+            stopping = true;
+            lifecycle.Run(delegate { StopCore(); });
+        }
+
+        /// <summary>停输出 (不含锁语义, 调用方须已持有生命周期锁)。</summary>
+        void StopCore()
+        {
             if (loopback != null) { try { loopback.StopRecording(); } catch { } }
             for (int i = 0; i < sinks.Count; i++) sinks[i].Stop();
         }
 
         public void Dispose()
         {
-            // 幂等: GiveUp / StopEngine / FormClosing 三条路径都会走到, 重复释放会抛
-            if (disposed) return;
+            // F-03: GiveUp / StopEngine / FormClosing 三条路径都会走到, 所以先在锁外把取消标志
+            // 置位(让在途 Rebuild 尽快退出), 再由 LifecycleGate 原子认领并执行唯一一次释放。
+            // 认领失败的调用直接返回, 不会重复 Dispose COM 端点; 而 Shutdown 只有取到与
+            // RestartSink 同一把锁之后才会碰 sinks, 保证在途重建已经离开临界区。
+            stopping = true;
             disposed = true;
-
-            try { Stop(); } catch { }
-
-            if (loopback != null) { try { loopback.Dispose(); } catch { } loopback = null; }
-            if (dataReady != null)
+            lifecycle.Shutdown(delegate
             {
-                try { dataReady.Close(); } catch { }
-                dataReady = null;
-            }
-            for (int i = 0; i < sinks.Count; i++) sinks[i].Dispose();
-            sinks.Clear();
-            if (captureDev != null)
-            {
-                try { captureDev.Dispose(); } catch { }
-                captureDev = null;
-            }
+                try { StopCore(); } catch { }
+
+                if (loopback != null) { try { loopback.Dispose(); } catch { } loopback = null; }
+                if (dataReady != null)
+                {
+                    try { dataReady.Close(); } catch { }
+                    dataReady = null;
+                }
+                for (int i = 0; i < sinks.Count; i++) sinks[i].Dispose();
+                sinks.Clear();
+                if (captureDev != null)
+                {
+                    try { captureDev.Dispose(); } catch { }
+                    captureDev = null;
+                }
+            });
         }
     }
 }

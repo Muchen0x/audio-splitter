@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 using StereoSplitter.Infrastructure;
 
 namespace StereoSplitter
@@ -45,6 +46,7 @@ namespace StereoSplitter
             CaseDriftProviderOverfill();
             CasePcmRingBufferShortRead();
             CaseClockGroupAlignment();
+            CaseLifecycleGate();
             CaseLogClassify();
             CaseSessionLogClear();
 
@@ -722,6 +724,153 @@ namespace StereoSplitter
             }
             Check("只有一路堆积时组级不削峰 (L=" + p9.TrimCount + ", R=" + p10.TrimCount + ")",
                 p9.TrimCount == 0 && p10.TrimCount == 0);
+        }
+
+        /// <summary>
+        /// F-03: 重建 / Dispose 生命周期互斥。生产代码里 AudioEngine 与每路 SinkRuntime 各持一把
+        /// LifecycleGate, 这里直接并发压这把门, 不打开任何音频端点。
+        /// 重点不是"锁存在", 而是两个容易写错的时序: 取消标志必须早于取锁置位、
+        /// 释放必须在同一把锁内且只认领一次。
+        /// </summary>
+        static void CaseLifecycleGate()
+        {
+            Begin("F-03 生命周期门: 重建/Dispose 互斥 + 资源失败注入");
+
+            // ① 在途重建中调用 Shutdown: 必须等它退出才释放
+            var gate = new LifecycleGate();
+            var entered = new ManualResetEventSlim(false);
+            var letGo = new ManualResetEventSlim(false);
+            var closerDone = new ManualResetEventSlim(false);
+            int bodyRan = 0, released = 0;
+
+            var rebuild = new Thread((ThreadStart)delegate
+            {
+                gate.Run(delegate
+                {
+                    Interlocked.Increment(ref bodyRan);
+                    entered.Set();
+                    letGo.Wait(3000);
+                    return true;
+                }, delegate { return false; });
+            });
+            rebuild.IsBackground = true;
+            rebuild.Start();
+            Check("在途重建已进入临界区", entered.Wait(2000) && gate.InFlight == 1);
+
+            var closer = new Thread((ThreadStart)delegate
+            {
+                gate.Shutdown(delegate { Interlocked.Increment(ref released); });
+                closerDone.Set();
+            });
+            closer.IsBackground = true;
+            closer.Start();
+            Thread.Sleep(40);
+            Check("在途重建未退出时 Dispose 不得释放资源",
+                !closerDone.IsSet && Interlocked.CompareExchange(ref released, 0, 0) == 0);
+            Check("取消标志已在取锁前置位(在途能立刻看到)", gate.IsShutdown);
+
+            letGo.Set();
+            Check("重建线程按时退出", rebuild.Join(3000));
+            Check("Shutdown 等到重建退出后才完成", closer.Join(3000) && closerDone.IsSet);
+            Check("释放恰好执行一次且无残留操作",
+                Interlocked.CompareExchange(ref released, 0, 0) == 1 && gate.InFlight == 0);
+
+            // ② 关闭后不得复活, 重复调用不得重复释放
+            Check("关闭后新重建一律被拒绝",
+                !gate.Run(delegate { Interlocked.Increment(ref bodyRan); return true; }, delegate { return false; })
+                && Interlocked.CompareExchange(ref bodyRan, 0, 0) == 1);
+            Check("重复 Shutdown 不重复释放",
+                !gate.Shutdown(delegate { Interlocked.Increment(ref released); })
+                && Interlocked.CompareExchange(ref released, 0, 0) == 1);
+
+            // ③ 取消标志必须先于取锁置位: 在途等待循环靠它快速退出, 否则关窗会被拖满超时
+            var g2 = new LifecycleGate();
+            var t2 = new Thread((ThreadStart)delegate
+            {
+                g2.Run(delegate
+                {
+                    int guard = 0;
+                    while (!g2.IsShutdown && guard++ < 400) Thread.Sleep(5);
+                    return true;
+                }, delegate { return false; });
+            });
+            t2.IsBackground = true;
+            t2.Start();
+            Thread.Sleep(25);
+            int t0 = Environment.TickCount;
+            bool closed = g2.Shutdown(null);
+            bool quick = t2.Join(1000);
+            Check("取消置位后 Shutdown 能取到锁", closed);
+            Check("在途等待循环收到取消标志后 1 秒内退出",
+                quick && unchecked(Environment.TickCount - t0) < 1000);
+
+            // ④ 资源失败注入: 装配失败时只回收局部作用域, 不把半成品提交到公开字段
+            var g3 = new LifecycleGate();
+            int created = 0, recycled = 0, committed = 0, publicRef = 0;
+            g3.Run(delegate
+            {
+                Interlocked.Increment(ref created);          // BuildPipeline: 局部创建端点/管线
+                bool initOk = false;                        // 注入: Init 阶段端点被独占
+                if (!initOk) { Interlocked.Increment(ref recycled); return false; }
+                Interlocked.Increment(ref committed);
+                Interlocked.Increment(ref publicRef);
+                return true;
+            }, delegate { return false; });
+            Check("资源装配失败时局部完整回收",
+                Interlocked.CompareExchange(ref created, 0, 0) == 1 &&
+                Interlocked.CompareExchange(ref recycled, 0, 0) == 1);
+            Check("失败路径不把半成品提交到公开字段",
+                Interlocked.CompareExchange(ref committed, 0, 0) == 0 &&
+                Interlocked.CompareExchange(ref publicRef, 0, 0) == 0);
+            Check("失败后生命周期锁仍可正常关闭",
+                g3.Shutdown(null) && !g3.Run(delegate { return true; }, delegate { return false; }));
+
+            // ⑤ body 抛异常: InFlight 必须复位, 锁必须释放
+            var g4 = new LifecycleGate();
+            bool threw = false;
+            try
+            {
+                g4.Run<bool>(delegate { throw new InvalidOperationException("注入: 端点打开异常"); },
+                             delegate { return false; });
+            }
+            catch (InvalidOperationException) { threw = true; }
+            Check("注入异常后 InFlight 归零", threw && g4.InFlight == 0);
+            var t4 = new Thread((ThreadStart)delegate { g4.Shutdown(null); });
+            t4.IsBackground = true;
+            t4.Start();
+            Check("注入异常后 Shutdown 不死锁", t4.Join(1000));
+
+            // ⑥ 并发压力: 8 路重建 + 一次关闭, 计数守恒且释放恰好一次
+            var g5 = new LifecycleGate();
+            int ran = 0, rejected = 0, disposeCount = 0;
+            var threads = new Thread[8];
+            for (int i = 0; i < threads.Length; i++)
+            {
+                threads[i] = new Thread((ThreadStart)delegate
+                {
+                    for (int k = 0; k < 60; k++)
+                    {
+                        g5.Run(delegate { Interlocked.Increment(ref ran); return true; },
+                               delegate { Interlocked.Increment(ref rejected); return false; });
+                        Thread.Yield();
+                    }
+                });
+                threads[i].IsBackground = true;
+                threads[i].Start();
+            }
+            Thread.Sleep(5);
+            Check("并发关闭只认领一次",
+                g5.Shutdown(delegate { Interlocked.Increment(ref disposeCount); }));
+            Check("并发关闭不重复释放",
+                !g5.Shutdown(delegate { Interlocked.Increment(ref disposeCount); }));
+            bool allJoined = true;
+            for (int i = 0; i < threads.Length; i++) allJoined &= threads[i].Join(3000);
+            Check("并发重建线程全部退出", allJoined);
+            Check("每次重建要么执行要么被拒绝",
+                Interlocked.CompareExchange(ref ran, 0, 0) +
+                Interlocked.CompareExchange(ref rejected, 0, 0) == 8 * 60);
+            Check("关闭后释放恰好一次且无残留操作",
+                Interlocked.CompareExchange(ref disposeCount, 0, 0) == 1 && g5.InFlight == 0);
         }
 
         /// <summary>

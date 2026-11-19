@@ -29,8 +29,24 @@ namespace StereoSplitter
         // 捕获线程与本类的重建互斥: Feed 持锁写延迟线, Rebuild 先在 paused 置位后抢同一把锁,
         // 保证拆卸瞬间没有在途 Write (否则会往已释放的缓冲里 memcpy)。
         readonly object feedSync = new object();
+        // F-03: 重建 / 端点挂起 / Dispose 共用同一把生命周期锁。RebuildCore 全程持锁,
+        // Dispose 取不到这把锁就不会拆公开字段, 于是"新管线刚建一半就被释放"的时序不再可能。
+        readonly LifecycleGate lifecycle = new LifecycleGate();
         volatile bool paused;
         volatile bool closed;
+
+        /// <summary>
+        /// 一条管线的全部可变部件。先在局部构建(BuildPipeline), 成功且未被取消才一次提交
+        /// (CommitPipeline); 失败时只回收这个局部容器, 绝不把半成品挂到公开字段上。
+        /// </summary>
+        sealed class Pipeline
+        {
+            public MMDevice Device;
+            public PcmRingBuffer Buffer;
+            public DriftCorrectingProvider Provider;
+            public WasapiOut Output;
+            public DelayLine Line;
+        }
         // 音量/主音量记录在本类: 重建出的 provider 是全新对象, 必须把当前值重新灌回去
         volatile float gainNow = 1f, masterNow = 1f;
 
@@ -93,31 +109,71 @@ namespace StereoSplitter
 
             OutFormat = WaveFormat.CreateIeeeFloatWaveFormat(captureFormat.SampleRate, OutCh);
             FillBytes = fillTargetSamples * OutCh * 4;
-            CreatePipeline(device);
+            CommitPipeline(BuildPipeline(device));
         }
 
         /// <summary>
-        /// 装配本路的全部运行期对象 (缓冲 → provider → WasapiOut → 延迟线)。
-        /// 首次构造与单路重建共用, 保证两条路径装出来的链路完全一致。
+        /// 把一条完整管线装配到局部容器, 不碰任何公开字段。首次构造与单路重建共用,
+        /// 保证两条路径装出来的链路完全一致。装配中途抛异常时, 已创建的对象在这里就地回收
+        /// (F-03: 原来的 CreatePipeline 边建边写公开字段, 失败分支只调 TeardownPipeline,
+        /// 看不到尚未提交的 WasapiOut / MMDevice, 于是端点句柄一次次叠加)。
         /// </summary>
-        void CreatePipeline(MMDevice device)
+        Pipeline BuildPipeline(MMDevice device)
         {
-            Device = device;
-            // 1000ms 容量: 远大于稳态目标 (≤100ms), 给"堆积→削峰"留出可丢的余量;
-            // 封装层保证三线程 (捕获写 / 输出读 / UI 修剪) 不撕裂。
-            Buffer = new PcmRingBuffer(OutFormat, 1000);
-            Provider = new DriftCorrectingProvider(Buffer, driftTargetSamples, OutCh, driftMode, fixedPpm,
-                log, label, memberId, group);
-            Provider.Gain = gainNow;
-            Provider.Master = masterNow;
+            var p = new Pipeline();
+            try
+            {
+                p.Device = device;
+                // 1000ms 容量: 远大于稳态目标 (≤100ms), 给"堆积→削峰"留出可丢的余量;
+                // 封装层保证三线程 (捕获写 / 输出读 / UI 修剪) 不撕裂。
+                p.Buffer = new PcmRingBuffer(OutFormat, 1000);
+                p.Provider = new DriftCorrectingProvider(p.Buffer, driftTargetSamples, OutCh, driftMode, fixedPpm,
+                    log, label, memberId, group);
+                p.Provider.Gain = gainNow;
+                p.Provider.Master = masterNow;
 
-            var output = new WasapiOut(device, AudioClientShareMode.Shared, true, outLatencyMs);
-            output.PlaybackStopped += OnPlaybackStopped;
-            output.Init(Provider);
-            Output = output;
+                var output = new WasapiOut(device, AudioClientShareMode.Shared, true, outLatencyMs);
+                p.Output = output;         // 先挂进局部容器: Init 失败时也能找到它
+                output.PlaybackStopped += OnPlaybackStopped;
+                output.Init(p.Provider);
 
-            // 延迟线: 输入是交错多声道原始字节, 按 blockAlign(整帧) 算目标字节才天然对齐
-            Line = new DelayLine(BytesOf(captureFormat, DelayMs), Consume);
+                // 延迟线: 输入是交错多声道原始字节, 按 blockAlign(整帧) 算目标字节才天然对齐
+                p.Line = new DelayLine(BytesOf(captureFormat, DelayMs), Consume);
+                return p;
+            }
+            catch
+            {
+                ReleasePipelineParts(p);
+                throw;
+            }
+        }
+
+        /// <summary>生命周期锁内一次提交: 外部线程只会看到完整旧管或完整新管, 不会看到半新半旧。</summary>
+        void CommitPipeline(Pipeline p)
+        {
+            Device = p.Device;
+            Buffer = p.Buffer;
+            Provider = p.Provider;
+            Output = p.Output;
+            Line = p.Line;
+        }
+
+        /// <summary>回收一个尚未提交的局部管线 (不含端点: 端点由调用方按所有权规则释放)。</summary>
+        void ReleasePipelineParts(Pipeline p)
+        {
+            if (p == null) return;
+            var output = p.Output;
+            p.Output = null; p.Buffer = null; p.Provider = null; p.Line = null; p.Device = null;
+            if (output == null) return;
+            try { output.PlaybackStopped -= OnPlaybackStopped; } catch { }
+            try { output.Stop(); } catch { }
+            try { output.Dispose(); } catch { }
+        }
+
+        static void ReleaseDevice(MMDevice device)
+        {
+            if (device == null) return;
+            try { device.Dispose(); } catch { }
         }
 
         void OnPlaybackStopped(object sender, StoppedEventArgs e)
@@ -155,75 +211,91 @@ namespace StereoSplitter
         /// </summary>
         public bool Rebuild(MMDevice device, Func<bool> cancelled)
         {
-            if (device == null || closed) return false;
+            // device 的所有权已由调用方转移: 无论成功、装配失败、被取消, 还是引擎已关闭导致
+            // Run 直接走 rejected, 本方法都负责把这个端点完整回收, 调用方不再碰它。
+            return lifecycle.Run(
+                delegate { return RebuildCore(device, cancelled); },
+                delegate { ReleaseDevice(device); return false; });
+        }
+
+        bool RebuildCore(MMDevice device, Func<bool> cancelled)
+        {
+            if (device == null || closed || lifecycle.IsShutdown)
+            {
+                ReleaseDevice(device);
+                return false;
+            }
 
             paused = true;
             lock (feedSync) { }             // 等在途 Feed 退出 (DelayLine.Write 之后才轮到我们)
-
-            var oldDevice = Device;
-            TeardownPipeline();             // 先断引用再 Stop/Dispose: 旧管的 PlaybackStopped 会被识别为迟到事件
+            var oldDevice = TeardownPipeline();   // 先断引用再 Stop/Dispose: 旧管的迟到事件会被识别
             // 拆掉的那一路可能正处于 holding: 不清掉的话组内其它路会一直被联动降 6dB
             if (group != null) { try { group.NotifyHolding(memberId, false); } catch { } }
 
+            Pipeline fresh = null;
+            bool committed = false;
+            bool success = false;
             try
             {
-                CreatePipeline(device);
+                try { fresh = BuildPipeline(device); }
+                catch { return false; }     // 半成品已由 BuildPipeline 局部回收
+
+                // 提交前最后一次取消检查: 关窗可能就发生在装配这几毫秒里。此时新端点还只是
+                // 局部变量, 由 finally 就地释放, 绝不会挂到一台正在被 Dispose 的引擎上。
+                if (closed || lifecycle.IsShutdown || (cancelled != null && cancelled())) return false;
+
+                CommitPipeline(fresh);      // 生命周期锁内一次提交
+                committed = true;
+                paused = false;             // 恢复灌数据, 下面等它攒到填充目标
+
+                // 等进行: 延迟线要先攒够 DelayMs 才会往下游放, 再加上缓冲填充目标,
+                // 这段时间该路本来就是静音 (它正在重启), 起播时水位已足 → 不会有起播欠载。
+                int sr = Math.Max(1, OutFormat.SampleRate);
+                int fillMs = (int)((long)fillTargetSamples * 1000 / sr);
+                int waitMs = Math.Min(5000, DelayMs + fillMs + 1200);
+                int t0 = Environment.TickCount;
+                while (!closed && !lifecycle.IsShutdown && (cancelled == null || !cancelled()))
+                {
+                    var buf = Buffer;
+                    if (buf == null || buf.BufferedBytes >= FillBytes) break;
+                    if (unchecked(Environment.TickCount - t0) >= waitMs) break;
+                    Thread.Sleep(5);
+                }
+
+                if (closed || lifecycle.IsShutdown || (cancelled != null && cancelled())) return false;
+
+                var outNow = Output;
+                if (outNow == null) return false;
+                outNow.Play();
+
+                // 端点回归/重建起播后重新参与共享校正 (清掉停用期间可能残留的旧 err/holding)
+                if (group != null) { try { group.ActivateMember(memberId); } catch { } }
+                success = true;
+                return true;
             }
             catch
             {
-                TeardownPipeline();         // 半成品 (端点在 Init 阶段被独占等) 也要清干净, 否则下次重试会叠加句柄
-                paused = false;
                 return false;
             }
-
-            // 建立过程中窗体可能正在退出 (Dispose 已经跑过): 这时新管线没人管 → 自己拆掉, 别泄漏音频端点
-            if (closed)
+            finally
             {
-                TeardownPipeline();
-                paused = false;
-                return false;
+                if (!success)
+                {
+                    // 已提交 → 把整条新管(含 Device)从公开字段摘下并释放;
+                    // 未提交 → 只回收局部作用域, 公开字段保持"旧管已拆"的空状态。
+                    var leftover = TeardownPipeline();
+                    if (leftover != null) ReleaseDevice(leftover);
+                    if (!committed)
+                    {
+                        if (fresh != null) ReleasePipelineParts(fresh);
+                        ReleaseDevice(device);
+                    }
+                    paused = false;
+                }
+                // 旧端点统一在退出时释放: 与原来的"新管起播后才放旧端点"时机一致,
+                // 同时补齐原实现在所有失败分支都不释放旧端点的漏洞。
+                if (oldDevice != null && !ReferenceEquals(oldDevice, device)) ReleaseDevice(oldDevice);
             }
-
-            paused = false;                 // 恢复灌数据, 下面等它攒到填充目标
-
-            // 等进行: 延迟线要先攒够 DelayMs 才会往下游放, 再加上缓冲填充目标,
-            // 这段时间该路本来就是静音 (它正在重启), 起播时水位已足 → 不会有起播欠载。
-            int sr = Math.Max(1, OutFormat.SampleRate);
-            int fillMs = (int)((long)fillTargetSamples * 1000 / sr);
-            int waitMs = Math.Min(5000, DelayMs + fillMs + 1200);
-            int t0 = Environment.TickCount;
-            while (!closed && (cancelled == null || !cancelled()))
-            {
-                var buf = Buffer;
-                if (buf == null || buf.BufferedBytes >= FillBytes) break;
-                if (unchecked(Environment.TickCount - t0) >= waitMs) break;
-                Thread.Sleep(5);
-            }
-
-            if (closed || (cancelled != null && cancelled()))
-            {
-                TeardownPipeline();
-                paused = false;
-                return false;
-            }
-
-            var outNow = Output;
-            try { if (outNow != null) outNow.Play(); }
-            catch
-            {
-                TeardownPipeline();
-                paused = false;
-                return false;
-            }
-
-            // 旧设备对象在新管线建成后才释放: 先放会把新管线要用的端点句柄一起带走的风险留到最后
-            if (oldDevice != null && !ReferenceEquals(oldDevice, device))
-            {
-                try { oldDevice.Dispose(); } catch { }
-            }
-            // 端点回归/重建起播后重新参与共享校正 (清掉停用期间可能残留的旧 err/holding)
-            if (group != null) { try { group.ActivateMember(memberId); } catch { } }
-            return true;
         }
 
         /// <summary>
@@ -236,31 +308,47 @@ namespace StereoSplitter
         /// </summary>
         public void SuspendForMissingEndpoint()
         {
-            paused = true;
-            lock (feedSync) { }             // 等在途 Feed 退出
-            TeardownPipeline();             // 先断引用再 Stop/Dispose: 迟到事件会被识别
-            if (group != null)
+            lifecycle.Run(delegate
             {
-                try
+                if (closed) return;
+                paused = true;
+                lock (feedSync) { }             // 等在途 Feed 退出
+                var dev = TeardownPipeline();   // 先断引用再 Stop/Dispose: 迟到事件会被识别
+                if (dev != null) ReleaseDevice(dev);
+                if (group != null)
                 {
-                    group.NotifyHolding(memberId, false);
-                    group.DeactivateMember(memberId);
+                    try
+                    {
+                        group.NotifyHolding(memberId, false);
+                        group.DeactivateMember(memberId);
+                    }
+                    catch { }
                 }
-                catch { }
-            }
+            });
         }
 
-        /// <summary>拆掉当前管线 (幂等), 供重建失败/退出时复用。调用方负责 paused 的置位。</summary>
-        void TeardownPipeline()
+        /// <summary>
+        /// 拆掉当前管线 (幂等), 供重建失败 / 端点挂起 / Dispose 复用。
+        /// 返回摘下来的端点对象, 由调用方按所有权规则决定何时释放 —— 重建时旧端点要留到
+        /// 新管起播后才放 (原行为), 失败或关闭时则立即放。F-03: 原实现只清 Output 不清
+        /// Device, 于是被拆掉的端点 RCW 一直挂在公开字段上没人释放。
+        /// </summary>
+        MMDevice TeardownPipeline()
         {
             var output = Output;
+            var device = Device;
             Output = null;
             Provider = null;
             Buffer = null;
             Line = null;
-            if (output == null) return;
-            try { output.Stop(); } catch { }
-            try { output.Dispose(); } catch { }
+            Device = null;
+            if (output != null)
+            {
+                try { output.PlaybackStopped -= OnPlaybackStopped; } catch { }
+                try { output.Stop(); } catch { }
+                try { output.Dispose(); } catch { }
+            }
+            return device;
         }
 
         /// <summary>延迟后的原始字节 → 混音 → 加入本路缓冲。</summary>
@@ -390,16 +478,20 @@ namespace StereoSplitter
         /// 抵消延迟线的时差。统一修剪到填充阈值后, 净声道差 = 延迟线的差。</summary>
         public void TrimToFill()
         {
-            if (Buffer == null) return;
-            int excess = Buffer.BufferedBytes - FillBytes;
-            if (excess <= 0) return;
-            var tmp = new byte[4096];
-            while (excess > 0)
+            // 与重建/Dispose 互斥: 否则关窗与启动重叠时, Buffer 可能在循环中途被置 null。
+            lifecycle.Run(delegate
             {
-                int got = Buffer.Read(tmp, 0, Math.Min(excess, tmp.Length));
-                if (got <= 0) break;
-                excess -= got;
-            }
+                if (Buffer == null) return;
+                int excess = Buffer.BufferedBytes - FillBytes;
+                if (excess <= 0) return;
+                var tmp = new byte[4096];
+                while (excess > 0)
+                {
+                    int got = Buffer.Read(tmp, 0, Math.Min(excess, tmp.Length));
+                    if (got <= 0) break;
+                    excess -= got;
+                }
+            });
         }
 
         public void SetGain(float g)
@@ -426,13 +518,17 @@ namespace StereoSplitter
 
         public void Dispose()
         {
+            // F-03: 先在锁外置位, 让在途 RebuildCore 的取消检查下一拍就生效; 再由
+            // LifecycleGate 原子认领唯一一次释放 —— 重复 Dispose 不会再碰 COM 端点,
+            // 而 Shutdown 取到锁即证明在途重建已经离开临界区, 拆公开字段不会与它交错。
             closed = true;
             paused = true;
-            if (Output != null) { try { Output.Dispose(); } catch { } Output = null; }
-            if (Device != null) { try { Device.Dispose(); } catch { } Device = null; }
-            Buffer = null;
-            Line = null;
-            Provider = null;
+            lifecycle.Shutdown(delegate
+            {
+                lock (feedSync) { }             // 等在途 Feed 退出, 别拆掉它正在写的缓冲
+                var dev = TeardownPipeline();
+                if (dev != null) ReleaseDevice(dev);
+            });
         }
     }
 }
