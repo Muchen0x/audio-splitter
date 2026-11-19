@@ -19,7 +19,7 @@ if errorlevel 1 (
 echo [3/4] source tree must match HEAD (no untracked/staged/unstaged source changes)...
 rem F-28: porcelain covers untracked + staged + unstaged; git diff --quiet alone missed
 rem untracked files (e.g. a new PcmRingBuffer.cs that the SDK still compiles).
-for /f "delims=" %%L in ('git status --porcelain -- "*.cs" "*.csproj" build.cmd verify.cmd .github\workflows\build.yml"') do (
+for /f "delims=" %%L in ('git status --porcelain -- "*.cs" "*.csproj" build.cmd verify.cmd .github\workflows\build.yml') do (
     echo   VERIFY FAILED: source differs from repo - exe may not match HEAD:
     echo     %%L
     exit /b 1
