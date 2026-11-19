@@ -97,7 +97,16 @@ namespace StereoSplitter.Devices
             }
 
             AdoptOrRecordBaseline(binding);
-            binding.Subscribe(onNotify);
+            if (!binding.Subscribe(onNotify))
+            {
+                // F-23: 通知订阅失败 → 绑定已 Failed, 绝不能加入 sinks 当作可用 (否则读写全静默无操作,
+                // 上层以为端点音量可用, 实际卡片音量/静音完全失效)。释放对象并清掉本次新建的基线。
+                log("[警告] " + role + " 端点通知订阅失败: " + catalog.NameOf(deviceId) +
+                    " (该设备音量改走混音增益)");
+                binding.Dispose();
+                baselines.Remove(deviceId);
+                return null;
+            }
             sinks[deviceId] = binding;
             sinkOrder.Add(deviceId);
             return binding;
@@ -233,7 +242,14 @@ namespace StereoSplitter.Devices
             }
 
             AdoptOrRecordBaseline(binding);
-            binding.Subscribe(onNotify);
+            if (!binding.Subscribe(onNotify))
+            {
+                // F-23: 与主端点同理 —— 订阅失败不得返回可用绑定
+                log("[警告] " + role + " 端点通知订阅失败: " + catalog.NameOf(deviceId));
+                binding.Dispose();
+                baselines.Remove(deviceId);
+                return null;
+            }
             return binding;
         }
 

@@ -37,10 +37,10 @@ namespace StereoSplitter
         const int ExitUsage = 2;
         const int ExitBusy = 10;
 
-        enum Command { Gui, SelfTest, VolProbe, List, PlayTest, Maintenance }
+        internal enum Command { Gui, SelfTest, VolProbe, List, PlayTest, Maintenance }
 
         /// <summary>严格解析后的命令结果 (解析阶段不触碰任何设备)。</summary>
-        sealed class Parsed
+        internal sealed class Parsed
         {
             public Command Cmd = Command.Gui;
             public string Needle;                  // --list / --playtest / --setdefault 的值
@@ -298,7 +298,7 @@ namespace StereoSplitter
 
         /// <summary>F-19/F-21: 统一严格解析。全部语法验证在此完成, 之后才允许任何设备写入。
         /// 命令不再只认 argv[0]; 未知参数/缺失值/重复单值选项/值以 -- 开头一律拒绝。</summary>
-        static bool TryParseArgs(string[] argv, out Parsed p)
+        internal static bool TryParseArgs(string[] argv, out Parsed p)
         {
             p = new Parsed();
             if (argv == null) argv = new string[0];

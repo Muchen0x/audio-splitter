@@ -72,9 +72,10 @@ namespace StereoSplitter.Devices
             try { return d.ID; } catch { return null; }
         }
 
-        public void Subscribe(Action<AudioVolumeNotificationData> onNotify)
+        /// <summary>F-23: 订阅通知的结果。false = 订阅失败(对象已 Failed), 调用方不得把它当可用绑定。</summary>
+        public bool Subscribe(Action<AudioVolumeNotificationData> onNotify)
         {
-            if (!IsValid || onNotify == null) return;
+            if (!IsValid || onNotify == null) return IsValid && onNotify == null;  // 无回调: 视为"无需订阅"的成功
             try
             {
                 handler = delegate (AudioVolumeNotificationData data)
@@ -87,8 +88,9 @@ namespace StereoSplitter.Devices
                     }
                 };
                 vol.OnVolumeNotification += handler;
+                return IsValid;
             }
-            catch (Exception ex) { Fail(ex); }
+            catch (Exception ex) { Fail(ex); return false; }
         }
 
         // ---------------- 读写 ----------------

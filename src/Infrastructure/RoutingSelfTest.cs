@@ -47,6 +47,7 @@ namespace StereoSplitter
             CaseIniRoundTrip();
             CaseLaneSettingsCodecBounds();
             CaseCompileUsesFreshSinkVolume();
+            CaseCommandLineParsing();
             CaseDriftProviderOverfill();
             CasePcmRingBufferShortRead();
             CaseClockGroupAlignment();
@@ -599,6 +600,59 @@ namespace StereoSplitter
             runSpec.Volume = SinkSpec.ClampVolume(999f);
             var c4 = model.Compile(new List<SinkSpec> { runSpec }, 2);
             Check("Volume 夹到 2.0", Math.Abs(c4.SinkMatrix[0][0, 0] - 2f) < 1e-6f);
+        }
+
+        /// <summary>
+        /// F-19/F-21: 严格命令行解析的所有语法规则 (解析阶段不碰设备, 可纯逻辑测)。
+        /// 覆盖首参/非首参、未知、缺失值、重复、值以 -- 开头、空操作、--sec 边界。
+        /// </summary>
+        static void CaseCommandLineParsing()
+        {
+            Begin("命令行严格解析 (F-19/21)");
+
+            Program.Parsed p;
+            // 无参 = GUI
+            Check("无参 → GUI", Program.TryParseArgs(new string[0], out p) && p.Cmd == Program.Command.Gui);
+
+            // --selftest 单独可用
+            Check("--selftest 单独",
+                Program.TryParseArgs(new[] { "--selftest" }, out p) && p.Cmd == Program.Command.SelfTest);
+            Check("重复 --selftest 拒绝",
+                !Program.TryParseArgs(new[] { "--selftest", "--selftest" }, out p));
+
+            // 未知选项
+            Check("未知选项拒绝", !Program.TryParseArgs(new[] { "--bogus" }, out p));
+
+            // --playtest 缺失值 / 值以 -- 开头
+            Check("--playtest 缺设备名", !Program.TryParseArgs(new[] { "--playtest" }, out p));
+            Check("--playtest 值以--开头拒绝", !Program.TryParseArgs(new[] { "--playtest", "--sec" }, out p));
+
+            // --sec 边界: 0 / 负 / 超上限 / 非数 全拒绝, 合法值接受
+            Check("--sec 0 拒绝", !Program.TryParseArgs(new[] { "--playtest", "dev", "--sec", "0" }, out p));
+            Check("--sec 负数拒绝", !Program.TryParseArgs(new[] { "--playtest", "dev", "--sec", "-0.001" }, out p));
+            Check("--sec 超上限拒绝",
+                !Program.TryParseArgs(new[] { "--playtest", "dev", "--sec",
+                    (StereoSplitter.Infrastructure.EndpointAdmin.MaxPlayTestSeconds + 1).ToString() }, out p));
+            Check("--sec 非数拒绝", !Program.TryParseArgs(new[] { "--playtest", "dev", "--sec", "abc" }, out p));
+            Check("--sec 合法 1.5",
+                Program.TryParseArgs(new[] { "--playtest", "dev", "--sec", "1.5" }, out p) &&
+                Math.Abs(p.Seconds - 1.5) < 1e-9);
+            Check("--sec 只能配 --playtest", !Program.TryParseArgs(new[] { "--list", "dev", "--sec", "2" }, out p));
+
+            // --setvol: 缺值 / 值以 -- 开头 / 空操作
+            Check("--setvol 缺值", !Program.TryParseArgs(new[] { "--setvol" }, out p));
+            Check("--setvol 值以--开头拒绝", !Program.TryParseArgs(new[] { "--setvol", "--force" }, out p));
+            Check("--setvol 合法",
+                Program.TryParseArgs(new[] { "--setvol", "dev:50" }, out p) &&
+                p.Cmd == Program.Command.Maintenance && p.Vols.Count == 1);
+            Check("--setvol 可重复",
+                Program.TryParseArgs(new[] { "--setvol", "a:50", "--setvol", "b:60" }, out p) && p.Vols.Count == 2);
+
+            // 命令冲突 / 空操作
+            Check("命令冲突拒绝", !Program.TryParseArgs(new[] { "--selftest", "--list" }, out p));
+            Check("--unmute 无 setvol 拒绝", !Program.TryParseArgs(new[] { "--unmute" }, out p));
+            Check("--force 单独(空操作)拒绝", !Program.TryParseArgs(new[] { "--force" }, out p));
+            Check("--setdefault 缺值拒绝", !Program.TryParseArgs(new[] { "--setdefault" }, out p));
         }
 
         // ---------------------------------------------------------------- 工具
