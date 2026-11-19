@@ -25,8 +25,15 @@ namespace StereoSplitter
         // 阈值必须压到它以下; 真断流时水位只剩小环里那 1ms, 任何合理阈值都能在一个块内触发。
         const double GateEnterRatio = 0.15;
         const int WarnIntervalMs = 60000;
+        // 缓冲堆积削峰: 水位涨到目标的 2 倍, 就认定"设备这一小段没消费"(USB 等时调度抖动、
+        // 端点被选择性挂起、驱动重同步), 直接丢掉最旧的一截数据压回 1.3 倍。
+        // 为什么不用"加大 ratio 慢慢排": ratio 上限 ±1% 每秒只能排 10ms, 堆 150ms 要 15 秒,
+        // 而看门狗 5 秒就判链路中断 → 整条链路重建、两路静音约 1 秒。
+        // 丢 40ms 旧音频只是"跳一下", 重建是"没声了"。
+        const double OverfillTrigRatio = 2.0;
+        const double OverfillKeepRatio = 1.3;
 
-        readonly BufferedWaveProvider src;
+        readonly PcmRingBuffer src;
         readonly int targetSamples;       // 单位: 帧
         readonly int channels;
         readonly Action<string> log;
@@ -67,6 +74,9 @@ namespace StereoSplitter
         bool lowWarned;
         int lastLowWarnTick;
         long renderedSamples;
+        long trims;                       // 累计削峰次数 (看门狗据此区分"偶发抖动"与"设备真的跟不上")
+        int lastTrimTick;
+        int lastTrimWarnTick;
         // 输出线程时序诊断: 我们的水位计数只能看见"我们给不出数据", 看不见
         // "WasapiOut 没按时来取" —— 后者会让设备侧自己欠载, 听感同样是"咔"。
         long lastReadTs;
@@ -74,7 +84,7 @@ namespace StereoSplitter
         double maxGapMs, maxDurMs;
         int lastTimingWarnTick;
 
-        public DriftCorrectingProvider(BufferedWaveProvider src, int targetSamples, int channels, int mode, int fixedPpm,
+        public DriftCorrectingProvider(PcmRingBuffer src, int targetSamples, int channels, int mode, int fixedPpm,
             Action<string> log, string tag, int memberId, ClockGroup group)
         {
             this.src = src;
@@ -100,7 +110,7 @@ namespace StereoSplitter
             if (mode == 0) fixedRatio = 1.0;
             else if (mode == 2)
             {
-                int ppm = Math.Max(-5000, Math.Min(5000, fixedPpm));
+                int ppm = Math.Max(-10000, Math.Min(10000, fixedPpm));
                 fixedRatio = 1.0 + ppm / 1000000.0;
             }
             else fixedRatio = 1.0;
@@ -111,7 +121,7 @@ namespace StereoSplitter
         {
             if (newMode == 2)
             {
-                int ppm = Math.Max(-5000, Math.Min(5000, fixedPpm));
+                int ppm = Math.Max(-10000, Math.Min(10000, fixedPpm));
                 fixedRatio = 1.0 + ppm / 1000000.0;
                 ratio = (float)fixedRatio;
             }
@@ -137,7 +147,34 @@ namespace StereoSplitter
         /// <summary>本路在时钟组内的成员编号。</summary>
         public int MemberId { get { return memberId; } }
 
-        int FramesBuffered { get { return src.BufferedBytes / (4 * channels) + count; } }
+        int FramesBuffered
+        {
+            get
+            {
+                int c = count;
+                if (c < 0) c = 0;
+                else if (c > RingSize) c = RingSize;
+                return src.BufferedBytes / (4 * channels) + c;
+            }
+        }
+
+        /// <summary>时钟环稳态目标 (ms)。看门狗用它算相对阈值, 而不是比一个写死的毫秒数。</summary>
+        public int TargetMs { get { return MsOf(targetSamples, src.WaveFormat.SampleRate); } }
+
+        /// <summary>累计削峰次数 (只增不减)。</summary>
+        public long TrimCount { get { return System.Threading.Interlocked.Read(ref trims); } }
+
+        /// <summary>距上次削峰的毫秒数 (从未削峰视为很久以前)。</summary>
+        public int SinceLastTrimMs
+        {
+            get
+            {
+                int t = lastTrimTick;
+                if (t == 0) return int.MaxValue;
+                int d = unchecked(Environment.TickCount - t);
+                return d < 0 ? int.MaxValue : d;
+            }
+        }
 
         public int BufferedMs
         {
@@ -284,6 +321,11 @@ namespace StereoSplitter
                 phase += ratio;
                 while (phase >= 1.0)
                 {
+                    // count 保护: 帧首 phase 恒 <1, 但 ratio>1 时一帧最多扣 2 帧; 若这一帧
+                    // 正好把环里最后一帧吃掉 (捕获瞬断 / 欠载那一下), 不判空就会把 count 扣成
+                    // -1 → 下次 Fill 的 wantFrames 变 RingSize+1, 越界写坏 tmp/tmpF, 或
+                    // idx=head-1 撞 ring[-1] 写坏相邻通道。相位归零等下一轮 Fill 补齐。
+                    if (count <= 0) { phase = 0.0; break; }
                     for (int c = 0; c < ch; c++) prev[c] = ring[c * RingSize + head];
                     head++;
                     if (head >= RingSize) head = 0;
@@ -342,6 +384,9 @@ namespace StereoSplitter
         void Fill()
         {
             int ch = channels;
+            // 小环计数夹到 [0, RingSize]: 无论上游怎么抖, wantFrames 都不该越界
+            if (count < 0) count = 0;
+            else if (count > RingSize) count = RingSize;
             int wantFrames = RingSize - count;
             if (wantFrames <= 0) return;
             int got = src.Read(tmp, 0, wantFrames * 4 * ch);
@@ -361,6 +406,11 @@ namespace StereoSplitter
 
         void UpdateRatio()
         {
+            // 堆积过深 → 先就地削峰, 再把削峰后的真实水位喂给校正环。
+            // 这条路径取代了以往"等看门狗判定链路中断 → 重建整条链路"的处理:
+            // 设备短暂不消费属于可自愈的瞬态, 不该用 1 秒静音去换。
+            TrimOverfill(FramesBuffered);
+
             int total = FramesBuffered;
             if (total < minTotalSinceStatus) minTotalSinceStatus = total;
 
@@ -404,6 +454,38 @@ namespace StereoSplitter
         static int MsOf(double frames, int sr)
         {
             return sr > 0 ? (int)(frames * 1000 / sr) : 0;
+        }
+
+        /// <summary>
+        /// 水位超过目标的 2 倍时丢弃最旧的数据压回 1.3 倍, 返回削掉的帧数 (0 = 未触发)。
+        /// 代价是时间轴跳过一小段 (听感"跳一下"), 换来的是链路不重建。
+        /// </summary>
+        int TrimOverfill(int total)
+        {
+            int trig = (int)(targetSamples * OverfillTrigRatio);
+            if (total <= trig) return 0;
+
+            int keep = (int)(targetSamples * OverfillKeepRatio);
+            int dropFrames = total - keep;
+            if (dropFrames <= 0) return 0;
+
+            int dropped = src.Discard(dropFrames * 4 * channels) / (4 * channels);
+            if (dropped <= 0) return 0;
+
+            System.Threading.Interlocked.Increment(ref trims);
+            lastTrimTick = Environment.TickCount;
+
+            // 平滑水位直接对齐到削峰后的真值: 否则它还要约 2 秒才跟上, 期间 ratio 一直贴在
+            // +1% 上限, 看门狗的"触顶 + 净涨"判据会把这次自愈当成设备故障再拆一次链路。
+            smoothedTotal = keep;
+            int sr = src.WaveFormat.SampleRate;
+            smoothedMs = MsOf(smoothedTotal, sr);
+
+            if (WarnAllowed(ref lastTrimWarnTick))
+                Report("[提示] 缓冲堆积到 " + MsOf(total, sr) + "ms (目标 " + MsOf(targetSamples, sr) +
+                    "ms)，已丢弃 " + MsOf(dropped, sr) + "ms 最旧数据压回 " + MsOf(keep, sr) +
+                    "ms；偶发属设备短暂卡顿，频繁出现请调高「延迟」档位");
+            return dropped;
         }
 
         bool WarnAllowed(ref int lastTick)

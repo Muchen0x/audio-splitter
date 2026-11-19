@@ -101,14 +101,21 @@ namespace StereoSplitter
 
         // 长期运行看门狗: 输出/捕获线程会因设备休眠、被独占、拔插而"悄悄停止"
         volatile bool stopping;
-        bool disposed;
-        int stallNotified;
+        volatile bool disposed;
         int lastCaptureTick;
-        /// <summary>链路意外中断 (参数为人话原因)。在音频线程触发, 订阅方须自行回 UI 线程。</summary>
+        /// <summary>整链路故障 (捕获中断 / 输出线程全体失效)。在音频线程触发, 订阅方须自行回 UI 线程。</summary>
         public event Action<AudioEngine, string> Stalled;
+        /// <summary>单路输出故障 (参数: 路下标 + 人话原因)。订阅方可只重建这一路。</summary>
+        public event Action<AudioEngine, int, string> SinkStalled;
+        // 逐路去重: 一次设备事件会让 PlaybackStopped 与看门狗同时上报同一条故障。
+        // 按下标分开记, 否则第一路报过之后第二路就永远报不出来 (两路同时掉线时只剩一路被救)。
+        int[] stallNotified = new int[0];
+        int captureStalled;             // 捕获级故障同样只报一次 (Stop 时置位, 引擎实例随之弃用)
+        // 同一时刻只允许一个单路重建: 两路同时故障时串行处理, 避免交叉拆装
+        readonly object rebuildGate = new object();
 
         // 起播余量: 覆盖输出端起播时对缓冲的预拉取 + 捕获端起播供应延迟。
-        // 80 -> 20 (2026-11-18): 余量过大时校正环要用顶格 +5000ppm 放水 1~3 分钟才进稳态。
+        // 80 -> 20 (2026-11-18): 余量过大时校正环要用顶格放水 1~3 分钟才进稳态。
         // 20 -> 40 (同日实测): 20ms 时起播第 1 秒瞬时水位探到 9ms 并穿零一次 (欠载 460 样本,
         // 实测起播瞬间供缺口约 69ms); 40ms 完整覆盖该缺口, 放水段仅 ~8 秒。
         // 头几秒的剩余抖动由 holding 闸门 + 3ms 淡入淡出兜底。
@@ -146,6 +153,19 @@ namespace StereoSplitter
         public SinkRuntime SinkAt(int index)
         {
             return index >= 0 && index < sinks.Count ? sinks[index] : null;
+        }
+
+        /// <summary>全部输出路的端点 ID (供看门狗做存活探测; 路序与 SinkAt 一致)。</summary>
+        public string[] SinkEndpointIds()
+        {
+            int n = sinks.Count;
+            var ids = new string[n];
+            for (int i = 0; i < n; i++)
+            {
+                var rt = sinks[i];
+                ids[i] = rt != null && rt.Spec != null ? rt.Spec.DeviceId : null;
+            }
+            return ids;
         }
 
         DriftCorrectingProvider ProviderAt(int i)
@@ -291,8 +311,8 @@ namespace StereoSplitter
                 sink.Matrix = compiled.SinkMatrix[i];
                 sink.SetGain(gain);
                 sink.SetMaster(master);
-                int idx = i;
-                sink.Output.PlaybackStopped += delegate(object s, StoppedEventArgs e) { OnOutputStopped(specs[idx].Label, e); };
+                // 单路重建时管线会被整体换掉, 所以订阅挂在 SinkRuntime 上 (只订一次), 而不是挂在 WasapiOut 实例上
+                sink.OutputStopped += OnSinkOutputStopped;
                 sinks.Add(sink);
             }
             if (anyBt && outLatencyMs < 20)
@@ -308,7 +328,8 @@ namespace StereoSplitter
                 try
                 {
                     // 同一条原始字节送进每路的延迟线; 延迟线之后各自按矩阵混音
-                    for (int i = 0; i < sinks.Count; i++) sinks[i].Line.Write(e.Buffer, e.BytesRecorded);
+                    // Feed 内部会跳过"正在单路重建"的那一路, 并保证不写进已拆掉的缓冲
+                    for (int i = 0; i < sinks.Count; i++) sinks[i].Feed(e.Buffer, e.BytesRecorded);
                     if (e.BytesRecorded > 0) lastCaptureTick = Environment.TickCount;
                     if (silentStartup && e.BytesRecorded > 0 && Interlocked.Exchange(ref firstDataLogged, 1) == 0)
                         log("[启动] 音频流已就绪 (捕获源开始有数据)");
@@ -382,7 +403,7 @@ namespace StereoSplitter
 
             silentStartup = (outcome == StartOutcome.NoAudioYet);
             log("[启动] 时钟漂移补偿: " + (driftMode == 0 ? "关闭" : driftMode == 2 ? "固定 " + fixedPpm + "ppm" : "自适应") +
-                ", 比例上限 ±0.50% / 时钟组 " + (maxGroupSize > 1 ? maxGroupSize + " 路共享" : "每路独立"));
+                ", 比例上限 ±1% / 时钟组 " + (maxGroupSize > 1 ? maxGroupSize + " 路共享" : "每路独立"));
             if (maxDelay > 0)
                 log("[启动] 延迟补偿: " + JoinPairs(specs, i => specs[i].DelayMs + "ms"));
 
@@ -465,7 +486,7 @@ namespace StereoSplitter
         /// 运行中热替换路由: 重新 Compile 出矩阵并逐路原子换引用, 不停链路、不断音。
         /// 返回 false = 没有可替换的链路 (未运行 / 声道数变了需要重建)。
         ///
-        /// 只换矩阵不换 provider: 输出声道数一变就得重建 BufferedWaveProvider 与端点,
+        /// 只换矩阵不换 provider: 输出声道数一变就得重建缓冲 (PcmRingBuffer) 与端点,
         /// 那是"改设备"级别的事, 交给下一次启动 (P2 校验会先拦住超限配置)。
         /// </summary>
         public bool SetRouting(RoutingModel model)
@@ -549,13 +570,16 @@ namespace StereoSplitter
         }
 
         // 停止事件在音频线程触发; stopping 期间(自己停的)一律忽略
-        void OnOutputStopped(string side, StoppedEventArgs e)
+        void OnSinkOutputStopped(SinkRuntime rt, StoppedEventArgs e)
         {
             if (stopping) return;
+            int idx = sinks.IndexOf(rt);
+            if (idx < 0) return;
+            string side = rt != null && rt.Spec != null ? rt.Spec.Label : "第" + (idx + 1) + "路";
             string why = "输出" + side + "已停止";
             if (e != null && e.Exception != null) why += ": " + e.Exception.Message;
             else why += "（设备休眠/被独占/已移除）";
-            RaiseStalled(why);
+            RaiseSinkStalled(idx, why);
         }
 
         void OnCaptureStopped(StoppedEventArgs e)
@@ -568,10 +592,84 @@ namespace StereoSplitter
 
         void RaiseStalled(string why)
         {
-            if (Interlocked.Exchange(ref stallNotified, 1) != 0) return;
+            if (Interlocked.Exchange(ref captureStalled, 1) != 0) return;
             var handler = Stalled;
             if (handler != null) { try { handler(this, why); } catch { } }
             else if (log != null) { try { log("[错误] " + why); } catch { } }  // 无人接管时才自己记, 避免与订阅方重复
+        }
+
+        /// <summary>某一路输出失效 (音频线程调用)。同一路同一轮只上报一次, 重建成功后由 ResetStallFlag 复位。</summary>
+        void RaiseSinkStalled(int index, string why)
+        {
+            int n = sinks.Count;
+            if (stallNotified.Length != n) stallNotified = new int[n];
+            if (index < 0 || index >= n) { RaiseStalled(why); return; }
+            if (Interlocked.Exchange(ref stallNotified[index], 1) != 0) return;
+            var handler = SinkStalled;
+            if (handler != null) { try { handler(this, index, why); } catch { } }
+            else RaiseStalled(why);   // 没人做单路重建 → 退回整链路
+        }
+
+        /// <summary>单路重建成功后清掉该路的"已上报"标记, 让后续真实故障还能再上报一次。</summary>
+        void ResetStallFlag(int index)
+        {
+            var arr = stallNotified;
+            if (arr != null && index >= 0 && index < arr.Length) Interlocked.Exchange(ref arr[index], 0);
+        }
+
+        /// <summary>
+        /// 只重建指定的一路: 重新打开该端点并装配全新管线, 其它路完全不停 (不重排缓冲、不断音)。
+        /// 返回 false = 该路当前无法重建。endpointGone=true 表示端点已不在活动设备列表
+        /// (拔出/被禁用/休眠未归) —— 这种情况调用方应"只等这一路", 而不是拆掉整条链路。
+        /// </summary>
+        public bool RestartSink(int index, out string error, out bool endpointGone)
+        {
+            error = null;
+            endpointGone = false;
+            if (disposed || stopping) { error = "引擎已停止"; return false; }
+            var rt = SinkAt(index);
+            if (rt == null || rt.Spec == null) { error = "路号无效"; return false; }
+
+            lock (rebuildGate)
+            {
+                if (disposed || stopping) { error = "引擎已停止"; return false; }
+
+                MMDevice dev = null;
+                try
+                {
+                    using (var enumerator = new MMDeviceEnumerator())
+                    {
+                        // 端点不在活动列表里 (拔了/被禁用) 就别白折腾, 由调用方决定是等还是拆
+                        var one = new List<SinkSpec>();
+                        one.Add(rt.Spec);
+                        if (FindMissingSink(enumerator, one) != null)
+                        {
+                            endpointGone = true;
+                            error = "端点已不在活动设备列表中（可能已拔出或被禁用）";
+                            return false;
+                        }
+                        dev = enumerator.GetDevice(rt.Spec.DeviceId);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    error = "打开端点失败: " + ex.Message;
+                    return false;
+                }
+
+                bool ok;
+                try { ok = rt.Rebuild(dev, delegate { return stopping || disposed; }); }
+                catch (Exception ex) { error = "重建异常: " + ex.Message; ok = false; }
+
+                if (!ok)
+                {
+                    if (dev != null && !ReferenceEquals(dev, rt.Device)) { try { dev.Dispose(); } catch { } }
+                    if (error == null) error = "装配音频管线失败（端点可能被独占）";
+                    return false;
+                }
+                ResetStallFlag(index);
+                return true;
+            }
         }
 
         public void Stop()

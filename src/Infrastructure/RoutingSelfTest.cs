@@ -42,6 +42,9 @@ namespace StereoSplitter
             CaseDelayConflict();
             CaseValidateWarnings();
             CaseIniRoundTrip();
+            CaseDriftProviderOverfill();
+            CaseLogClassify();
+            CaseSessionLogClear();
 
             sb.AppendLine();
             sb.AppendLine(failed == 0 ? "结果: 全部通过 (" + CaseCount + " 项)" : "结果: " + failed + " 项失败 / " + CaseCount + " 项");
@@ -414,8 +417,117 @@ namespace StereoSplitter
 
         // ---------------------------------------------------------------- 工具
 
-        static OutputLane Lane(string key, string dev, int delay, int vol)
+        /// <summary>
+        /// 缓冲堆积削峰 + 小环计数保护: 模拟"设备瞬间卡住 200ms, 数据在缓冲里堆成 300ms"。
+        ///
+        /// 这是"总是突然没声"的主路径回归: 以前这种堆积只能靠 ±1% 的校正慢慢排 (10ms/秒),
+        /// 排不完就被看门狗判定链路中断 → 重建整条链路、两路静音约 1 秒。现在要求 provider
+        /// 自己把水位压回目标附近, 且全程不抛异常 (count 扣成负数会让 Read 越界)。
+        /// 纯内存运算, 不开任何音频端点。
+        /// </summary>
+        static void CaseDriftProviderOverfill()
         {
+            Begin("缓冲堆积削峰 (设备瞬断 200ms)");
+            const int sr = 48000, ch = 2;
+            const int targetMs = 65;                     // 与「极低」档的时钟目标一致
+            int targetFrames = sr * targetMs / 1000;
+            int blockFrames = 20 * sr / 1000;             // 每次 20ms, 模拟捕获回调粒度
+
+            var fmt = NAudio.Wave.WaveFormat.CreateIeeeFloatWaveFormat(sr, ch);
+            var buf = new PcmRingBuffer(fmt, 1000);
+            var group = new ClockGroup(targetFrames, sr, null);
+            group.MemberCount = 1;
+            var p = new DriftCorrectingProvider(buf, targetFrames, ch, 1, 0, null, "T", 0, group);
+
+            // 0.1 的直流: 既能验"削峰后仍在出声", 又不受插值影响
+            var block = new byte[blockFrames * ch * 4];
+            var blockF = new float[blockFrames * ch];
+            for (int i = 0; i < blockF.Length; i++) blockF[i] = 0.1f;
+            Buffer.BlockCopy(blockF, 0, block, 0, block.Length);
+
+            int backlog = sr * 300 / 1000;                // 一次性堆 300ms (卡住 200ms 的典型量)
+            var big = new byte[backlog * ch * 4];
+            var bigF = new float[backlog * ch];
+            for (int i = 0; i < bigF.Length; i++) bigF[i] = 0.1f;
+            Buffer.BlockCopy(bigF, 0, big, 0, big.Length);
+            buf.AddSamples(big, 0, big.Length);
+
+            var outBuf = new float[blockFrames * ch];
+            bool threw = false;
+            int maxMs = 0;
+            double lastRms = -1;
+            try
+            {
+                for (int n = 0; n < 120; n++)         // 2.4 秒的播放
+                {
+                    buf.AddSamples(block, 0, block.Length);   // 实时补进来的 20ms
+                    p.Read(outBuf, 0, outBuf.Length);
+                    lastRms = p.TakeLevelRms();
+                    // 前 3 块里会跑第一次削峰, 之后水位必须稳在目标附近
+                    if (n >= 3)
+                    {
+                        int ms = p.BufferedMs;
+                        if (ms > maxMs) maxMs = ms;
+                    }
+                }
+            }
+            catch (Exception) { threw = true; }
+
+            Check("全程不抛异常 (小环计数未变负)", !threw);
+            Check("削峰已触发", p.TrimCount >= 1);
+            Check("削峰不反复 (只丢一次)", p.TrimCount == 1);
+            Check("水位压在 " + maxMs + "ms ≤ 目标 2 倍", maxMs <= targetMs * 2);
+            Check("削峰后水位贴近目标 (" + p.BufferedMs + "ms)", Math.Abs(p.BufferedMs - targetMs) <= 25);
+            Check("削峰后仍非静音 (RMS " + lastRms.ToString("0.00") + ")", lastRms > 0.05);
+        }
+
+        /// <summary>
+        /// 日志分级: 多路 provider 的输出行带着路标记前缀 ("[左] [警告] …")。
+        /// 只认行首 "[警告]" 的旧实现会把这类关键告警判成 INFO —— INFO 走 2 秒批量刷盘,
+        /// 崩溃时最后 2 秒正好是"为什么断音"的证据, 全丢。
+        /// </summary>
+        static void CaseLogClassify()
+        {
+            Begin("日志分级 (带路标记前缀)");
+            Check("[错误] → ERROR", Infrastructure.SessionLog.Classify("[错误] 输出左已停止") == Infrastructure.LogLevel.Error);
+            Check("[左] [警告] → WARNING",
+                Infrastructure.SessionLog.Classify("[左] [警告] 缓冲水位偏低: 调节水位 12ms") == Infrastructure.LogLevel.Warning);
+            Check("[右] [错误] → ERROR",
+                Infrastructure.SessionLog.Classify("[右] [错误] 校正触顶") == Infrastructure.LogLevel.Error);
+            Check("[提示] → INFO", Infrastructure.SessionLog.Classify("[提示] 缓冲堆积到 230ms") == Infrastructure.LogLevel.Info);
+            Check("普通行 → INFO", Infrastructure.SessionLog.Classify("分流已启动 2 路") == Infrastructure.LogLevel.Info);
+            Check("null → INFO", Infrastructure.SessionLog.Classify(null) == Infrastructure.LogLevel.Info);
+        }
+
+        /// <summary>
+        /// 清空日志后继续写: 截断文件必须同时把写指针复位, 否则新行写在旧偏移处,
+        /// 文件前部留一片 NUL —— 用文本工具打开就是"日志开头一堆乱码"。
+        /// </summary>
+        static void CaseSessionLogClear()
+        {
+            Begin("清空日志后写指针复位");
+            string dir = Path.Combine(Path.GetTempPath(), "ss-logtest-" + Guid.NewGuid().ToString("N"));
+            string text = null;
+            try
+            {
+                var log = new Infrastructure.SessionLog(dir);
+                for (int i = 0; i < 200; i++)
+                    log.Write("10:00:00.000", Infrastructure.LogLevel.Info, "旧内容 " + i + " 占位占位占位占位");
+                log.Clear();
+                log.Write("10:00:01.000", Infrastructure.LogLevel.Error, "清空后的第一行");
+                log.Dispose();
+                text = File.ReadAllText(log.FilePath);
+            }
+            catch (Exception ex) { Check("读写日志: " + ex.Message, false); }
+            finally { try { Directory.Delete(dir, true); } catch { } }
+
+            if (text == null) return;
+            Check("文件以新内容开头", text.StartsWith("10:00:01.000"));
+            Check("没有 NUL 空洞", text.IndexOf('\0') < 0);
+            Check("旧内容已清空", text.IndexOf("旧内容", StringComparison.Ordinal) < 0);
+        }
+
+        static OutputLane Lane(string key, string dev, int delay, int vol)        {
             return new OutputLane { ChannelKey = key, DeviceId = dev, DelayMs = delay, Volume = vol };
         }
 

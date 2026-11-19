@@ -1,0 +1,84 @@
+using System;
+using NAudio.Wave;
+
+namespace StereoSplitter
+{
+    /// <summary>
+    /// <see cref="BufferedWaveProvider"/> 的线程安全封装。
+    ///
+    /// 为什么必须加锁: NAudio 的 BufferedWaveProvider 内部就是一个无锁的环形数组
+    /// (bytesRead / bytesWritten 两个游标), 从来没有声明过线程安全。而本工程有**三条线程**
+    /// 同时碰它:
+    ///   - 捕获线程: Consume() → AddSamples (写)
+    ///   - 输出线程: DriftCorrectingProvider.Fill() → Read (读), 每台设备一条
+    ///   - UI/启动线程: TrimToFill() → Read (读), BufferedBytes (读游标)
+    /// 两读一写无锁混跑会让游标和计数撕裂 —— 轻则水位读数乱跳、少读到一整块(听感是"顿一下"),
+    /// 重则读到被覆写一半的数据(爆音)。日志里那些"水位毫无征兆从 60ms 跳到 180ms"就有它一份。
+    ///
+    /// 锁的粒度是"一次字节搬运", 临界区只有一次 memcpy (一个回调块约 1~10ms 音频, 几 KB),
+    /// 音频线程不会被长期阻塞; 相比撕裂带来的断音, 这点开销可以忽略。
+    /// </summary>
+    sealed class PcmRingBuffer
+    {
+        readonly object sync = new object();
+        readonly BufferedWaveProvider inner;
+        readonly byte[] scratch = new byte[8192];   // Discard 用, 仅持有锁时访问
+
+        public PcmRingBuffer(WaveFormat format, int durationMs)
+        {
+            inner = new BufferedWaveProvider(format)
+            {
+                BufferDuration = TimeSpan.FromMilliseconds(durationMs),
+                DiscardOnBufferOverflow = true
+            };
+        }
+
+        public WaveFormat WaveFormat { get { return inner.WaveFormat; } }
+
+        /// <summary>缓存容量 (字节)。构造后不变, 无需加锁。</summary>
+        public int BufferLength { get { return inner.BufferLength; } }
+
+        public int BufferedBytes
+        {
+            get { lock (sync) return inner.BufferedBytes; }
+        }
+
+        public void AddSamples(byte[] data, int offset, int count)
+        {
+            if (count <= 0) return;
+            lock (sync) inner.AddSamples(data, offset, count);
+        }
+
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            if (count <= 0) return 0;
+            lock (sync) return inner.Read(buffer, offset, count);
+        }
+
+        /// <summary>
+        /// 丢弃最旧的 count 字节 (不超过当前存量), 返回实际丢弃的字节数。
+        /// 用于缓冲堆积后的就地削峰 —— 丢掉一小段旧音频, 远好于拆掉整条链路重建。
+        /// </summary>
+        public int Discard(int count)
+        {
+            if (count <= 0) return 0;
+            int dropped = 0;
+            lock (sync)
+            {
+                while (dropped < count)
+                {
+                    int want = Math.Min(count - dropped, scratch.Length);
+                    int got = inner.Read(scratch, 0, want);
+                    if (got <= 0) break;
+                    dropped += got;
+                }
+            }
+            return dropped;
+        }
+
+        public void Clear()
+        {
+            lock (sync) inner.ClearBuffer();
+        }
+    }
+}

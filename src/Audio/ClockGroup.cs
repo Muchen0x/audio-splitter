@@ -25,7 +25,7 @@ namespace StereoSplitter
         const double KpFill = 0.004;
         const double GainEnterErr = 0.20;   // 误差降到 20% 以下 -> 切稳态增益
         const double GainExitErr = 0.50;    // 误差回升到 50% 以上 -> 退回填充增益
-        const double MaxRatio = 0.005;
+        const double MaxRatio = 0.01;        // ±1% (2026-11-18: 原 ±0.5%, 收窄触顶重建频率; 1%=17音分, 背景听音无感)
         const int WarnIntervalMs = 60000;
 
         // 以下三个常量都是"每个成员"的基准值, 运行时按 MemberCount 归一:

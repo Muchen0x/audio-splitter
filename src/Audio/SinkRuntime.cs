@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using NAudio.Wave;
 using NAudio.CoreAudioApi;
 
@@ -11,7 +12,7 @@ namespace StereoSplitter
     /// [outCh, srcCh] 矩阵。矩阵由 RoutingModel.Compile() 折叠出来, 所以逻辑声道层
     /// (可读、可视化) 不进逐样本循环 —— 运行时开销与旧版一致。
     ///
-    /// 每路独立持有 BufferedWaveProvider / DelayLine / DriftCorrectingProvider / WasapiOut:
+    /// 每路独立持有 PcmRingBuffer / DelayLine / DriftCorrectingProvider / WasapiOut:
     /// 延迟、水位、时钟环、端点音量都互不干扰; 互相同步只由 ClockGroup 决定。
     /// </summary>
     sealed class SinkRuntime : IDisposable
@@ -22,10 +23,24 @@ namespace StereoSplitter
         readonly bool srcIsFloat, srcIsFloat32, srcIs16;
         readonly string label;
 
+        // ---- 重建管线所需的原始参数: 单路重建时按原样重新装配, 不再向引擎/UI 要 ----
+        readonly int driftTargetSamples, fillTargetSamples, outLatencyMs, driftMode, fixedPpm, memberId;
+        readonly ClockGroup group;
+        // 捕获线程与本类的重建互斥: Feed 持锁写延迟线, Rebuild 先在 paused 置位后抢同一把锁,
+        // 保证拆卸瞬间没有在途 Write (否则会往已释放的缓冲里 memcpy)。
+        readonly object feedSync = new object();
+        volatile bool paused;
+        volatile bool closed;
+        // 音量/主音量记录在本类: 重建出的 provider 是全新对象, 必须把当前值重新灌回去
+        volatile float gainNow = 1f, masterNow = 1f;
+
+        /// <summary>输出线程停止 (设备休眠/被独占/拔出)。重建期间自身触发的不上报。</summary>
+        public event Action<SinkRuntime, StoppedEventArgs> OutputStopped;
+
         public SinkSpec Spec { get; private set; }
         public MMDevice Device { get; private set; }
         public WaveFormat OutFormat { get; private set; }
-        public BufferedWaveProvider Buffer { get; private set; }
+        public PcmRingBuffer Buffer { get; private set; }
         public DelayLine Line { get; private set; }
         public DriftCorrectingProvider Provider { get; private set; }
         public WasapiOut Output { get; private set; }
@@ -64,22 +79,158 @@ namespace StereoSplitter
             this.srcIs16 = captureFormat.BitsPerSample == 16;
             this.OutCh = Math.Max(1, spec.OutChannels);
             this.DelayMs = Math.Max(0, spec.DelayMs);
+            this.driftTargetSamples = Math.Max(1, driftTargetSamples);
+            this.fillTargetSamples = fillTargetSamples;
+            this.outLatencyMs = outLatencyMs;
+            this.driftMode = driftMode;
+            this.fixedPpm = fixedPpm;
+            this.memberId = memberId;
+            this.group = group;
 
             OutFormat = WaveFormat.CreateIeeeFloatWaveFormat(captureFormat.SampleRate, OutCh);
-            Buffer = new BufferedWaveProvider(OutFormat)
-            {
-                BufferDuration = TimeSpan.FromMilliseconds(1000),
-                DiscardOnBufferOverflow = true
-            };
             FillBytes = fillTargetSamples * OutCh * 4;
+            CreatePipeline(device);
+        }
 
-            Output = new WasapiOut(device, AudioClientShareMode.Shared, true, outLatencyMs);
+        /// <summary>
+        /// 装配本路的全部运行期对象 (缓冲 → provider → WasapiOut → 延迟线)。
+        /// 首次构造与单路重建共用, 保证两条路径装出来的链路完全一致。
+        /// </summary>
+        void CreatePipeline(MMDevice device)
+        {
+            Device = device;
+            // 1000ms 容量: 远大于稳态目标 (≤100ms), 给"堆积→削峰"留出可丢的余量;
+            // 封装层保证三线程 (捕获写 / 输出读 / UI 修剪) 不撕裂。
+            Buffer = new PcmRingBuffer(OutFormat, 1000);
             Provider = new DriftCorrectingProvider(Buffer, driftTargetSamples, OutCh, driftMode, fixedPpm,
                 log, label, memberId, group);
-            Output.Init(Provider);
+            Provider.Gain = gainNow;
+            Provider.Master = masterNow;
+
+            var output = new WasapiOut(device, AudioClientShareMode.Shared, true, outLatencyMs);
+            output.PlaybackStopped += OnPlaybackStopped;
+            output.Init(Provider);
+            Output = output;
 
             // 延迟线: 输入是交错多声道原始字节, 按 blockAlign(整帧) 算目标字节才天然对齐
             Line = new DelayLine(BytesOf(captureFormat, DelayMs), Consume);
+        }
+
+        void OnPlaybackStopped(object sender, StoppedEventArgs e)
+        {
+            // 重建/停止时是我们自己拆的, 不能让上层再当故障处理 (否则会连锁触发重建)。
+            // 用引用比对而不是标志位: NAudio 的 PlaybackStopped 可能在拆除之后才异步送达,
+            // 那时 paused 已经复位, 只有 "sender 已不是当前 Output" 能可靠识别迟到事件。
+            if (closed || !ReferenceEquals(sender, Output)) return;
+            var h = OutputStopped;
+            if (h == null) return;
+            try { h(this, e); } catch { }
+        }
+
+        /// <summary>
+        /// 捕获线程入口: 原始字节投进本路延迟线。
+        /// 重建期间直接跳过 (该路本来就在重启, 丢几十毫秒数据没有意义), 锁保证不会写进已释放的缓冲。
+        /// </summary>
+        public void Feed(byte[] data, int bytes)
+        {
+            if (bytes <= 0 || paused) return;
+            lock (feedSync)
+            {
+                if (paused) return;
+                var line = Line;
+                if (line == null) return;
+                line.Write(data, bytes);
+            }
+        }
+
+        /// <summary>
+        /// 就地重建本路 (只换这一路的缓冲/provider/端点, 其它路继续出声)。
+        /// 顺序: 暂停写入 → 等在途 Feed 退出 → 拆旧管线 → 建新管线 → 等预缓冲 → 起播。
+        /// 返回 false = 重建失败 (设备打不开/被独占), 调用方应升级为整链路重建。
+        /// <para>与首次启动的差别: 不重新枚举/校验全部设备, 只碰这一路; 失败时快速返回, 不弹框。</para>
+        /// </summary>
+        public bool Rebuild(MMDevice device, Func<bool> cancelled)
+        {
+            if (device == null || closed) return false;
+
+            paused = true;
+            lock (feedSync) { }             // 等在途 Feed 退出 (DelayLine.Write 之后才轮到我们)
+
+            var oldDevice = Device;
+            TeardownPipeline();             // 先断引用再 Stop/Dispose: 旧管的 PlaybackStopped 会被识别为迟到事件
+            // 拆掉的那一路可能正处于 holding: 不清掉的话组内其它路会一直被联动降 6dB
+            if (group != null) { try { group.NotifyHolding(memberId, false); } catch { } }
+
+            try
+            {
+                CreatePipeline(device);
+            }
+            catch
+            {
+                TeardownPipeline();         // 半成品 (端点在 Init 阶段被独占等) 也要清干净, 否则下次重试会叠加句柄
+                paused = false;
+                return false;
+            }
+
+            // 建立过程中窗体可能正在退出 (Dispose 已经跑过): 这时新管线没人管 → 自己拆掉, 别泄漏音频端点
+            if (closed)
+            {
+                TeardownPipeline();
+                paused = false;
+                return false;
+            }
+
+            paused = false;                 // 恢复灌数据, 下面等它攒到填充目标
+
+            // 等进行: 延迟线要先攒够 DelayMs 才会往下游放, 再加上缓冲填充目标,
+            // 这段时间该路本来就是静音 (它正在重启), 起播时水位已足 → 不会有起播欠载。
+            int sr = Math.Max(1, OutFormat.SampleRate);
+            int fillMs = (int)((long)fillTargetSamples * 1000 / sr);
+            int waitMs = Math.Min(5000, DelayMs + fillMs + 1200);
+            int t0 = Environment.TickCount;
+            while (!closed && (cancelled == null || !cancelled()))
+            {
+                var buf = Buffer;
+                if (buf == null || buf.BufferedBytes >= FillBytes) break;
+                if (unchecked(Environment.TickCount - t0) >= waitMs) break;
+                Thread.Sleep(5);
+            }
+
+            if (closed || (cancelled != null && cancelled()))
+            {
+                TeardownPipeline();
+                paused = false;
+                return false;
+            }
+
+            var outNow = Output;
+            try { if (outNow != null) outNow.Play(); }
+            catch
+            {
+                TeardownPipeline();
+                paused = false;
+                return false;
+            }
+
+            // 旧设备对象在新管线建成后才释放: 先放会把新管线要用的端点句柄一起带走的风险留到最后
+            if (oldDevice != null && !ReferenceEquals(oldDevice, device))
+            {
+                try { oldDevice.Dispose(); } catch { }
+            }
+            return true;
+        }
+
+        /// <summary>拆掉当前管线 (幂等), 供重建失败/退出时复用。调用方负责 paused 的置位。</summary>
+        void TeardownPipeline()
+        {
+            var output = Output;
+            Output = null;
+            Provider = null;
+            Buffer = null;
+            Line = null;
+            if (output == null) return;
+            try { output.Stop(); } catch { }
+            try { output.Dispose(); } catch { }
         }
 
         /// <summary>延迟后的原始字节 → 混音 → 加入本路缓冲。</summary>
@@ -221,8 +372,18 @@ namespace StereoSplitter
             }
         }
 
-        public void SetGain(float g) { if (Provider != null) Provider.Gain = g; }
-        public void SetMaster(float m) { if (Provider != null) Provider.Master = m; }
+        public void SetGain(float g)
+        {
+            gainNow = g;
+            if (Provider != null) Provider.Gain = g;
+        }
+
+        public void SetMaster(float m)
+        {
+            masterNow = m;
+            if (Provider != null) Provider.Master = m;
+        }
+
         public void SetDriftMode(int mode, int ppm) { if (Provider != null) Provider.SetMode(mode, ppm); }
 
         public void Start() { if (Output != null) Output.Play(); }
@@ -235,6 +396,8 @@ namespace StereoSplitter
 
         public void Dispose()
         {
+            closed = true;
+            paused = true;
             if (Output != null) { try { Output.Dispose(); } catch { } Output = null; }
             if (Device != null) { try { Device.Dispose(); } catch { } Device = null; }
             Buffer = null;

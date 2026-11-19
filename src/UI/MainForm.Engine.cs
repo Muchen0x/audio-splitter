@@ -300,12 +300,16 @@ namespace StereoSplitter
                         engine = eng;
                         // 订阅放在赋值之后: 处理函数会按引用校验"还是不是当前引擎", 防止旧引擎的迟到事件触发二次重建
                         eng.Stalled += OnEngineStalledFromAudio;
+                        eng.SinkStalled += OnSinkStalledFromAudio;
                         // CaptureId getter 在 COM 对象失效时会 catch 后返回 null —— 不能让 null 覆盖
                         // 启动时已知的正确值 (103 行), 否则断流自动重建会因 runCaptureId 为空而放弃
                         string startedCap = eng.CaptureId;
                         if (!string.IsNullOrEmpty(startedCap)) runCaptureId = startedCap;
                         runModel = p.Model;
                         ResetWatchdog();
+                        sinkRestartCount = new int[0];   // 新链路 → 单路重建预算重新给
+                        sinkRestartTick = new int[0];
+                        sinkRestarting = new bool[0];
                         runSinceTick = Environment.TickCount;
                         SetAppState(AppState.Running);
                         ApplyVolumes();
@@ -336,8 +340,11 @@ namespace StereoSplitter
                             if (autoRestart)
                             {
                                 restarting = false;
+                                // 重建失败多半是端点还没就绪 (USB 重新枚举/蓝牙重连): 挂上监听,
+                                // 设备回来时自动再试一次 (DeviceReturnTick 触发后会先解除监听, 不会循环)
+                                ArmDeviceReturnWatch(runCaptureId, runSinkIds);
                                 GiveUp();   // 重建失败 → 别再假装运行, 明确停下来
-                                Log("[错误] 自动重建失败，分流已停止；请检查设备后手动开始");
+                                Log("[错误] 自动重建失败，分流已停止；设备回归后会自动续播，也可手动开始");
                                 return;
                             }
                             StartFailed();
@@ -353,6 +360,7 @@ namespace StereoSplitter
 
         void StopEngine()
         {
+            DisarmDeviceReturnWatch();      // 用户主动停止 → 不做设备回归续播
             TearDownEngine();
             if (state == AppState.Running || state == AppState.Starting)
             {
@@ -395,6 +403,44 @@ namespace StereoSplitter
             if (!exiting) RestoreDefaultOutput("分流已中断");
         }
 
+        // ---------------- 设备回归自动续播 ----------------
+
+        /// <summary>放弃重建前快照运行参数并开启监听 (5 秒/次)。</summary>
+        void ArmDeviceReturnWatch(string capId, System.Collections.Generic.List<string> sinkIds)
+        {
+            returnCaptureId = capId;
+            returnSinkIds = sinkIds != null ? new System.Collections.Generic.List<string>(sinkIds) : new System.Collections.Generic.List<string>();
+            if (returnCaptureId == null || returnSinkIds.Count == 0) { DisarmDeviceReturnWatch(); return; }
+            if (deviceReturnTimer != null) deviceReturnTimer.Start();
+        }
+
+        void DisarmDeviceReturnWatch()
+        {
+            if (deviceReturnTimer != null) deviceReturnTimer.Stop();
+            returnCaptureId = null;
+            returnSinkIds = null;
+        }
+
+        /// <summary>
+        /// 监听 tick: 设备全部回归 → 走与手动点开始完全相同的启动链 (含 AutoConfigure)。
+        /// 用户手动停止/手动启动/退出时自动解除。
+        /// </summary>
+        void DeviceReturnTick()
+        {
+            if (exiting || IsDisposed || !IsHandleCreated) { DisarmDeviceReturnWatch(); return; }
+            if (running || state == AppState.Starting || state == AppState.Running) { DisarmDeviceReturnWatch(); return; }
+            if (returnCaptureId == null || returnSinkIds == null || returnSinkIds.Count == 0) { DisarmDeviceReturnWatch(); return; }
+
+            var ids = new string[returnSinkIds.Count + 1];
+            ids[0] = returnCaptureId;
+            returnSinkIds.CopyTo(ids, 1);
+            if (FindMissingEndpoint(ids) != null) return;   // 还有缺失, 继续等
+
+            Log("[恢复] 端点已全部回归 (捕获 + " + returnSinkIds.Count + " 路输出) → 自动续播");
+            DisarmDeviceReturnWatch();
+            BtnStart_Click(this, EventArgs.Empty);
+        }
+
         // ---------------- 长期运行看门狗 ----------------
 
         void ResetWatchdog()
@@ -402,6 +448,9 @@ namespace StereoSplitter
             watchRendered = new long[0];
             watchRenderedTick = new int[0];
             watchImbalanceTick = new int[0];
+            watchTrims = new long[0];
+            watchTrimBurst = new int[0];
+            watchTrimLastTick = new int[0];
             captureIdleLogged = false;
             captureIdleSince = 0;
             lastCaptureCheckTick = 0;
@@ -414,7 +463,25 @@ namespace StereoSplitter
             watchRendered = new long[n];
             watchRenderedTick = new int[n];
             watchImbalanceTick = new int[n];
-            for (int i = 0; i < n; i++) watchRendered[i] = -1;
+            watchImbalanceReg = new int[n];
+            watchImbFloorTick = new int[n];
+            watchTrims = new long[n];
+            watchTrimBurst = new int[n];
+            watchTrimLastTick = new int[n];
+            for (int i = 0; i < n; i++) { watchRendered[i] = -1; watchTrims[i] = -1; }
+        }
+
+        /// <summary>
+        /// 单路重建后清掉该路的看门狗状态: 新 provider 的累计量都从 0 重新记,
+        /// 旧值留着会让"削峰计数只增"的判据再也对不上 (watchTrims 停在旧的大数 → 判据③ 永久失效)。
+        /// </summary>
+        void ResetSinkWatch(int i)
+        {
+            if (i < 0) return;
+            if (i < watchRendered.Length) { watchRendered[i] = -1; watchRenderedTick[i] = 0; }
+            if (i < watchImbalanceTick.Length) { watchImbalanceTick[i] = 0; watchImbalanceReg[i] = 0; }
+            if (i < watchImbFloorTick.Length) watchImbFloorTick[i] = 0;
+            if (i < watchTrims.Length) { watchTrims[i] = -1; watchTrimBurst[i] = 0; watchTrimLastTick[i] = 0; }
         }
 
         static string SinkLabel(AudioEngine eng, int i)
@@ -450,6 +517,11 @@ namespace StereoSplitter
             // 连续健康 5 分钟 → 清空重建计数, 避免一天里偶发两三次后就被永久锁死在"不再重试"
             if (autoRestartCount > 0 && runSinceTick != 0 && unchecked(now - runSinceTick) >= 300000)
                 autoRestartCount = 0;
+            if (sinkRestartCount.Length > 0 && runSinceTick != 0 && unchecked(now - runSinceTick) >= 300000)
+            {
+                Array.Clear(sinkRestartCount, 0, sinkRestartCount.Length);
+                Array.Clear(sinkRestartTick, 0, sinkRestartTick.Length);
+            }
 
             // 10 秒不被调用 → 该路输出端已停摆 (设备休眠/被独占/驱动挂起且没抛事件)
             int sinks = eng.SinkCount;
@@ -462,29 +534,101 @@ namespace StereoSplitter
                 if (r != watchRendered[i]) { watchRendered[i] = r; watchRenderedTick[i] = now; }
                 else if (watchRenderedTick[i] != 0 && unchecked(now - watchRenderedTick[i]) >= WatchdogFreezeMs)
                 {
-                    OnEngineStalled("输出「" + SinkLabel(eng, i) + "」线程已 " + (WatchdogFreezeMs / 1000) +
+                    OnSinkStalled(i, "输出「" + SinkLabel(eng, i) + "」线程已 " + (WatchdogFreezeMs / 1000) +
                         " 秒未取数据（水位 " + rt.Provider.BufferedMs + "ms）—— 该设备休眠/被独占的典型表现");
                     return;
                 }
             }
 
-            // 水位失衡检测: 设备实际采样率与标称偏差 10%+ 时, 远超校正环 ±0.5% 修正范围 →
-            // 该路水位持续堆积到满。此时 RenderedSamples 仍在涨 (Read 还被调用, 只是消费速率
-            // 不匹配), 停摆检测抓不到。判据: 调节水位 >300ms (正常 ≤142ms) 且该路校正触顶
-            // (|ppm|>4900), 持续 10 秒。逐路判定: 总和会互相掩盖。
+            // 水位失衡检测 v2: 设备实际消费速率异常 (休眠抖动/驱动重置/端点僵死前兆) 时,
+            // RenderedSamples 仍在涨 (Read 还被调用, 只是消费速率不匹配), 停摆检测抓不到。
+            // 两条判据, 逐路判定 (总和会互相掩盖):
+            // ① 趋势: 校正触顶 (|ppm|>9900) 持续 5 秒且水位比窗口起点净涨 ≥10ms。
+            //    起播预缓冲放水阶段校正同样触顶, 但水位在下降 → 不触发。
+            // ② 兜底: 调节水位 >200ms 持续 10 秒 (正常 ≤110ms)。
             for (int i = 0; i < sinks; i++)
             {
                 var rt = eng.SinkAt(i);
                 if (rt == null || rt.Provider == null) continue;
                 double ppm = rt.Provider.RatioPpm;
                 int reg = rt.Provider.RegulatedMs;
-                bool clamped = ppm > 4900 || ppm < -4900;
-                if (!clamped || reg <= ImbalanceThresholdMs) { watchImbalanceTick[i] = 0; continue; }
-                if (watchImbalanceTick[i] == 0) { watchImbalanceTick[i] = now; continue; }
-                if (unchecked(now - watchImbalanceTick[i]) < WatchdogImbalanceMs) continue;
-                OnEngineStalled("「" + SinkLabel(eng, i) + "」水位持续堆积至 " + reg + "ms 且校正已触顶 " +
-                    PpmText(ppm) + " 超过 10 秒——该设备消费速率严重低于捕获速率，校正环无法补偿");
-                return;
+                int targetMs = rt.Provider.TargetMs;
+                bool clamped = ppm > ClampDetectPpm || ppm < -ClampDetectPpm;
+
+                // 判据③: provider 靠削峰维持 = 已经在自愈。单次属瞬态 (USB 等时抖动/端点挂起),
+                // 一分钟内反复出现才说明设备消费速率真的不够。
+                long trims = rt.Provider.TrimCount;
+                if (watchTrims[i] < 0) watchTrims[i] = trims;
+                else if (trims > watchTrims[i])
+                {
+                    watchTrims[i] = trims;
+                    if (watchTrimLastTick[i] == 0 || unchecked(now - watchTrimLastTick[i]) > 60000)
+                        watchTrimBurst[i] = 0;
+                    watchTrimBurst[i]++;
+                    watchTrimLastTick[i] = now;
+                    if (watchTrimBurst[i] >= TrimBurstLimit)
+                    {
+                        OnSinkStalled(i, "「" + SinkLabel(eng, i) + "」持续跟不上：60 秒内削峰 " +
+                            watchTrimBurst[i] + " 次，水位反复堆到目标 " + targetMs +
+                            "ms 的 2 倍——该设备消费速率严重低于捕获速率");
+                        return;
+                    }
+                }
+
+                // 判据②: 水位绝对线, 不要求触顶 (捕捉触顶与越线交替出现的震荡期)。
+                // 阈值随目标浮动: 高延迟档位目标本身就有 100ms, 写死 200ms 会把它当故障。
+                int floorMs = Math.Max(ImbalanceThresholdMs, targetMs * 5 / 2);
+                if (reg > floorMs)
+                {
+                    if (watchImbFloorTick[i] == 0) watchImbFloorTick[i] = now;
+                    else if (unchecked(now - watchImbFloorTick[i]) >= WatchdogImbalanceMs)
+                    {
+                        OnSinkStalled(i, "「" + SinkLabel(eng, i) + "」水位持续 " + reg + "ms 超过 " +
+                            (WatchdogImbalanceMs / 1000) + " 秒（目标 " + targetMs + "ms），远超正常范围——该设备消费速率异常");
+                        return;
+                    }
+                }
+                else watchImbFloorTick[i] = 0;
+
+                // 判据①: 刚削过峰说明是"卡了一下又被压回来", 交给判据③ 计数, 这里不判死
+                if (rt.Provider.SinceLastTrimMs < TrimGraceMs) { watchImbalanceTick[i] = 0; continue; }
+
+                // 判据①: 触顶 + 水位净涨 (起播放水触顶但水位下降, 滑窗重计不会误触发)
+                if (!clamped) { watchImbalanceTick[i] = 0; continue; }
+                if (watchImbalanceTick[i] == 0)
+                {
+                    watchImbalanceTick[i] = now;
+                    watchImbalanceReg[i] = reg;
+                    continue;
+                }
+                if (unchecked(now - watchImbalanceTick[i]) < WatchdogTrendMs) continue;
+                if (reg - watchImbalanceReg[i] >= ImbalanceGrowMs)
+                {
+                    OnSinkStalled(i, "「" + SinkLabel(eng, i) + "」校正触顶 " + PpmText(ppm) + " 持续 " +
+                        (WatchdogTrendMs / 1000) + " 秒且水位净涨 " + (reg - watchImbalanceReg[i]) + "ms（" +
+                        watchImbalanceReg[i] + "→" + reg + "ms）——该设备消费速率严重低于捕获速率");
+                    return;
+                }
+                // 触顶但水位没涨 (放水/瞬态): 窗口滑动重新计时
+                watchImbalanceTick[i] = now;
+                watchImbalanceReg[i] = reg;
+            }
+
+            // 输出端点存活探测 (30 秒一次): 设备被系统禁用/驱动重置后 WasapiOut 不抛事件,
+            // 数据写进黑洞但 RenderedSamples 照涨, 水位也正常 —— 只有枚举端点才能发现。
+            if (lastSinkProbeTick == 0 || unchecked(now - lastSinkProbeTick) >= 30000)
+            {
+                lastSinkProbeTick = now;
+                var sinkIds = eng.SinkEndpointIds();
+                string missingSink = FindMissingEndpoint(sinkIds);
+                if (missingSink != null)
+                {
+                    int mi = -1;
+                    for (int i = 0; i < sinkIds.Length; i++)
+                        if (sinkIds[i] == missingSink) { mi = i; break; }
+                    OnSinkStalled(mi, "输出设备已不可用（端点存活探测: " + FindNameById(missingSink) + "）");
+                    return;
+                }
             }
 
             int capTick = eng.LastCaptureTick;
@@ -535,6 +679,21 @@ namespace StereoSplitter
             catch { }
         }
 
+        // 单路故障 → 优先只重建这一路
+        void OnSinkStalledFromAudio(AudioEngine src, int index, string why)
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+            try
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    if (!ReferenceEquals(src, engine)) return;
+                    OnSinkStalled(index, why);
+                }));
+            }
+            catch { }
+        }
+
         void OnEngineStalled(string why)
         {
             if (exiting || IsDisposed || restarting) return;
@@ -544,13 +703,183 @@ namespace StereoSplitter
 
             if (autoRestartCount >= MaxAutoRestart)
             {
-                Log("[错误] 已连续自动重建 " + autoRestartCount + " 次仍未恢复，停止重试；请检查设备后手动开始");
+                Log("[错误] 已连续自动重建 " + autoRestartCount + " 次仍未恢复，停止重试（设备回归后会自动续播）");
+                // 放弃重建 ≠ 放弃监听: 设备掉线/休眠后回归是常态, 挂上监听用户就不必手动点开始
+                ArmDeviceReturnWatch(runCaptureId, runSinkIds);
                 GiveUp();
                 return;
             }
             autoRestartCount++;
             Log("[恢复] 自动重建输出流 (" + autoRestartCount + "/" + MaxAutoRestart + ")");
             RestartEngine();
+        }
+
+        // ---------------- 单路重建 (只重启故障那一路, 其余路不断音) ----------------
+
+        // 单路重建预算: 同一路连着重启 3 次还稳不住, 说明不是瞬态, 升级为整链路重建
+        // (整链路那条路有自己的放弃逻辑: 设备回归自动续播)。
+        const int MaxSinkRestart = 3;
+        const int SinkRestartMinGapMs = 3000;   // 两次单路重建之间的最小间隔, 防止看门狗热循环
+        int[] sinkRestartCount = new int[0];
+        int[] sinkRestartTick = new int[0];
+        // 逐路"正在重建"标记: 两路同时掉线时各自排队重建 (引擎内部串行), 不会互相吞掉对方的故障
+        bool[] sinkRestarting = new bool[0];
+
+        void EnsureSinkRestartArrays(int n)
+        {
+            if (sinkRestartCount.Length == n && sinkRestarting.Length == n) return;
+            var c = new int[n];
+            var t = new int[n];
+            var b = new bool[n];
+            Array.Copy(sinkRestartCount, c, Math.Min(n, sinkRestartCount.Length));
+            Array.Copy(sinkRestartTick, t, Math.Min(n, sinkRestartTick.Length));
+            Array.Copy(sinkRestarting, b, Math.Min(n, sinkRestarting.Length));
+            sinkRestartCount = c;
+            sinkRestartTick = t;
+            sinkRestarting = b;
+        }
+
+        /// <summary>
+        /// 单路故障: 只重建这一路。健康的其它路不停、不断音 —— 这是"突然没声"感受的根源:
+        /// 以前任何一路出问题都拆整条链路, 两路一起静音约 1 秒。
+        /// </summary>
+        void OnSinkStalled(int index, string why)
+        {
+            if (exiting || IsDisposed || restarting) return;
+            // 启动/重建过程中链路还没稳定, 单路重建会和启动流程抢同一批端点 → 交给整链路流程
+            if (state == AppState.Starting) { OnEngineStalled(why); return; }
+            if (state != AppState.Running) return;
+            var eng = engine;
+            if (eng == null) return;
+            if (index < 0 || index >= eng.SinkCount) { OnEngineStalled(why); return; }
+
+            int now = Environment.TickCount;
+            EnsureSinkRestartArrays(eng.SinkCount);
+            // 已经在等这一路回归 (5 秒轮询中): 看门狗的端点探测每 30 秒还会再报一次同样的故障,
+            // 不能让它把重试预算耗光、更不该因此拆掉正在正常出声的其它路
+            if (sinkRetryPending.Contains(index)) return;
+            if (sinkRestarting[index]) return;      // 这一路正在重建, 别再排一次
+            if (sinkRestartTick[index] != 0 && unchecked(now - sinkRestartTick[index]) < SinkRestartMinGapMs)
+                return;     // 刚重建过, 给它稳定时间; 真的没救会由看门狗再次上报
+
+            if (sinkRestartCount[index] >= MaxSinkRestart)
+            {
+                Log("[恢复] 「" + SinkLabel(eng, index) + "」单路重建 " + sinkRestartCount[index] +
+                    " 次仍不稳定 → 改为重建整条链路");
+                Array.Clear(sinkRestartCount, 0, sinkRestartCount.Length);
+                Array.Clear(sinkRestartTick, 0, sinkRestartTick.Length);
+                OnEngineStalled(why);
+                return;
+            }
+
+            sinkRestartCount[index]++;
+            sinkRestartTick[index] = now;
+            Log("[错误] " + why + " → 只重建「" + SinkLabel(eng, index) + "」，其它路继续出声 (" +
+                sinkRestartCount[index] + "/" + MaxSinkRestart + ")");
+            BeginSinkRestart(eng, index, false);
+        }
+
+        /// <summary>
+        /// 异步重建一路 (不阻塞 UI)。awaitingDevice=true 表示这是"等端点回归"的定时重试。
+        /// 失败分两种: 端点仍不在 → 该路继续静音等待 (其它路照常出声); 其它原因 → 升级为整链路重建。
+        /// </summary>
+        void BeginSinkRestart(AudioEngine eng, int index, bool awaitingDevice)
+        {
+            EnsureSinkRestartArrays(eng.SinkCount);
+            if (sinkRestarting[index]) return;
+            sinkRestarting[index] = true;
+
+            int idx = index;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string err = null;
+                bool gone = false;
+                bool ok = false;
+                try { ok = eng.RestartSink(idx, out err, out gone); }
+                catch (Exception ex) { err = ex.Message; }
+
+                try
+                {
+                    BeginInvoke(new Action(delegate
+                    {
+                        if (idx < sinkRestarting.Length) sinkRestarting[idx] = false;
+                        if (exiting || IsDisposed) return;
+                        if (!ReferenceEquals(eng, engine)) return;   // 期间整链路已换掉, 这次结果无意义
+
+                        if (ok)
+                        {
+                            sinkRetryPending.Remove(idx);
+                            ResetSinkWatch(idx);
+                            Log(awaitingDevice
+                                ? "[恢复] 「" + SinkLabel(eng, idx) + "」端点已回归，该路已重建（其它路未中断）"
+                                : "[恢复] 「" + SinkLabel(eng, idx) + "」已单独重建，其它路未中断");
+                            if (sinkRetryPending.Count == 0) DisarmSinkRetry();
+                            return;
+                        }
+
+                        if (gone)
+                        {
+                            // 设备真的不在了: 只让这一路静音等待, 绝不因此拆掉还在正常出声的其它路
+                            if (!awaitingDevice)
+                                Log("[状态] 「" + SinkLabel(eng, idx) +
+                                    "」端点已不在（可能已拔出/被禁用）→ 该路静音等待设备回归，其它路继续出声");
+                            ArmSinkRetry(idx);
+                            return;
+                        }
+
+                        Log("[错误] 单路重建失败 (" + (err ?? "未知") + ") → 改为重建整条链路");
+                        DisarmSinkRetry();
+                        OnEngineStalled("单路重建失败: " + (err ?? SinkLabel(eng, idx)));
+                    }));
+                }
+                catch
+                {
+                    // 窗体已销毁 → 没人接手, 至少把标志复位, 免得看门狗永久停摆
+                    if (idx < sinkRestarting.Length) sinkRestarting[idx] = false;
+                }
+            });
+        }
+
+        // ---------------- 单路端点掉线: 只等这一路, 其它路照常出声 ----------------
+
+        /// <summary>等待回归的单路 (引擎 sink 下标)。每 5 秒试一次, 端点一回来就重建该路。</summary>
+        readonly List<int> sinkRetryPending = new List<int>();
+
+        void ArmSinkRetry(int index)
+        {
+            if (!sinkRetryPending.Contains(index)) sinkRetryPending.Add(index);
+            if (sinkRetryTimer != null && !sinkRetryTimer.Enabled) sinkRetryTimer.Start();
+        }
+
+        void DisarmSinkRetry()
+        {
+            sinkRetryPending.Clear();
+            if (sinkRetryTimer != null) sinkRetryTimer.Stop();
+        }
+
+        void SinkRetryTick()
+        {
+            var eng = engine;
+            if (exiting || IsDisposed || !IsHandleCreated || !running || eng == null)
+            {
+                DisarmSinkRetry();
+                return;
+            }
+            if (sinkRetryPending.Count == 0) { DisarmSinkRetry(); return; }
+
+            // 倒序遍历: BeginSinkRestart 的回调可能从列表里移除元素
+            for (int k = sinkRetryPending.Count - 1; k >= 0; k--)
+            {
+                int idx = sinkRetryPending[k];
+                if (idx < 0 || idx >= eng.SinkCount || idx >= sinkRestarting.Length)
+                {
+                    sinkRetryPending.RemoveAt(k);
+                    continue;
+                }
+                if (sinkRestarting[idx]) continue;   // 上一轮还在建, 等下一拍
+                BeginSinkRestart(eng, idx, true);
+            }
+            if (sinkRetryPending.Count == 0) DisarmSinkRetry();
         }
 
         /// <summary>按当前运行参数重建整条链路 (不断开音量绑定, 不重跑 AutoConfigure)。</summary>
@@ -586,7 +915,8 @@ namespace StereoSplitter
             string missing = FindMissingEndpoint(runSinkIds.ToArray());
             if (missing != null)
             {
-                Log("[错误] 输出设备已不可用 (" + FindNameById(missing) + ")，放弃自动重建；请刷新设备后重新开始");
+                Log("[错误] 输出设备已不可用 (" + FindNameById(missing) + ")，放弃自动重建；等待设备回归后自动续播");
+                ArmDeviceReturnWatch(capId, runSinkIds);
                 GiveUp();
                 return;
             }

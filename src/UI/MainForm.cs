@@ -159,11 +159,33 @@ namespace StereoSplitter
         const int WatchdogFreezeMs = 10000;
         long[] watchRendered = new long[0];
         int[] watchRenderedTick = new int[0];
-        // 水位失衡判定: 一侧调节水位持续 >300ms 且校正触顶 → 设备消费速率严重低于捕获速率
-        // (独占模式设备采样率失配、驱动异常)。RenderedSamples 还在涨 → 停摆检测抓不到。
-        const int WatchdogImbalanceMs = 10000;
-        const int ImbalanceThresholdMs = 300;   // 正常水位 ≤142ms (target 100 + 波动 42), 300 远超
-        int[] watchImbalanceTick = new int[0];
+        // 水位失衡判定 v2: 设备消费速率异常 (休眠抖动/驱动重置/端点僵死) 时 RenderedSamples
+        // 仍在增长 (数据只是堆积), 停摆检测抓不到, 只有水位与校正暴露问题。三条判据:
+        // ① 趋势: 校正触顶(|ppm|>9900) 持续 5 秒且水位比窗口起点净涨 ≥10ms —— 消费过慢的
+        //    典型曲线。起播预缓冲放水阶段校正同样触顶, 但水位在下降 → 不会误触发。
+        // ② 兜底: 调节水位超过目标水位 2.5 倍持续 10 秒 (正常 ≤1.3 倍), 不要求触顶。
+        // ③ 削峰频发: provider 削峰 ≥8 次且每次间隔都在 60 秒内 —— 缓冲被反复顶到目标 2 倍。
+        // 为什么要有 ③: USB/驱动的一次瞬间卡顿会把缓冲顶高 100~200ms, 而 ±1% 的校正
+        // 每秒只能排 10ms, 5 秒内注定排不完。以前这种情况直接判"链路中断"→ 重建整条链路,
+        // 两路一起静音约 1 秒, 用户听到的就是"总是突然没声"。现在 provider 先丢旧数据自愈,
+        // 看门狗只在"自愈也压不住"时才动手。实测抖动多在 6~8 秒内自愈, 所以门限取 8 次
+        // (持续不对时约 1.2 秒削一次 ≈ 10 秒), 只比自愈窗口多留一点余量。
+        const int WatchdogImbalanceMs = 10000;  // 判据② 持续时长
+        const int WatchdogTrendMs = 5000;       // 判据① 触顶持续时长
+        const int ImbalanceGrowMs = 10;         // 判据① 窗口内最小净涨幅
+        const int ClampDetectPpm = 9900;        // 触顶判定线 (随 ClockGroup.MaxRatio ±1% 联动, 留 1% 裕量)
+        const int ImbalanceThresholdMs = 200;   // 判据② 水位兜底线 (下限; 实际按目标水位的 2.5 倍放宽)
+        // 判据③: provider 自己削峰 (丢旧数据压回目标) 属于可自愈的瞬态 —— 单次不算故障。
+        // 但 60 秒内反复削峰, 说明设备消费速率真的不够, 这时才值得拆链路重建。
+        const int TrimBurstLimit = 8;           // 削峰次数上限 (持续不对时约 10 秒触达)
+        const int TrimGraceMs = 15000;          // 削峰后这段时间内不用"触顶+净涨"判死
+        long[] watchTrims = new long[0];        // 判据③ 上次看到的削峰计数 (-1 = 未对齐)
+        int[] watchTrimBurst = new int[0];      // 窗口内削峰次数
+        int[] watchTrimLastTick = new int[0];   // 上次削峰时刻
+        int[] watchImbalanceTick = new int[0];  // 判据① 首次触顶时刻
+        int[] watchImbalanceReg = new int[0];   // 判据① 首次触顶时的水位
+        int[] watchImbFloorTick = new int[0];   // 判据② 越线起始时刻
+        int lastSinkProbeTick;                  // 输出端点存活探测 (30 秒一次)
         bool captureIdleLogged;      // "捕获源无数据"只提示一次
         int captureIdleSince;
         int lastCaptureCheckTick;    // 空闲期确认捕获设备是否还在 (1 分钟一次)
@@ -172,6 +194,21 @@ namespace StereoSplitter
         const int MaxAutoRestart = 3;
         int autoRestartCount;
         bool restarting;             // 重建进行中
+
+        // 系统空闲待机抑制: 分流运行期间阻止 Modern Standby 挂起 USB 音频端点 (见 SetAppState)
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        static extern uint SetThreadExecutionState(uint esFlags);
+        const uint ES_CONTINUOUS = 0x80000000;
+        const uint ES_SYSTEM_REQUIRED = 0x00000001;
+
+        // 设备回归自动续播: 因端点消失放弃重建后, 每 5 秒探测一次, 设备全部回归即自动重新开始
+        // (2026-11-18: 小米音箱 USB 链路瞬断 ~10 秒自行回归, 旧逻辑直接放弃要人工手点)
+        System.Windows.Forms.Timer deviceReturnTimer;
+        string returnCaptureId;
+        System.Collections.Generic.List<string> returnSinkIds;
+
+        // 单路端点掉线重试: 只等这一路回归 (其它路继续出声), 5 秒试一次
+        System.Windows.Forms.Timer sinkRetryTimer;
 
         public MainForm()
         {
@@ -481,6 +518,14 @@ namespace StereoSplitter
                 RestartEngine();
             };
 
+            // 设备回归监听: 端点消失放弃重建后, 等设备全部回来再自动续播
+            deviceReturnTimer = new System.Windows.Forms.Timer { Interval = 5000 };
+            deviceReturnTimer.Tick += (s, e) => DeviceReturnTick();
+
+            // 单路端点掉线重试: 整条链路继续跑, 只反复尝试把掉线的那一路装回来
+            sinkRetryTimer = new System.Windows.Forms.Timer { Interval = 5000 };
+            sinkRetryTimer.Tick += (s, e) => SinkRetryTick();
+
             Load += MainForm_Load;
             FormClosing += MainForm_FormClosing;
         }
@@ -488,6 +533,13 @@ namespace StereoSplitter
         void SetAppState(AppState s)
         {
             state = s;
+
+            // 分流运行期间阻止系统空闲待机 (Modern Standby / S0 低功耗):
+            // 分流器在源静音时渲染的是静音, 系统不会因此阻止待机 → 整机挂起时 USB 音频端点
+            // 一并挂起, 唤醒后端点病态 (水位堆积震荡/僵尸无声), 且 Modern Standby 的部分挂起
+            // 不触发 PowerModes.Resume, "唤醒重建"逻辑抓不到。进程退出会自动清除该状态。
+            if (s == AppState.Running) SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
+            else SetThreadExecutionState(ES_CONTINUOUS);
 
             string txt;
             Color c;
@@ -1282,6 +1334,11 @@ namespace StereoSplitter
             runCaptureId = null;
             runSinkIds.Clear();
             runModel = null;
+            // 单路重建状态随之作废: 引擎已拆, 在途重建会因 closed/引用不符自行退出
+            sinkRestartCount = new int[0];
+            sinkRestartTick = new int[0];
+            sinkRestarting = new bool[0];
+            DisarmSinkRetry();
         }
 
         void MainForm_FormClosing(object sender, FormClosingEventArgs e)

@@ -77,9 +77,18 @@ namespace StereoSplitter
                     int take = (int)Math.Min(avail, buffered - targetBytes);
                     // emit 抛异常时整块丢弃: 否则该块永远卡在队头, 之后每次 Write 都在同一处失败,
                     // 队列只进不出 → 长时间运行内存无界增长
-                    if (EmitSafe(b.Data, b.Offset, take)) b.Offset += take;
-                    else b.Offset = b.Len;
-                    buffered -= take;
+                    if (EmitSafe(b.Data, b.Offset, take))
+                    {
+                        b.Offset += take;
+                        buffered -= take;
+                    }
+                    else
+                    {
+                        // 失败时丢的是**整块剩余**(不只是本次 take): 记账必须同步扣掉整段,
+                        // 否则 buffered 永久大于真实存量 → 延迟线实际长度悄悄变短, 而水位读数还正常
+                        buffered -= (b.Len - b.Offset);
+                        b.Offset = b.Len;
+                    }
                     if (b.Offset >= b.Len)
                     {
                         blocks.Dequeue();

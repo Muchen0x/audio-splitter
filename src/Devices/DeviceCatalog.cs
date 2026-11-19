@@ -87,10 +87,11 @@ namespace StereoSplitter.Devices
         {
             try
             {
-                var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                string id = def.ID;
-                try { def.Dispose(); } catch { }
-                return id;
+                // F-43: 用 using 保证 ID 读取抛异常时 MMDevice 仍被释放
+                using (var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia))
+                {
+                    return def == null ? null : def.ID;
+                }
             }
             catch { return null; }
         }
@@ -99,10 +100,11 @@ namespace StereoSplitter.Devices
         {
             try
             {
-                var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                string name = SafeName(def);
-                try { def.Dispose(); } catch { }
-                return name;
+                // F-43: 同上, SafeName 之外也用 using 兜住释放
+                using (var def = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia))
+                {
+                    return SafeName(def);
+                }
             }
             catch { return "(未知)"; }
         }
