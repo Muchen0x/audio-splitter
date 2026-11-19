@@ -18,27 +18,34 @@ jobs:
       - name: Build (Release)
         run: dotnet build StereoSplitter.csproj -c Release --nologo
 
-      - name: Route selftest (16 assertions, exit code gate)
+      - name: Route selftest (exit code gate)
         shell: pwsh
         run: |
           & ./bin/Release/net48/SplitterGUI.exe --selftest
           if ($LASTEXITCODE -ne 0) {
+            if ($LASTEXITCODE -eq 3) {
+              # F-26: report write failed - any log on disk is stale, do not dump it.
+              Write-Host "::error::selftest report write failed (exit 3); on-disk log is stale"
+              exit 3
+            }
             Write-Host "::error::selftest failed (exit $LASTEXITCODE)"
             if (Test-Path ./bin/Release/net48/log/selftest-routing.txt) {
               Get-Content ./bin/Release/net48/log/selftest-routing.txt | ForEach-Object { Write-Host $_ }
             }
             exit $LASTEXITCODE
           }
-          Write-Host "selftest passed"
 
       - name: Verify embedded NAudio (single-file distribution must not break)
         shell: pwsh
         run: |
           $exe = "./bin/Release/net48/SplitterGUI.exe"
           if (-not (Test-Path $exe)) { Write-Host "::error::exe missing"; exit 1 }
-          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($exe))
-          if (-not $text.Contains("NAudio.Core.dll")) {
-            Write-Host "::error::NAudio.Core.dll resource name missing - single-file fallback broken"
+          # F-29: inspect the assembly manifest, not raw ASCII bytes. Assert BOTH dlls.
+          $asm = [System.Reflection.Assembly]::ReflectionOnlyLoadFrom((Resolve-Path $exe))
+          $r = $asm.GetManifestResourceNames()
+          Write-Host ("embedded: " + ($r -join ', '))
+          if ($r -notcontains 'NAudio.Core.dll' -or $r -notcontains 'NAudio.Wasapi.dll') {
+            Write-Host "::error::NAudio.Core.dll / NAudio.Wasapi.dll resource missing - single-file fallback broken"
             exit 1
           }
-          Write-Host "embedded NAudio resource present"
+          Write-Host "embedded NAudio resources present (Core + Wasapi)"

@@ -2,17 +2,30 @@
 setlocal
 cd /d "%~dp0"
 
-echo [1/3] build + verify embedded resources...
+echo [1/4] build + verify embedded resources...
 call build.cmd
-if errorlevel 1 exit /b 1
-
-echo [2/3] check for uncommitted source changes...
-git diff --quiet -- "*.cs" "*.csproj" build.cmd
 if errorlevel 1 (
-    echo   WARNING: source has uncommitted changes - the exe does not match the repo.
+    echo   VERIFY FAILED: build.cmd failed.
+    exit /b 1
 )
 
-echo [3/3] log folder size...
+echo [2/4] route selftest (exit code gate)...
+bin\Release\net48\SplitterGUI.exe --selftest
+if errorlevel 1 (
+    echo   VERIFY FAILED: selftest returned non-zero (see bin\Release\net48\log\selftest-routing.txt).
+    exit /b 1
+)
+
+echo [3/4] source tree must match HEAD (no untracked/staged/unstaged source changes)...
+rem F-28: porcelain covers untracked + staged + unstaged; git diff --quiet alone missed
+rem untracked files (e.g. a new PcmRingBuffer.cs that the SDK still compiles).
+for /f "delims=" %%L in ('git status --porcelain -- "*.cs" "*.csproj" build.cmd verify.cmd .github\workflows\build.yml"') do (
+    echo   VERIFY FAILED: source differs from repo (exe may not match HEAD):
+    echo     %%L
+    exit /b 1
+)
+
+echo [4/4] log folder size...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$f=Get-ChildItem log\*.log -ErrorAction SilentlyContinue; $n=($f | Measure-Object -Property Length -Sum).Sum; if (-not $n) { $n=0 }; Write-Host ('  log/ ' + $f.Count + ' files, ' + [math]::Round($n/1MB,1) + ' MB')"
 
 echo.

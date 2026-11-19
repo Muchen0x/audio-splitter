@@ -43,9 +43,13 @@
                       Condition="Exists('$(PkgNAudio_Wasapi)\lib\netstandard2.0\NAudio.Wasapi.dll')" />
   </ItemGroup>
 
+  <!-- F-29: 资源缺失必须是构建错误，不再是沉默跳过/只警告。
+       两个 dll 都要断言: 少一个，单文件分发在缺同目录 dll 的环境就会加载失败。 -->
   <Target Name="CheckEmbeddedAudioResources" AfterTargets="Build">
-    <Warning Condition="'$(PkgNAudio_Core)' == ''"
-             Text="NAudio 包路径未解析，内嵌资源将缺失（单文件分发会失效）" />
+    <Error Condition="'$(PkgNAudio_Core)' == '' Or !Exists('$(PkgNAudio_Core)\lib\netstandard2.0\NAudio.Core.dll')"
+           Text="NAudio.Core.dll 未解析或未找到（单文件分发的内嵌资源缺失）: $(PkgNAudio_Core)" />
+    <Error Condition="'$(PkgNAudio_Wasapi)' == '' Or !Exists('$(PkgNAudio_Wasapi)\lib\netstandard2.0\NAudio.Wasapi.dll')"
+           Text="NAudio.Wasapi.dll 未解析或未找到（单文件分发的内嵌资源缺失）: $(PkgNAudio_Wasapi)" />
   </Target>
 
 </Project>

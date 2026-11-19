@@ -22,51 +22,102 @@ namespace StereoSplitter
         static readonly StringBuilder sb = new StringBuilder();
         static int failed;
 
+        /// <summary>
+        /// 运行全部用例。F-26: 每个用例独立包裹 —— 单个用例抛异常记为失败并继续跑完其余用例,
+        /// 绝不因一个异常跳过整份报告; 报告在 finally 中写出(含中止位置), 用临时文件原子替换,
+        /// 写盘失败返回独立非零码 3 (与"用例失败"的 1 区分), 让 CI/人能立刻发现报告没落地。
+        /// </summary>
         public static int Run(string logDir)
         {
             sb.Length = 0;
             failed = 0;
+            CaseCount = 0;   // 每次 Run 从 0 计 (之前跨调用累加, 报告项数会虚高)
 
-            CaseTwoLanesTwoDevices();
-            CaseTwoLanesOneDevice();
-            CaseThreeDevicesShareClock();
-            CaseSurroundThreeDevices();
-            CaseSurroundOneDevice();
-            CaseTwoPointOne();
-            CaseMono();
-            CaseStereoFromSurroundSource();
-            CaseVolumeAndMute();
-            CaseMergeSameDevice();
-            CaseMergeVolumeOwnership();
-            CaseFlattenVolumeRules();
-            CaseSparsePhysSlots();
-            CaseTailAndEmptySlots();
-            CaseMergeLoudnessWhenNoEndpoint();
-            CaseDelayConflict();
-            CaseValidateWarnings();
-            CaseIniRoundTrip();
-            CaseLaneSettingsCodecBounds();
-            CaseCompileUsesFreshSinkVolume();
-            CaseCommandLineParsing();
-            CaseDriftProviderOverfill();
-            CasePcmRingBufferShortRead();
-            CaseClockGroupAlignment();
-            CaseLifecycleGate();
-            CaseLogClassify();
-            CaseSessionLogClear();
+            var cases = new System.Action[]
+            {
+                CaseTwoLanesTwoDevices,
+                CaseTwoLanesOneDevice,
+                CaseThreeDevicesShareClock,
+                CaseSurroundThreeDevices,
+                CaseSurroundOneDevice,
+                CaseTwoPointOne,
+                CaseMono,
+                CaseStereoFromSurroundSource,
+                CaseVolumeAndMute,
+                CaseMergeSameDevice,
+                CaseMergeVolumeOwnership,
+                CaseFlattenVolumeRules,
+                CaseSparsePhysSlots,
+                CaseTailAndEmptySlots,
+                CaseMergeLoudnessWhenNoEndpoint,
+                CaseDelayConflict,
+                CaseValidateWarnings,
+                CaseIniRoundTrip,
+                CaseLaneSettingsCodecBounds,
+                CaseCompileUsesFreshSinkVolume,
+                CaseCommandLineParsing,
+                CaseTrimWindowWatchdog,
+                CaseDriftProviderOverfill,
+                CasePcmRingBufferShortRead,
+                CaseClockGroupAlignment,
+                CaseLifecycleGate,
+                CaseLogClassify,
+                CaseSessionLogClear
+            };
+
+            int aborted = 0;
+            for (int i = 0; i < cases.Length; i++)
+            {
+                try { cases[i](); }
+                catch (Exception ex)
+                {
+                    // 用例抛异常 → 记一条失败, 继续跑后面的 (F-26: 不再让一个异常吞掉整份报告)
+                    failed++;
+                    aborted++;
+                    sb.AppendLine("   FAIL 用例抛出未捕获异常: " +
+                        (ex == null ? "(null)" : ex.GetType().Name + ": " + ex.Message));
+                }
+            }
 
             sb.AppendLine();
+            if (aborted > 0)
+                sb.AppendLine("中止: " + aborted + " 个用例抛出异常 (其余用例已继续执行)");
             sb.AppendLine(failed == 0 ? "结果: 全部通过 (" + CaseCount + " 项)" : "结果: " + failed + " 项失败 / " + CaseCount + " 项");
             string text = sb.ToString();
+            try { Console.Write(text); } catch { }
+
+            // F-26: 报告必须写出; 用临时文件 + Move 原子替换, 避免并发自检留下半截文件。
+            // 写盘失败返回独立码 3 —— 这正是历史上 "exit=2 但日志停在旧内容" 误诊的根源。
+            int reportCode = WriteReport(logDir, text);
+            if (reportCode != 0) return reportCode;
+            return failed == 0 ? 0 : 1;
+        }
+
+        /// <summary>原子写自检报告。返回 0=成功, 3=写盘失败。</summary>
+        static int WriteReport(string logDir, string text)
+        {
+            string tmp = null;
             try
             {
                 if (string.IsNullOrEmpty(logDir)) logDir = AppDomain.CurrentDomain.BaseDirectory;
                 Directory.CreateDirectory(logDir);
-                File.WriteAllText(Path.Combine(logDir, "selftest-routing.txt"), text, Encoding.UTF8);
+                string path = Path.Combine(logDir, "selftest-routing.txt");
+                tmp = path + ".tmp." + System.Diagnostics.Process.GetCurrentProcess().Id.ToString();
+                File.WriteAllText(tmp, text, new UTF8Encoding(false));
+                if (File.Exists(path)) File.Delete(path);
+                File.Move(tmp, path);
+                tmp = null;
+                return 0;
             }
-            catch { }
-            try { Console.Write(text); } catch { }
-            return failed == 0 ? 0 : 1;
+            catch (Exception ex)
+            {
+                try { Console.WriteLine("[严重] 自检报告写入失败: " + ex.Message); } catch { }
+                return 3;
+            }
+            finally
+            {
+                if (tmp != null) { try { if (File.Exists(tmp)) File.Delete(tmp); } catch { } }
+            }
         }
 
         static int CaseCount;
@@ -655,6 +706,48 @@ namespace StereoSplitter
             Check("--setdefault 缺值拒绝", !Program.TryParseArgs(new[] { "--setdefault" }, out p));
         }
 
+        /// <summary>
+        /// F-37: 削峰看门狗必须是真实 60 秒滚动窗口。8 次削峰集中在 60s 内应触发;
+        /// 但相邻间隔都&lt;60s、总跨度数分钟不应触发(旧实现会误报并被它触发整链路重建)。
+        /// 覆盖 Environment.TickCount 回绕。
+        /// </summary>
+        static void CaseTrimWindowWatchdog()
+        {
+            Begin("削峰窗口看门狗 (F-37)");
+
+            // ① 真实 60s 内 8 次 (间隔 5s) → 第 8 次触发
+            int start = 0, burst = 0, trippedAt = -1;
+            for (int k = 1; k <= 8; k++)
+            {
+                int now = k * 5000;   // 5s 间隔, 跨度 35s
+                if (MainForm.BurstWindowTick(now, ref start, ref burst)) { trippedAt = k; break; }
+            }
+            Check("60s 内 8 次触发", trippedAt == 8);
+
+            // ② 相邻间隔都 <60s 但总跨度数分钟 (50s 间隔) → 窗口滚动, 到不了 8
+            start = 0; burst = 0; bool everTripped = false;
+            for (int k = 1; k <= 8; k++)
+            {
+                int now = k * 50000;   // 50s 间隔, 跨度 400s, 但相邻都<60s
+                if (MainForm.BurstWindowTick(now, ref start, ref burst)) everTripped = true;
+            }
+            Check("数分钟但相邻<60s 不触发", !everTripped);
+
+            // ③ 窗口过期后重新累积: 7 次在 60s 内 + 休息 2 分钟 + 1 次 → 不触发(新窗口只有 1 次)
+            start = 0; burst = 0;
+            for (int k = 1; k <= 7; k++) MainForm.BurstWindowTick(k * 3000, ref start, ref burst);
+            bool afterRest = MainForm.BurstWindowTick(7 * 3000 + 120000, ref start, ref burst);
+            Check("窗口过期后重新累积不触发", !afterRest && burst == 1);
+
+            // ④ TickCount 回绕: 起点接近 int.Max, now 跨到负数, 小间隔仍在窗口内
+            start = int.MaxValue - 3000; burst = 0;
+            MainForm.BurstWindowTick(start, ref start, ref burst);   // 第一次设起点
+            bool afterWrap = false;
+            for (int k = 1; k <= 8; k++)
+                if (MainForm.BurstWindowTick(unchecked(int.MinValue + k * 1000), ref start, ref burst)) afterWrap = true;
+            Check("TickCount 回绕后仍按真实间隔判定", afterWrap);
+        }
+
         // ---------------------------------------------------------------- 工具
 
         /// <summary>
@@ -1179,11 +1272,16 @@ namespace StereoSplitter
             sb.AppendLine((ok ? "   ok   " : "   FAIL ") + what);
         }
 
-        /// <summary>矩阵某一行是否等于给定的系数序列。</summary>
+        /// <summary>
+        /// 矩阵某一行是否等于给定的系数序列。F-27: 严格校验列数 —— 旧实现只遍历
+        /// "已有前缀"(`s &lt; row.Length &amp;&amp; s &lt; m.GetLength(1)`), 矩阵缺列时前缀匹配就假通过。
+        /// </summary>
         static bool Matrix(float[,] m, params float[] row)
         {
             if (m == null) return false;
-            for (int s = 0; s < row.Length && s < m.GetLength(1); s++)
+            if (m.GetLength(0) < 1) return false;
+            if (m.GetLength(1) != row.Length) return false;   // 列数必须完全一致
+            for (int s = 0; s < row.Length; s++)
                 if (Math.Abs(m[0, s] - row[s]) > 1e-6f) return false;
             return true;
         }

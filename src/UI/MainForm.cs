@@ -185,13 +185,32 @@ namespace StereoSplitter
         // 判据③: provider 自己削峰 (丢旧数据压回目标) 属于可自愈的瞬态 —— 单次不算故障。
         // 但 60 秒内反复削峰, 说明设备消费速率真的不够, 这时才值得拆链路重建。
         const int TrimBurstLimit = 8;           // 削峰次数上限 (持续不对时约 10 秒触达)
+        const int TrimWindowMs = 60000;         // F-37: 判据③ 的真实滚动窗口跨度
         const int TrimGraceMs = 15000;          // 削峰后这段时间内不用"触顶+净涨"判死
         long[] watchTrims = new long[0];        // 判据③ 上次看到的削峰计数 (-1 = 未对齐)
-        int[] watchTrimBurst = new int[0];      // 窗口内削峰次数
-        int[] watchTrimLastTick = new int[0];   // 上次削峰时刻
+        int[] watchTrimBurst = new int[0];      // 当前 60 秒窗口内削峰次数
+        // F-37: 这是"窗口起点"而非"上次削峰时刻" —— 只有从起点算起超过 60 秒才滚动重置,
+        // 否则 8 次分布在数分钟(相邻间隔都 <60s)也会被误判成"60 秒内 8 次"。
+        int[] watchTrimLastTick = new int[0];   // 当前削峰窗口起点 (0 = 未开始)
         int[] watchImbalanceTick = new int[0];  // 判据① 首次触顶时刻
         int[] watchImbalanceReg = new int[0];   // 判据① 首次触顶时的水位
         int[] watchImbFloorTick = new int[0];   // 判据② 越线起始时刻
+
+        /// <summary>
+        /// F-37: 削峰滚动窗口判定 (纯函数, 供自检)。返回本次削峰后窗口内次数是否达到触发阈值。
+        /// <paramref name="windowStart"/> 是窗口起点(0=未开始), 超时才整窗重置 —— 与"距上次削峰"
+        /// 不同, 后者会让相隔数分钟但每次间隔都&lt;60s 的 8 次削峰误触发。unchecked 支持 TickCount 回绕。
+        /// </summary>
+        internal static bool BurstWindowTick(int now, ref int windowStart, ref int burst)
+        {
+            if (windowStart == 0 || unchecked(now - windowStart) > TrimWindowMs)
+            {
+                burst = 0;
+                windowStart = now;   // 新窗口从本次削峰开始
+            }
+            burst++;
+            return burst >= TrimBurstLimit;
+        }
         int lastSinkProbeTick;                  // 输出端点存活探测 (30 秒一次)
         bool captureIdleLogged;      // "捕获源无数据"只提示一次
         int captureIdleSince;

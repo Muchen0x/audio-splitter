@@ -569,14 +569,19 @@ namespace StereoSplitter
                 else if (trims > watchTrims[i])
                 {
                     watchTrims[i] = trims;
-                    if (watchTrimLastTick[i] == 0 || unchecked(now - watchTrimLastTick[i]) > 60000)
-                        watchTrimBurst[i] = 0;
-                    watchTrimBurst[i]++;
-                    watchTrimLastTick[i] = now;
-                    if (watchTrimBurst[i] >= TrimBurstLimit)
+                    // F-37: 真正的 60 秒滚动窗口 —— 判定抽到 BurstWindowTick 纯函数(供自检)。
+                    // 旧实现用"距上次削峰是否超 60s"清零, 导致 8 次分布在数分钟(每次间隔都<60s)
+                    // 也触发, 日志却谎称"60 秒内 8 次"。窗口起点记录真实跨度用于日志。
+                    int windowStart = watchTrimLastTick[i];
+                    int burst = watchTrimBurst[i];
+                    bool tripped = BurstWindowTick(now, ref windowStart, ref burst);
+                    watchTrimLastTick[i] = windowStart;
+                    watchTrimBurst[i] = burst;
+                    if (tripped)
                     {
-                        OnSinkStalled(i, "「" + SinkLabel(eng, i) + "」持续跟不上：60 秒内削峰 " +
-                            watchTrimBurst[i] + " 次，水位反复堆到目标 " + targetMs +
+                        int spanSec = (int)(unchecked(now - windowStart) / 1000);
+                        OnSinkStalled(i, "「" + SinkLabel(eng, i) + "」持续跟不上：" + spanSec +
+                            " 秒内削峰 " + burst + " 次，水位反复堆到目标 " + targetMs +
                             "ms 的 2 倍——该设备消费速率严重低于捕获速率");
                         return;
                     }
