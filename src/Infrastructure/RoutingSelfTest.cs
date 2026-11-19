@@ -43,6 +43,7 @@ namespace StereoSplitter
             CaseValidateWarnings();
             CaseIniRoundTrip();
             CaseDriftProviderOverfill();
+            CasePcmRingBufferShortRead();
             CaseLogClassify();
             CaseSessionLogClear();
 
@@ -479,6 +480,129 @@ namespace StereoSplitter
             Check("水位压在 " + maxMs + "ms ≤ 目标 2 倍", maxMs <= targetMs * 2);
             Check("削峰后水位贴近目标 (" + p.BufferedMs + "ms)", Math.Abs(p.BufferedMs - targetMs) <= 25);
             Check("削峰后仍非静音 (RMS " + lastRms.ToString("0.00") + ")", lastRms > 0.05);
+        }
+
+        /// <summary>
+        /// F-09 地基回归: BufferedWaveProvider 默认 ReadFully=true 会把"没读到"补成
+        /// 一段全零并返回请求的完整长度 —— Fill() 于是把补零当真实音频帧灌进小环,
+        /// Discard() 于是把"想丢的量"当成"真丢掉的量"记账。这里用哨兵字节和 FIFO
+        /// 序号把这两类失真直接钉死, 不需要声卡。
+        /// </summary>
+        static void CasePcmRingBufferShortRead()
+        {
+            Begin("PcmRingBuffer 短读语义与 Discard 边界 (F-09)");
+            const int sr = 48000, ch = 2;
+            const int frameBytes = ch * 4;
+            var fmt = NAudio.Wave.WaveFormat.CreateIeeeFloatWaveFormat(sr, ch);
+            var buf = new PcmRingBuffer(fmt, 1000);
+            var rd = new byte[64 * frameBytes];
+
+            // ① 空缓冲: 返回 0, 且绝不在目标数组尾部补零 (修复前会返回 512 且整片清零)
+            FillSentinel(rd);
+            int got = buf.Read(rd, 0, rd.Length);
+            Check("空缓冲 Read 返回 0 (实测 " + got + ")", got == 0);
+            Check("空缓冲不补零 (哨兵完好)", SentinelIntact(rd, 0));
+            Check("空缓冲 Discard 返回 0", buf.Discard(16 * frameBytes) == 0);
+
+            // ② 少于请求量: 只返回真实存量, 内容正确, 尾部不补零
+            buf.Clear(); FillSentinel(rd);
+            var ten = MakeFrames(10, ch, 1f);
+            buf.AddSamples(ten, 0, ten.Length);
+            got = buf.Read(rd, 0, 64 * frameBytes);
+            Check("短读返回真实存量 (10 帧 = " + 10 * frameBytes + " 字节, 实测 " + got + ")", got == 10 * frameBytes);
+            Check("短读内容为真实写入值", FramesMatch(rd, 10, ch, 1f));
+            Check("短读尾部不补零 (哨兵完好)", SentinelIntact(rd, 10 * frameBytes));
+            Check("短读后缓冲清空", buf.BufferedBytes == 0);
+
+            // ③ 请求少于存量: 足额返回且剩下的数据连续、不串位
+            buf.Clear(); FillSentinel(rd);
+            var twenty = MakeFrames(20, ch, 100f);
+            buf.AddSamples(twenty, 0, twenty.Length);
+            got = buf.Read(rd, 0, 5 * frameBytes);
+            Check("请求少于存量时足额返回", got == 5 * frameBytes);
+            Check("读到的前 5 帧序号正确", FramesMatch(rd, 5, ch, 100f));
+            Check("剩余 15 帧", buf.BufferedBytes == 15 * frameBytes);
+            var rest = new byte[15 * frameBytes];
+            int gotRest = buf.Read(rest, 0, rest.Length);
+            Check("余下数据序号连续 (无补零插入导致的错位)",
+                gotRest == 15 * frameBytes && FramesMatch(rest, 15, ch, 105f));
+
+            // ④ Discard 大于 / 等于 / 小于存量, 以及跨 scratch 分块的大额夹取
+            buf.Clear(); buf.AddSamples(ten, 0, ten.Length);
+            Check("Discard 请求 > 存量: 只返回实际存量",
+                buf.Discard(64 * frameBytes) == 10 * frameBytes);
+            Check("... 且缓冲清空", buf.BufferedBytes == 0);
+
+            buf.Clear(); buf.AddSamples(ten, 0, ten.Length);
+            Check("Discard 请求 = 存量: 返回全额", buf.Discard(10 * frameBytes) == 10 * frameBytes);
+            Check("... 且缓冲清空", buf.BufferedBytes == 0);
+
+            buf.Clear(); buf.AddSamples(twenty, 0, twenty.Length);
+            Check("Discard 请求 < 存量: 返回请求量", buf.Discard(7 * frameBytes) == 7 * frameBytes);
+            Check("... 剩余 13 帧", buf.BufferedBytes == 13 * frameBytes);
+            var after = new byte[13 * frameBytes]; FillSentinel(after);
+            int gotAfter = buf.Read(after, 0, after.Length);
+            Check("... 丢的是最旧数据, 余下仍按 FIFO 顺序",
+                gotAfter == 13 * frameBytes && FramesMatch(after, 13, ch, 107f));
+
+            buf.Clear();
+            var big = MakeFrames(3000, ch, 1f);       // 24000 字节 > 3 个 scratch 分块
+            buf.AddSamples(big, 0, big.Length);
+            Check("大额 Discard 夹取生效且跨分块累计正确",
+                buf.Discard(40000) == 3000 * frameBytes && buf.BufferedBytes == 0);
+
+            // ⑤ 环绕回卷: 反复写读让内部读写游标绕圈, 校验顺序与内容始终正确
+            var wrap = new PcmRingBuffer(fmt, 20);   // 20ms ≈ 960 帧, 40 轮必然多次回卷
+            var wrapRd = new byte[100 * frameBytes];
+            bool orderOk = true;
+            for (int round = 0; round < 40; round++)
+            {
+                float start = round * 100f + 1f;
+                var block = MakeFrames(100, ch, start);
+                wrap.AddSamples(block, 0, block.Length);
+                FillSentinel(wrapRd);
+                int g = wrap.Read(wrapRd, 0, wrapRd.Length);
+                if (g != 100 * frameBytes || !FramesMatch(wrapRd, 100, ch, start) ||
+                    !SentinelIntact(wrapRd, 100 * frameBytes))
+                {
+                    orderOk = false;
+                    break;
+                }
+            }
+            Check("40 轮写读跨环形回卷仍保持 FIFO 且不补零", orderOk);
+        }
+
+        /// <summary>每帧各通道写入同一个可识别的序号值 (start + f), 便于校验 FIFO 顺序。</summary>
+        static byte[] MakeFrames(int frames, int ch, float start)
+        {
+            var b = new byte[frames * ch * 4];
+            for (int f = 0; f < frames; f++)
+            {
+                var four = BitConverter.GetBytes(start + f);
+                for (int c = 0; c < ch; c++)
+                    Buffer.BlockCopy(four, 0, b, (f * ch + c) * 4, 4);
+            }
+            return b;
+        }
+
+        static bool FramesMatch(byte[] b, int frames, int ch, float start)
+        {
+            for (int f = 0; f < frames; f++)
+                for (int c = 0; c < ch; c++)
+                    if (Math.Abs(BitConverter.ToSingle(b, (f * ch + c) * 4) - (start + f)) > 1e-4f)
+                        return false;
+            return true;
+        }
+
+        static void FillSentinel(byte[] b)
+        {
+            for (int i = 0; i < b.Length; i++) b[i] = 0xCC;
+        }
+
+        static bool SentinelIntact(byte[] b, int from)
+        {
+            for (int i = from; i < b.Length; i++) if (b[i] != 0xCC) return false;
+            return true;
         }
 
         /// <summary>
