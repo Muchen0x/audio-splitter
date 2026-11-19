@@ -52,6 +52,9 @@ namespace StereoSplitter
         double phase;                     // 帧小数相位, 每帧推进一次
         double smoothedTotal;
         volatile int smoothedMs;
+        // 组级削峰会在**另一成员的音频线程**调用 GroupTrim 并写 smoothedTotal/smoothedMs。
+        // double 在 32 位 CLR 上不是原子读写的, 必须锁住这一对值 (约 21ms 一次, 开销可忽略)。
+        readonly object smoothSync = new object();
         int updateCounter;                // 帧计数
         int minTotalSinceStatus = int.MaxValue;
         long underrunSamples;
@@ -115,6 +118,8 @@ namespace StereoSplitter
             }
             else fixedRatio = 1.0;
             ratio = (float)fixedRatio;
+            // 登记到共享组, 组级削峰才能找到本路; 单路重建出的新 provider 会覆盖旧引用。
+            if (group != null) group.RegisterMember(memberId, this);
         }
 
         public void SetMode(int newMode, int fixedPpm)
@@ -157,6 +162,9 @@ namespace StereoSplitter
                 return src.BufferedBytes / (4 * channels) + c;
             }
         }
+
+        /// <summary>小环 + 上游缓冲的真实总帧数, 供组级削峰计算各成员的可用余量。</summary>
+        internal int BufferedFrames { get { return FramesBuffered; } }
 
         /// <summary>时钟环稳态目标 (ms)。看门狗用它算相对阈值, 而不是比一个写死的毫秒数。</summary>
         public int TargetMs { get { return MsOf(targetSamples, src.WaveFormat.SampleRate); } }
@@ -416,12 +424,18 @@ namespace StereoSplitter
 
             int sr = src.WaveFormat.SampleRate;
 
-            // 平滑值所有模式都更新: 日志与告警统一用"调节水位"这个量
-            smoothedTotal += 0.01 * (total - smoothedTotal);
-            smoothedMs = MsOf(smoothedTotal, sr);
+            // 平滑值所有模式都更新: 日志与告警统一用"调节水位"这个量。
+            // 取本地副本 st, 后面不再直接读字段 (组级削峰可能从别的线程改它)。
+            double st;
+            lock (smoothSync)
+            {
+                smoothedTotal += 0.01 * (total - smoothedTotal);
+                smoothedMs = MsOf(smoothedTotal, sr);
+                st = smoothedTotal;
+            }
 
             // 事件型诊断①: 水位掉到目标 30% 以下 (与校正模式无关)
-            if (smoothedTotal < targetSamples * 0.3)
+            if (st < targetSamples * 0.3)
             {
                 if (!lowWarned && WarnAllowed(ref lastLowWarnTick))
                 {
@@ -430,7 +444,7 @@ namespace StereoSplitter
                         "ms (低于 30%)，可能出现欠载断音");
                 }
             }
-            else if (lowWarned && smoothedTotal >= targetSamples * 0.6)
+            else if (lowWarned && st >= targetSamples * 0.6)
             {
                 lowWarned = false;
                 Report("[状态] 缓冲水位已恢复: " + smoothedMs + "ms / 目标 " + MsOf(targetSamples, sr) + "ms");
@@ -446,7 +460,7 @@ namespace StereoSplitter
             // 组内插值方向始终一致 -> 消除稳态偏音。
             if (group != null)
             {
-                group.Update(memberId, smoothedTotal);
+                group.Update(memberId, st);
                 ratio = group.Ratio;
             }
         }
@@ -469,6 +483,22 @@ namespace StereoSplitter
             int dropFrames = total - keep;
             if (dropFrames <= 0) return 0;
 
+            int sr = src.WaveFormat.SampleRate;
+
+            // F-01: 共享时钟组禁止独立削峰。只丢一路会让同组相关声对产生不可恢复的
+            // 相对跳变 (共享 ratio 只能保证此后同速, 补不回已经丢掉的那段时间)。
+            // 改由组统一决定丢弃量, 所有活跃成员一起丢同样帧数; 独立组(或组内只剩
+            // 自己)仍走下面的单路削峰, 行为完全不变。
+            if (group != null && group.SharedGroupActive)
+            {
+                int unified = group.TrimGroup(dropFrames, keep);
+                if (unified <= 0) return 0;
+                if (WarnAllowed(ref lastTrimWarnTick))
+                    Report("[提示] 共享组缓冲堆积到 " + MsOf(total, sr) + "ms (目标 " + MsOf(targetSamples, sr) +
+                        "ms)，全组同步丢弃 " + MsOf(unified, sr) + "ms 最旧数据以保住声道时间对齐");
+                return unified;
+            }
+
             int dropped = src.Discard(dropFrames * 4 * channels) / (4 * channels);
             if (dropped <= 0) return 0;
 
@@ -477,15 +507,40 @@ namespace StereoSplitter
 
             // 平滑水位直接对齐到削峰后的真值: 否则它还要约 2 秒才跟上, 期间 ratio 一直贴在
             // +1% 上限, 看门狗的"触顶 + 净涨"判据会把这次自愈当成设备故障再拆一次链路。
-            smoothedTotal = keep;
-            int sr = src.WaveFormat.SampleRate;
-            smoothedMs = MsOf(smoothedTotal, sr);
+            lock (smoothSync)
+            {
+                smoothedTotal = keep;
+                smoothedMs = MsOf(smoothedTotal, sr);
+            }
 
             if (WarnAllowed(ref lastTrimWarnTick))
                 Report("[提示] 缓冲堆积到 " + MsOf(total, sr) + "ms (目标 " + MsOf(targetSamples, sr) +
                     "ms)，已丢弃 " + MsOf(dropped, sr) + "ms 最旧数据压回 " + MsOf(keep, sr) +
                     "ms；偶发属设备短暂卡顿，频繁出现请调高「延迟」档位");
             return dropped;
+        }
+
+        /// <summary>
+        /// 由 ClockGroup.TrimGroup 调用 (可能来自**另一个成员**的音频线程), 所以只碰自己的
+        /// 缓冲, 且 smoothedTotal/smoothedMs 必须在 smoothSync 内改。各成员丢的帧数相同,
+        /// 才不会破坏同一条捕获流的相对时间轴。
+        /// </summary>
+        internal void GroupTrim(int frames)
+        {
+            if (frames <= 0) return;
+            int dropped = src.Discard(frames * 4 * channels) / (4 * channels);
+            if (dropped <= 0) return;
+
+            System.Threading.Interlocked.Increment(ref trims);
+            lastTrimTick = Environment.TickCount;
+            int sr = src.WaveFormat.SampleRate;
+            lock (smoothSync)
+            {
+                // 对齐到本路削峰后的真实水位, 而不是发起者算出的 keep: 各成员堆积量不同,
+                // 用各自的真值才不会让看门狗把"自愈"误判成"触顶 + 净涨"的设备故障。
+                smoothedTotal = FramesBuffered;
+                smoothedMs = MsOf(smoothedTotal, sr);
+            }
         }
 
         bool WarnAllowed(ref int lastTick)

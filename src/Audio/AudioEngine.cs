@@ -646,6 +646,10 @@ namespace StereoSplitter
                         {
                             endpointGone = true;
                             error = "端点已不在活动设备列表中（可能已拔出或被禁用）";
+                            // F-04: 以前在这里直接返回, 捕获回调会继续对死管线做混音/写缓冲,
+                            // 旧 WasapiOut 挂着不拆, 故障前的 holding 与 err 也一直留在组里。
+                            // 现在先暂停 Feed、拆掉无效管线、把成员摘出共享校正。
+                            rt.SuspendForMissingEndpoint();
                             return false;
                         }
                         dev = enumerator.GetDevice(rt.Spec.DeviceId);
@@ -654,6 +658,20 @@ namespace StereoSplitter
                 catch (Exception ex)
                 {
                     error = "打开端点失败: " + ex.Message;
+                    return false;
+                }
+
+                // F-02: 共享时钟组的恢复单位必须是"组", 不能只重建这一路。
+                // 单路重建只等新管自己的预缓冲 (含额外的 PrePullGuardMs), 健康旧路已在
+                // 低水位稳态; 两路随后共享同一 ratio, 水位差没有独立控制量能消除。
+                // 返回 false 且 endpointGone=false → UI 走整链路重建, 复用 StartCore 已
+                // 验证过的"统一预缓冲 + TrimToFill + 一起起播"对齐路径。
+                // 独立组 (MemberCount==1) 仍走下面的单路重建, 其它路不断音。
+                if (rt.Group != null && rt.Group.MemberCount > 1)
+                {
+                    if (dev != null && !ReferenceEquals(dev, rt.Device)) { try { dev.Dispose(); } catch { } }
+                    rt.SuspendForMissingEndpoint();
+                    error = "共享时钟组需整组对齐（升级为整链路重建）";
                     return false;
                 }
 

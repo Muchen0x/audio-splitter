@@ -55,6 +55,10 @@ namespace StereoSplitter
         public int OutCh { get; private set; }
         public int FillBytes { get; private set; }
         public int DelayMs { get; private set; }
+        /// <summary>本路所属时钟组 (独立组也是一个只含自己的组, 不会为 null)。</summary>
+        public ClockGroup Group { get { return group; } }
+        /// <summary>本路在组内的成员编号, 供组级停用/激活使用。</summary>
+        public int MemberId { get { return memberId; } }
         public bool Healthy { get; set; }
         public bool ReachedFill { get { return Buffer != null && Buffer.BufferedBytes >= FillBytes; } }
 
@@ -217,7 +221,33 @@ namespace StereoSplitter
             {
                 try { oldDevice.Dispose(); } catch { }
             }
+            // 端点回归/重建起播后重新参与共享校正 (清掉停用期间可能残留的旧 err/holding)
+            if (group != null) { try { group.ActivateMember(memberId); } catch { } }
             return true;
+        }
+
+        /// <summary>
+        /// F-04: 确认端点已不在活动列表 / 共享组即将整组重建时调用。
+        /// 原先 RestartSink 在 Rebuild 之前直接返回, 于是捕获回调继续对一条死管线做
+        /// 延迟/混音/写缓冲, 旧 WasapiOut 一直挂着, 故障前的 holding 与 err 残留在组里
+        /// (健康成员被永久压低 6dB、共享 ratio 被离线旧误差带偏)。
+        /// 这里: 暂停 Feed 并等在途写入退出 → 拆掉无效输出管线 → 把成员摘出共享校正。
+        /// paused 保持 true, 直到 Rebuild 成功才复位; 重建失败重试时会再次调用本方法。
+        /// </summary>
+        public void SuspendForMissingEndpoint()
+        {
+            paused = true;
+            lock (feedSync) { }             // 等在途 Feed 退出
+            TeardownPipeline();             // 先断引用再 Stop/Dispose: 迟到事件会被识别
+            if (group != null)
+            {
+                try
+                {
+                    group.NotifyHolding(memberId, false);
+                    group.DeactivateMember(memberId);
+                }
+                catch { }
+            }
         }
 
         /// <summary>拆掉当前管线 (幂等), 供重建失败/退出时复用。调用方负责 paused 的置位。</summary>

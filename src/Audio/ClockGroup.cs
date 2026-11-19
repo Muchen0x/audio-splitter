@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 namespace StereoSplitter
 {
@@ -17,6 +18,12 @@ namespace StereoSplitter
     ///
     /// 线程安全: 各组员在各自采样线程调用 Update, 内部用锁保护。锁开销可忽略
     /// (每约 21ms 一次的短临界区)。
+    ///
+    /// 组级对齐 (F-01/F-04): 所有成员读的是同一条捕获流, 因此任何"只动一路"的操作
+    /// 都会永久破坏声道时间轴 —— 单路削峰丢掉 47ms 旧数据后, 共享 ratio 只能让两路
+    /// 此后同速消费, 补不回已有的相对跳变。所以组里要么一起丢相同帧数, 要么谁都别丢;
+    /// 端点缺失的成员还要从共享平均里摘出去, 免得它的旧误差带偏 ratio、旧 holding
+    /// 把健康成员一直压低 6dB。
     /// </summary>
     class ClockGroup
     {
@@ -28,7 +35,7 @@ namespace StereoSplitter
         const double MaxRatio = 0.01;        // ±1% (2026-11-18: 原 ±0.5%, 收窄触顶重建频率; 1%=17音分, 背景听音无感)
         const int WarnIntervalMs = 60000;
 
-        // 以下三个常量都是"每个成员"的基准值, 运行时按 MemberCount 归一:
+        // 以下三个常量都是"每个成员"的基准值, 运行时按活跃成员数归一:
         //   - 切换阈值: N 个成员各 21ms 调一次, 累计速度是 1 个成员的 N 倍 -> 阈值乘 N
         //   - 触顶告警: 同理乘 N
         //   - kp 过渡系数: 调用频率乘 N -> 系数除 N (保持约 1 秒过渡)
@@ -38,14 +45,23 @@ namespace StereoSplitter
         const double KpTransitionBase = 0.02;
 
         readonly object sync = new object();
+        // 组级削峰用独立的锁: TrimGroup 持它期间会调用各成员的 GroupTrim (各自持自己的
+        // smoothSync 和缓冲锁), 绝不能同时持 sync —— 否则与 UpdateRatio 的
+        // smoothSync -> sync 顺序形成环。active[] 用 Volatile 读, 就是为了让这里不碰 sync。
+        readonly object trimSync = new object();
         readonly double targetSamples;
         readonly int sampleRate;
         readonly Action<string> log;
 
         readonly double[] err = new double[MaxMembers];
-        // holding 状态跨线程读写: volatile 数组元素不能直接声明, 用 Interlocked 语义的
-        // bool 数组 + lock 已足够 (写入极稀疏, 读取在采样线程)
+        // holding 状态跨线程读写: volatile 数组元素不能直接声明, 用 lock 已足够
+        // (写入极稀疏, 读取在采样线程)
         readonly bool[] holding = new bool[MaxMembers];
+        // 1 = 参与共享平均与组级削峰, 0 = 端点缺失/已停用。用 int 是为了能对数组元素
+        // 做 Volatile.Read/Write, 使 TrimGroup 无需持有 sync。
+        readonly int[] active = new int[MaxMembers];
+        // 各成员执行组级削峰的 provider; 单路重建出全新 provider 后覆盖注册。
+        readonly DriftCorrectingProvider[] trimTargets = new DriftCorrectingProvider[MaxMembers];
         int members = 1;
 
         bool fastGain;
@@ -63,6 +79,7 @@ namespace StereoSplitter
             this.targetSamples = Math.Max(1, targetSamples);
             this.sampleRate = sampleRate;
             this.log = log;
+            for (int i = 0; i < MaxMembers; i++) Volatile.Write(ref active[i], 1);
         }
 
         /// <summary>组内成员数 (0 表示本组无成员, 供引擎判定是否独立组)。</summary>
@@ -76,6 +93,66 @@ namespace StereoSplitter
             }
         }
 
+        /// <summary>当前参与共享校正的成员数 (端点缺失的成员不计入)。</summary>
+        public int ActiveCount
+        {
+            get
+            {
+                lock (sync)
+                {
+                    int m = members < 1 ? 1 : members;
+                    int c = 0;
+                    for (int i = 0; i < m; i++) if (Volatile.Read(ref active[i]) != 0) c++;
+                    return c;
+                }
+            }
+        }
+
+        /// <summary>是否需要走组级路径 (至少两个活跃成员)。单成员组保留原单路行为。</summary>
+        public bool SharedGroupActive { get { return ActiveCount > 1; } }
+
+        /// <summary>provider 构造/单路重建后登记自己。重建会用新 provider 覆盖旧引用。</summary>
+        public void RegisterMember(int memberId, DriftCorrectingProvider provider)
+        {
+            if (memberId < 0 || memberId >= MaxMembers || provider == null) return;
+            lock (sync)
+            {
+                trimTargets[memberId] = provider;
+                Volatile.Write(ref active[memberId], 1);
+                err[memberId] = 0;
+                holding[memberId] = false;
+            }
+        }
+
+        /// <summary>
+        /// 端点缺失/输出停止: 把成员摘出共享校正。清 holding (否则健康成员被联动永久压低
+        /// 6dB)、把旧 err 归零并排除出平均 (否则最后一次误差会长期带偏 ratio)。
+        /// 重建起播后由 ActivateMember 恢复。
+        /// </summary>
+        public void DeactivateMember(int memberId)
+        {
+            if (memberId < 0 || memberId >= MaxMembers) return;
+            lock (sync)
+            {
+                Volatile.Write(ref active[memberId], 0);
+                holding[memberId] = false;
+                err[memberId] = 0;
+                clampStreak = 0;
+            }
+        }
+
+        public void ActivateMember(int memberId)
+        {
+            if (memberId < 0 || memberId >= MaxMembers) return;
+            lock (sync)
+            {
+                Volatile.Write(ref active[memberId], 1);
+                err[memberId] = 0;
+                holding[memberId] = false;
+                clampStreak = 0;
+            }
+        }
+
         /// <summary>由某个成员调用: 提交自己的平滑水位(帧), 重算共享 ratio。</summary>
         public void Update(int memberId, double mySmoothedTotal)
         {
@@ -83,10 +160,15 @@ namespace StereoSplitter
             double myErr = (mySmoothedTotal - targetSamples) / targetSamples;
             lock (sync)
             {
+                // 离线成员既不写 err, 也不该驱动控制器 (否则它的旧值仍会以 n 的形式参与归一)
+                if (Volatile.Read(ref active[memberId]) == 0) return;
                 err[memberId] = myErr;
-                int n = members < 1 ? 1 : members;
+                int m = members < 1 ? 1 : members;
+                int n = 0;
                 double sum = 0;
-                for (int i = 0; i < n; i++) sum += err[i];
+                for (int i = 0; i < m; i++)
+                    if (Volatile.Read(ref active[i]) != 0) { sum += err[i]; n++; }
+                if (n < 1) n = 1;
                 double avgErr = sum / n;
 
                 updates++;
@@ -138,16 +220,53 @@ namespace StereoSplitter
             lock (sync) holding[memberId] = isHolding;
         }
 
-        /// <summary>组内**其他成员**是否有在 holding — 本成员是否应降低联动增益。
+        /// <summary>组内**其他活跃成员**是否有在 holding — 本成员是否应降低联动增益。
         /// 注意查询范围必须限组内: 独立组恒为 false, 拼装拓扑下别的设备欠载不会把本路降 6dB。</summary>
         public bool OtherHolding(int memberId)
         {
             lock (sync)
             {
-                int n = members < 1 ? 1 : members;
-                for (int i = 0; i < n; i++)
-                    if (i != memberId && holding[i]) return true;
+                int m = members < 1 ? 1 : members;
+                for (int i = 0; i < m; i++)
+                    if (i != memberId && Volatile.Read(ref active[i]) != 0 && holding[i]) return true;
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// 组级同步削峰 (F-01): 所有活跃成员丢弃**相同帧数**, 保住同一捕获时间轴的相对关系。
+        /// 统一量夹到"最保守成员"的可用余量 —— 只要有一路会被削到 keep 以下, 全组就都不削,
+        /// 宁可留给看门狗判重建, 也不能把健康路削空或只削一部分。
+        /// 返回统一丢弃帧数 (0 = 未削)。调用方只在 SharedGroupActive 时进来。
+        /// </summary>
+        public int TrimGroup(int dropFrames, int keepFrames)
+        {
+            if (dropFrames <= 0) return 0;
+            lock (trimSync)
+            {
+                int m = members < 1 ? 1 : members;
+                if (m > MaxMembers) m = MaxMembers;
+                var ids = new int[m];
+                int cnt = 0;
+                for (int i = 0; i < m; i++)
+                {
+                    if (Volatile.Read(ref active[i]) == 0) continue;
+                    // 成员尚未注册 provider (构造窗口): 宁可整组不削, 也不能只削一部分
+                    if (trimTargets[i] == null) return 0;
+                    ids[cnt++] = i;
+                }
+                if (cnt < 2) return 0;
+
+                int d = dropFrames;
+                for (int k = 0; k < cnt; k++)
+                {
+                    int canDrop = trimTargets[ids[k]].BufferedFrames - keepFrames;
+                    if (canDrop < d) d = canDrop;
+                }
+                if (d <= 0) return 0;
+
+                for (int k = 0; k < cnt; k++) trimTargets[ids[k]].GroupTrim(d);
+                return d;
             }
         }
 

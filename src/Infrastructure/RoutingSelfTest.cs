@@ -44,6 +44,7 @@ namespace StereoSplitter
             CaseIniRoundTrip();
             CaseDriftProviderOverfill();
             CasePcmRingBufferShortRead();
+            CaseClockGroupAlignment();
             CaseLogClassify();
             CaseSessionLogClear();
 
@@ -603,6 +604,124 @@ namespace StereoSplitter
         {
             for (int i = from; i < b.Length; i++) if (b[i] != 0xCC) return false;
             return true;
+        }
+
+        /// <summary>
+        /// F-01/F-04 回归: 共享组里只削一路会永久错开相关声对的捕获时间轴; 端点缺失的成员
+        /// 若留在组里, 旧 holding 会让健康路一直 -6dB、旧 err 会带偏共享 ratio。
+        /// 全部用纯对象驱动, 不打开任何端点。
+        /// </summary>
+        static void CaseClockGroupAlignment()
+        {
+            Begin("共享时钟组: 组级同步削峰与离线成员隔离 (F-01/F-04)");
+            const int sr = 48000, ch = 2, targetMs = 65;
+            int targetFrames = sr * targetMs / 1000;
+            int keep = (int)(targetFrames * 1.3);
+            int backlog = sr * 300 / 1000;
+            int drop = backlog - keep;
+            var fmt = NAudio.Wave.WaveFormat.CreateIeeeFloatWaveFormat(sr, ch);
+            var big = MakeFrames(backlog, ch, 1f);
+
+            // ① 统一丢弃量: 所有活跃成员丢相同帧数, 削完两路水位必须相等
+            var g1 = new ClockGroup(targetFrames, sr, null); g1.MemberCount = 2;
+            var b1 = new PcmRingBuffer(fmt, 1000);
+            var p1 = new DriftCorrectingProvider(b1, targetFrames, ch, 1, 0, null, "L", 0, g1);
+            var b2 = new PcmRingBuffer(fmt, 1000);
+            var p2 = new DriftCorrectingProvider(b2, targetFrames, ch, 1, 0, null, "R", 1, g1);
+            b1.AddSamples(big, 0, big.Length);
+            b2.AddSamples(big, 0, big.Length);
+            int before1 = p1.BufferedFrames, before2 = p2.BufferedFrames;
+            int d = g1.TrimGroup(drop, keep);
+            Check("组级削峰返回统一丢弃量 (" + d + " 帧)", d == drop);
+            Check("两路各丢相同帧数", before1 - p1.BufferedFrames == d && before2 - p2.BufferedFrames == d);
+            Check("削峰后两路水位相等 (时间轴未错位)", p1.BufferedFrames == p2.BufferedFrames);
+            Check("两路各记账一次削峰", p1.TrimCount == 1 && p2.TrimCount == 1);
+
+            // ② 夹取: 任一成员余量不足时全组都不削, 绝不把健康路削空或只削一部分
+            var g2 = new ClockGroup(targetFrames, sr, null); g2.MemberCount = 2;
+            var b3 = new PcmRingBuffer(fmt, 1000);
+            var p3 = new DriftCorrectingProvider(b3, targetFrames, ch, 1, 0, null, "L", 0, g2);
+            var b4 = new PcmRingBuffer(fmt, 1000);
+            var p4 = new DriftCorrectingProvider(b4, targetFrames, ch, 1, 0, null, "R", 1, g2);
+            b3.AddSamples(big, 0, big.Length);   // 只有 L 堆积, R 是空的健康路
+            int before3 = p3.BufferedFrames;
+            Check("任一成员会被削到 keep 以下 → 全组不削", g2.TrimGroup(drop, keep) == 0);
+            Check("... 且两路缓冲均未被改动", p3.BufferedFrames == before3 && p4.BufferedFrames == 0);
+
+            // ③ 集成: provider 的 TrimOverfill 确实走组级路径 (不是只削发起方)
+            var g3 = new ClockGroup(targetFrames, sr, null); g3.MemberCount = 2;
+            var b5 = new PcmRingBuffer(fmt, 1000);
+            var p5 = new DriftCorrectingProvider(b5, targetFrames, ch, 1, 0, null, "L", 0, g3);
+            var b6 = new PcmRingBuffer(fmt, 1000);
+            var p6 = new DriftCorrectingProvider(b6, targetFrames, ch, 1, 0, null, "R", 1, g3);
+            b5.AddSamples(big, 0, big.Length);
+            b6.AddSamples(big, 0, big.Length);
+            int blockFrames = 20 * sr / 1000;
+            var block = new byte[blockFrames * ch * 4];
+            var blockF = new float[blockFrames * ch];
+            for (int i = 0; i < blockF.Length; i++) blockF[i] = 0.1f;
+            Buffer.BlockCopy(blockF, 0, block, 0, block.Length);
+            var outBuf = new float[blockFrames * ch];
+            for (int n = 0; n < 20; n++)
+            {
+                b5.AddSamples(block, 0, block.Length);
+                b6.AddSamples(block, 0, block.Length);
+                p5.Read(outBuf, 0, outBuf.Length);
+                p6.Read(outBuf, 0, outBuf.Length);
+            }
+            Check("两路都发生削峰 (组级广播生效)", p5.TrimCount >= 1 && p6.TrimCount >= 1);
+            int diffMs = Math.Abs(p5.BufferedMs - p6.BufferedMs);
+            Check("削峰后两路水位差 ≤5ms (实测 " + diffMs + "ms)", diffMs <= 5);
+
+            // ④ 离线成员隔离: 清 holding、清旧 err、排除出共享平均
+            var g4 = new ClockGroup(targetFrames, sr, null); g4.MemberCount = 2;
+            g4.NotifyHolding(0, true);
+            Check("停用前 OtherHolding(1) = true", g4.OtherHolding(1));
+            g4.Update(0, targetFrames * 3);       // 提交一个极大的误差
+            Check("离线前误差确实带偏共享 ratio", Math.Abs(g4.RatioPpm) > 100);
+            g4.DeactivateMember(0);
+            Check("停用后 ActiveCount = 1", g4.ActiveCount == 1);
+            Check("停用后 OtherHolding(1) = false (健康路不再误降 6dB)", !g4.OtherHolding(1));
+            g4.Update(1, targetFrames);
+            Check("离线成员旧 err 不再参与平均 (ppm≈" + g4.RatioPpm.ToString("0") + ")",
+                Math.Abs(g4.RatioPpm) < 100);
+            g4.ActivateMember(0);
+            Check("重新激活后 ActiveCount = 2", g4.ActiveCount == 2);
+
+            // ⑤ 组内只剩一个活跃成员 → 退化为单路削峰, 不能因为同伴离线就停止自愈
+            var g5 = new ClockGroup(targetFrames, sr, null); g5.MemberCount = 2;
+            var b7 = new PcmRingBuffer(fmt, 1000);
+            var p7 = new DriftCorrectingProvider(b7, targetFrames, ch, 1, 0, null, "L", 0, g5);
+            var b8 = new PcmRingBuffer(fmt, 1000);
+            var p8 = new DriftCorrectingProvider(b8, targetFrames, ch, 1, 0, null, "R", 1, g5);
+            g5.DeactivateMember(1);
+            b7.AddSamples(big, 0, big.Length);
+            for (int n = 0; n < 20; n++)
+            {
+                b7.AddSamples(block, 0, block.Length);
+                p7.Read(outBuf, 0, outBuf.Length);
+            }
+            Check("只剩一个活跃成员仍能单路削峰自愈", p7.TrimCount >= 1);
+            Check("离线成员不参与削峰", p8.TrimCount == 0);
+
+            // ⑥ 只有一路堆积时组级必须"全组不削": 单独削掉一路旧数据正是 F-01 的根因。
+            // 两路同步堆积时分不出新旧实现 (各自单路削也会都削), 这个非对称场景才能钉死。
+            // 组级不削后堆积留给看门狗判据②(水位>200ms 持续 10s)兜底重建。
+            var g6 = new ClockGroup(targetFrames, sr, null); g6.MemberCount = 2;
+            var b9 = new PcmRingBuffer(fmt, 1000);
+            var p9 = new DriftCorrectingProvider(b9, targetFrames, ch, 1, 0, null, "L", 0, g6);
+            var b10 = new PcmRingBuffer(fmt, 1000);
+            var p10 = new DriftCorrectingProvider(b10, targetFrames, ch, 1, 0, null, "R", 1, g6);
+            b9.AddSamples(big, 0, big.Length);   // 只有 L 堆了 300ms, R 保持健康低水位
+            for (int n = 0; n < 4; n++)
+            {
+                b9.AddSamples(block, 0, block.Length);
+                b10.AddSamples(block, 0, block.Length);
+                p9.Read(outBuf, 0, outBuf.Length);
+                p10.Read(outBuf, 0, outBuf.Length);
+            }
+            Check("只有一路堆积时组级不削峰 (L=" + p9.TrimCount + ", R=" + p10.TrimCount + ")",
+                p9.TrimCount == 0 && p10.TrimCount == 0);
         }
 
         /// <summary>
