@@ -166,6 +166,10 @@ namespace StereoSplitter
 
         string DevNameFor(string id)
         {
+            // 构造期 catalog 尚未建立 (LoadSettings→LoadLanes→RebuildCards 是启动路径)：
+            // 保存的设备 ID 此时解析不出友好名，退回 ID 本身，避免 F-07 占位项触发空引用。
+            if (catalog == null)
+                return string.IsNullOrEmpty(id) ? "(未选设备)" : id;
             string n = FindNameById(id);
             return string.IsNullOrEmpty(n) ? "(未选设备)" : n;
         }

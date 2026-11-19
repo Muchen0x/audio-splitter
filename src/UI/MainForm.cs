@@ -877,7 +877,7 @@ namespace StereoSplitter
 
         string FindNameById(string id)
         {
-            return catalog.NameOf(id);
+            return catalog == null ? "" : catalog.NameOf(id);
         }
 
         // 端点绑定失效 (设备拔出/端点被拆) → 回退到混音增益: 该设备音量不再写端点,
