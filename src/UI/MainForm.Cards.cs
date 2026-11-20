@@ -486,9 +486,10 @@ namespace StereoSplitter
             Control host = btnRefresh.Parent;
             if (host == null) return;
 
-            int panelW = host.ClientSize.Width;
-            if (panelW == lastTopPanelW) return;   // 只改高度也会走到这里, 宽度没变就不重排
-            lastTopPanelW = panelW;
+            Size panelSize = host.ClientSize;
+            if (panelSize == lastTopPanelSize) return;   // 尺寸没变就不重排 (拖分隔条会频繁触发)
+            lastTopPanelSize = panelSize;
+            int panelW = panelSize.Width;
             const int rightEdge = 10;               // 与卡片区/日志框右缘一致的留白
             const int gap = 8;
 
@@ -505,6 +506,19 @@ namespace StereoSplitter
             // —— 第 3 行 (规格): [规格:] [下拉] [声道名…] [添加输出(贴右)] ——
             btnAddOutput.Left = panelW - rightEdge - btnAddOutput.Width;
             flwSpecChannels.Width = Math.Max(60, btnAddOutput.Left - gap - flwSpecChannels.Left);
+
+            // —— 卡片区: 宽高都跟面板走 ——
+            // 以前靠 Anchor.Right/Bottom, 但初始 559x166 是按 600x600 窗口写的, 构造期父面板
+            // 只有约 484x345 → 右/底边距算成负数, 之后卡片区一直保持 559x166,
+            // 卡片右缘被切 75px、底部被切 37px。这里显式给尺寸 (左 15 / 右 10 / 下 4)。
+            // 改尺寸会触发 cardHost.Resize → FitCardWidths 重排卡片。
+            if (cardHost != null)
+            {
+                int cw = Math.Max(200, panelW - cardHost.Left - rightEdge);
+                int chh = Math.Max(80, panelSize.Height - cardHost.Top - 4);
+                if (cardHost.Width != cw || cardHost.Height != chh)
+                    cardHost.Size = new Size(cw, chh);
+            }
         }
 
         /// <summary>
@@ -535,8 +549,10 @@ namespace StereoSplitter
         const int CardBaseW = 490;
         /// <summary>并排卡片之间的横向间距 (卡片外框到外框)。</summary>
         const int CardGapX = 10;
-        /// <summary>卡片最窄宽度: 再窄第一行的设备下拉就压到「声道」下拉上了。</summary>
-        const int CardMinW = 430;
+        /// <summary>卡片最窄宽度: 再窄第一行的设备下拉就压到「声道」下拉上了。
+        /// 第一行的固定控件 (× / ms / 延迟框 / 延迟 / 声道) 合计约 246px, 再加设备下拉 90px
+        /// 与左侧 8px, 360 是"刚好不重叠"的值; 低于它就宁可横向滚动也不挤成畸形。</summary>
+        const int CardMinW = 360;
         /// <summary>单列时的宽度上限: 再宽滑条就拉成一根看不见刻度的长线。</summary>
         const int CardMaxW = 1120;
 

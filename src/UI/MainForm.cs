@@ -31,7 +31,7 @@ namespace StereoSplitter
         int lastCardCols = -1, lastCardW = -1, lastRightGap = -1, lastCardCount = -1;
         Size lastLogPanelSize = Size.Empty;   // 日志面板上次的尺寸 (没变就不重摆日志框)
         int lastVolPanelW = -1;              // 音量行上次的面板宽度
-        int lastTopPanelW = -1;              // 顶部三行上次的面板宽度 (自适应重排用)
+        Size lastTopPanelSize = Size.Empty;   // 顶部三行 + 卡片区上次的面板尺寸 (宽或高变都要重排)
         int lastLogHeaderW = -1;             // 日志标题行上次的面板宽度
         int lastSplitH = -1;                 // 分隔容器上次的高度 (判断"窗口在变矮")
         static readonly int[][] LatencyProfiles = new int[][] {
@@ -345,7 +345,11 @@ namespace StereoSplitter
                 WrapContents = true,
                 AutoScroll = true,
                 Padding = new Padding(0, 4, 0, 6),
-                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+                // 宽度和高度都由 LayoutTopRows() 按面板实际尺寸算 (左 15 / 右 10 / 下 4)。
+                // 不能用 Anchor.Right/Bottom: 初始 559x166 是按 600x600 窗口写的, 构造期父面板
+                // 只有约 484x345, 算出的右边距/底边距是**负数**, 之后卡片区尺寸就锁死了,
+                // 右边和下边都会切出可视区 (卡片右缘被切、最后一张卡被压掉一半)。
+                Anchor = AnchorStyles.Top | AnchorStyles.Left
             };
 
             // 该下拉决定"预缓冲深度 + WASAPI 输出缓冲"整套组合, 直接影响稳态延迟, 不是启动耗时。
@@ -678,14 +682,15 @@ namespace StereoSplitter
                 RefreshDevices();
                 RecordRestoreTarget();
                 ApplyIniVolumeOverrides();
-                // 高DPI下 AutoSize 宽度在构造后才最终确定 → Load 时强制重排一次顶部三行与日志标题行
-                // (重置缓存宽度, 否则 LayoutTopRows/LayoutLogHeader 会以为宽度没变而跳过)
-                lastTopPanelW = -1;
+                // 高DPI下 AutoSize 宽度在构造后才最终确定 → Load 时强制重排一次顶部三行、卡片区与日志标题行
+                // (重置缓存尺寸, 否则 LayoutTopRows/LayoutLogHeader 会以为尺寸没变而跳过)
+                lastTopPanelSize = Size.Empty;
                 lastLogHeaderW = -1;
                 LayoutTopRows();
                 LayoutLogHeader();
-                // 校准日志框高度, 此后由 Anchor 自动跟随分隔条拖动
-                txtLog.Height = splitContainer.Panel2.Height - txtLog.Top - 15;
+                // 日志框统一由 LayoutLogPanel() 按面板实际尺寸摆放 (以前这里还手工算一次高度,
+                // 与 LayoutLogPanel 的边距不一致, 先设一个值又被覆盖)
+                LayoutLogPanel();
                 SetAppState(AppState.Ready);
                 RegisterActivateHandler();
                 // 休眠唤醒后 WASAPI 端点已失效且不会自己回来 → 主动重建 (SystemEvents 需消息泵, 放 Load 里注册)
