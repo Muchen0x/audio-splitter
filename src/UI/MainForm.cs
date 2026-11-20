@@ -261,7 +261,8 @@ namespace StereoSplitter
             // 上下可拖动面板: 内容区 | 6px灰分隔条 | 日志区 (参照 tk.PanedWindow)
             // FixedPanel=Panel2: 窗口变矮时先收缩上面的内容区, 日志区高度保持不变
             // (以前是 Panel1 固定 → 变矮时日志直接被压扁)。
-            // Panel1MinSize=0: **分隔条拖动不再设上限**, 日志区可以一路拉到顶 (想看长日志时不用受 284 限制);
+            // Panel1MinSize=Panel2MinSize=0: **两个面板都不设下限**, 分隔条可以任意拖 ——
+            // 日志区能一路拉到顶(只看内容)，也能一路压到底(只看日志)。
             // 窗口整体变矮的情况由 KeepContentOnShrink() 兜底, 不会把内容区缩没。
             splitContainer = new NoFocusSplitContainer
             {
@@ -271,7 +272,7 @@ namespace StereoSplitter
                 BackColor = Color.FromArgb(0x88, 0x88, 0x88),
                 FixedPanel = FixedPanel.Panel2,
                 Panel1MinSize = 0,
-                Panel2MinSize = 110,
+                Panel2MinSize = 0,
                 Size = new Size(500, 500),
                 TabStop = false
             };
@@ -281,8 +282,8 @@ namespace StereoSplitter
             // Panel1 自己不能滚: 否则窗口一缩, 整个内容区先冒出滚动条 (还带横向),
             // 而不是卡片区内部滚动。
             splitContainer.Panel1.AutoScroll = false;
-            // 初始340时日志区=111(客户457); 窗高减10 → 330 保持日志111不变
-            // 2026-06 增益独立成行后内容下移34 → 386 保持日志区高度不变
+            // 临时值, Load 里按客户区高度反算成"日志区 110 高"
+            // (Panel2MinSize=0 之后 WinForms 不再帮着夹取, 硬编码值在 500 高窗口下会把日志区压到 69)
             splitContainer.SplitterDistance = 386;
             // 窗口整体变矮时把内容区拽回来 (分隔条拖动本身不受限, 见 KeepContentOnShrink)
             splitContainer.SizeChanged += (s, e) => KeepContentOnShrink();
@@ -682,6 +683,11 @@ namespace StereoSplitter
                 RefreshDevices();
                 RecordRestoreTarget();
                 ApplyIniVolumeOverrides();
+                // 初始分割位置: 让日志区保持 110 高 (与去掉 Panel2MinSize 之前的默认观感一致)。
+                // 现在两个面板都没有下限, WinForms 不会帮着夹取, 必须按真实客户区高度反算一次;
+                // 之后完全由用户拖动决定, 不再有任何限制。
+                splitContainer.SplitterDistance =
+                    Math.Max(0, splitContainer.Height - 110 - splitContainer.SplitterWidth);
                 // 高DPI下 AutoSize 宽度在构造后才最终确定 → Load 时强制重排一次顶部三行、卡片区与日志标题行
                 // (重置缓存尺寸, 否则 LayoutTopRows/LayoutLogHeader 会以为尺寸没变而跳过)
                 lastTopPanelSize = Size.Empty;

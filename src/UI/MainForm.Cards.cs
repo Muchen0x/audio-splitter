@@ -399,7 +399,7 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 分隔条拖动不设上限 (`Panel1MinSize = 0`), 日志区可以一路拉到顶;
+        /// 分隔条拖动不设上限 (`Panel1MinSize = Panel2MinSize = 0`), 两个面板都能被拖到没有;
         /// 但**窗口整体变矮**时不能把内容区缩没: 一旦内容区被压到 284 以下 (界面上只剩日志),
         /// 就把它拽回 284。只在"高度变小"时触发, 用户主动往上拖分隔条不受这条规则干扰。
         /// </summary>
@@ -434,7 +434,9 @@ namespace StereoSplitter
             if (cs == lastLogPanelSize) return;
             lastLogPanelSize = cs;
             int w = Math.Max(120, cs.Width - 15 - 10);
-            int h = Math.Max(40, cs.Height - 30 - 8);
+            // 高下限设 0: 分隔条现在可以一路把日志区压到没有, 日志框跟着缩到 0 而不是留着
+            // 40px 高度溢出到面板外面 (Panel 会裁剪, 但多出来的高度仍会参与滚动条计算)
+            int h = Math.Max(0, cs.Height - 30 - 8);
             txtLog.SetBounds(15, 30, w, h);
         }
 
@@ -515,7 +517,7 @@ namespace StereoSplitter
             if (cardHost != null)
             {
                 int cw = Math.Max(200, panelW - cardHost.Left - rightEdge);
-                int chh = Math.Max(80, panelSize.Height - cardHost.Top - 4);
+                int chh = Math.Max(0, panelSize.Height - cardHost.Top - 4);
                 if (cardHost.Width != cw || cardHost.Height != chh)
                     cardHost.Size = new Size(cw, chh);
             }
