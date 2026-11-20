@@ -31,6 +31,8 @@ namespace StereoSplitter
         int lastCardCols = -1, lastCardW = -1, lastRightGap = -1, lastCardCount = -1;
         Size lastLogPanelSize = Size.Empty;   // 日志面板上次的尺寸 (没变就不重摆日志框)
         int lastVolPanelW = -1;              // 音量行上次的面板宽度
+        int lastTopPanelW = -1;              // 顶部三行上次的面板宽度 (自适应重排用)
+        int lastLogHeaderW = -1;             // 日志标题行上次的面板宽度
         int lastSplitH = -1;                 // 分隔容器上次的高度 (判断"窗口在变矮")
         static readonly int[][] LatencyProfiles = new int[][] {
             new int[] { 100, 50 },
@@ -45,6 +47,8 @@ namespace StereoSplitter
         System.Windows.Forms.Timer powerTimer;   // 唤醒后延迟重建 (端点恢复要几百毫秒)
         VolumeSlider volMaster, volGain;
         Label lblVolMaster, lblVolGain;
+        // 顶部固定行需要用到的控件 (自适应重排时要改它们的坐标/宽度)
+        Label lblD, lblLatency, lblSpec, lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
         Label lblDot, lblStatus;
         Button btnStart;
         Button btnRefresh;
@@ -284,7 +288,7 @@ namespace StereoSplitter
             splitContainer.SizeChanged += (s, e) => KeepContentOnShrink();
             Controls.Add(splitContainer);
 
-            var lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
+            lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
             cmbDefault = new NoWheelComboBox { Location = new Point(110, 12), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
             chkMuteCapture = new NoCueCheckBox { Text = "消音", Location = new Point(363, 14), AutoSize = true };
             btnRefresh = new NoCueButton { Text = "刷新设备", Location = new Point(417, 11), Width = 72, Height = 23 };
@@ -308,7 +312,7 @@ namespace StereoSplitter
             lblStatus = new Label { Text = "状态: 就绪", Location = new Point(182, 152), AutoSize = true, ForeColor = Color.Gray };
 
             // 规格行: 规格下拉 + 右侧各声道名称(带输出路数角标) + 最右「添加输出」
-            var lblSpec = new Label { Text = "规格:", Location = new Point(15, 189), AutoSize = true };
+            lblSpec = new Label { Text = "规格:", Location = new Point(15, 189), AutoSize = true };
             cmbSpec = new NoWheelComboBox { Location = new Point(62, 185), Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
             cmbSpec.Items.AddRange(new object[] { "单声道", "立体声", "2.1", "四声道", "5.1" });
             cmbSpec.SelectedIndex = 1;
@@ -318,16 +322,15 @@ namespace StereoSplitter
                 Size = new Size(310, 30),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                AutoScroll = false,
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+                AutoScroll = false
+                // 宽度与右缘由 LayoutTopRows() 按面板实际宽度摆放 (Anchor 会按"构造时的负右距"把控件推出窗口)
             };
             btnAddOutput = new NoCueButton
             {
                 Text = "添加输出",
                 Location = new Point(482, 184),
                 Width = 92,
-                Height = 26,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right
+                Height = 26
             };
 
             // 输出卡片区 (可增删, 内容超出时只有纵向滚动)
@@ -348,7 +351,7 @@ namespace StereoSplitter
             // 该下拉决定"预缓冲深度 + WASAPI 输出缓冲"整套组合, 直接影响稳态延迟, 不是启动耗时。
             // 选项里的总预估 = 捕获(约10ms) + 内部缓冲目标(driftTarget) + 输出缓冲, 不含 USB/DAC/声波;
             // 数字由 LatencyProfiles 现算, 改档位参数时文案自动跟随。
-            var lblLatency = new Label { Text = "延迟档位:", Location = new Point(15, 45), AutoSize = true };
+            lblLatency = new Label { Text = "延迟档位:", Location = new Point(15, 45), AutoSize = true };
             cmbLatency = new NoWheelComboBox { Location = new Point(85, 42), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
             string[] latNames = { "标准", "低延迟", "极低", "超低", "极限" };
             string[] latWarn = { "", "", ", 易断音", ", 易断音", ", 频繁断音" };
@@ -379,20 +382,20 @@ namespace StereoSplitter
 
             // 水位监控组: 日志面板标题行右侧, 清除日志按钮左边 (间隔0=关闭监控)
             // 整组靠右: 右缘与「清除日志」按钮一致 (按钮右边 10px 距面板边), 右侧不留空条。
-            var lblWater = new Label { Text = "水位监控:", Location = new Point(293, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            var lblWaterIv = new Label { Text = "间隔", Location = new Point(359, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            lblWater = new Label { Text = "水位监控:", Location = new Point(293, 8), AutoSize = true };
+            lblWaterIv = new Label { Text = "间隔", Location = new Point(359, 8), AutoSize = true };
             // 间隔 0 = 关闭监控; 1 秒起, 不再卡 5 秒下限 (想看 1~4 秒的抖动就让人看)
-            nudWaterInterval = new NoWheelNumeric { Location = new Point(397, 5), Width = 60, Minimum = 0, Maximum = 3600, Value = 30, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            var lblWaterSec = new Label { Text = "秒", Location = new Point(461, 8), AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            nudWaterInterval = new NoWheelNumeric { Location = new Point(397, 5), Width = 60, Minimum = 0, Maximum = 3600, Value = 30 };
+            lblWaterSec = new Label { Text = "秒", Location = new Point(461, 8), AutoSize = true };
 
-            var lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true, Font = new Font("Microsoft YaHei UI", 10F) };
+            lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true, Font = new Font("Microsoft YaHei UI", 10F) };
             btnClearLog = new NoCueButton
             {
                 Text = "清除日志",
                 Location = new Point(489, 4),
                 Width = 85,
-                Height = 22,
-                Anchor = AnchorStyles.Top | AnchorStyles.Right
+                Height = 22
+                // 右缘由 LayoutLogHeader() 按面板实际宽度摆放
             };
 
             txtLog = new TextBox
@@ -432,12 +435,15 @@ namespace StereoSplitter
             tipTop.SetToolTip(chkDrift, "漂移闭环校正。\n运行中可切（立即生效）。");
             tipTop.SetToolTip(chkMinimizeToTray, "关闭窗口时最小化到托盘。\n与本机音频无关，随时可改。");
             tipTop.SetToolTip(nudWaterInterval, "水位监控的刷新间隔（秒，1~3600；0 = 关闭监控）。\n随时可改，回车提交。");
-            // 增益/主音量两行的滑条宽度跟面板宽度走 (窗口拉宽自动变长)
-            splitContainer.Panel1.ClientSizeChanged += (s, e) => LayoutVolumeRows();
+            // 增益/主音量两行的滑条宽度跟面板宽度走 (窗口拉宽自动变长);
+            // 顶部三行与日志标题行同理, 窗口变窄时右侧控件贴右缘, 不会越界截断
+            splitContainer.Panel1.ClientSizeChanged += (s, e) => { LayoutTopRows(); LayoutVolumeRows(); };
+            LayoutTopRows();
             LayoutVolumeRows();
             // 日志框按面板实时尺寸摆放 (拖分隔条/改窗口都要跟), 竖滚动条才会一直贴着右边
-            splitContainer.Panel2.Resize += (s, e) => LayoutLogPanel();
+            splitContainer.Panel2.Resize += (s, e) => { LayoutLogPanel(); LayoutLogHeader(); };
             LayoutLogPanel();
+            LayoutLogHeader();
 
             btnStart.Click += BtnStart_Click;
             btnRefresh.Click += (s, e) => RefreshDevicesClick();
@@ -672,8 +678,12 @@ namespace StereoSplitter
                 RefreshDevices();
                 RecordRestoreTarget();
                 ApplyIniVolumeOverrides();
-                // 高DPI下 AutoSize 宽度在构造后才最终确定，Load 时再贴到托盘选项右侧
-                chkDrift.Location = new Point(chkMinimizeToTray.Right + 8, chkMinimizeToTray.Top);
+                // 高DPI下 AutoSize 宽度在构造后才最终确定 → Load 时强制重排一次顶部三行与日志标题行
+                // (重置缓存宽度, 否则 LayoutTopRows/LayoutLogHeader 会以为宽度没变而跳过)
+                lastTopPanelW = -1;
+                lastLogHeaderW = -1;
+                LayoutTopRows();
+                LayoutLogHeader();
                 // 校准日志框高度, 此后由 Anchor 自动跟随分隔条拖动
                 txtLog.Height = splitContainer.Panel2.Height - txtLog.Top - 15;
                 SetAppState(AppState.Ready);

@@ -468,6 +468,68 @@ namespace StereoSplitter
             lblVolMaster.Location = new Point(pctX, 106);
         }
 
+        /// <summary>AutoSize 控件取宽: 用 PreferredSize (不依赖当前布局), 构造期也能算准。</summary>
+        static int PreferredW(Control c)
+        {
+            return c.AutoSize ? c.PreferredSize.Width : c.Width;
+        }
+
+        /// <summary>
+        /// 顶部三行 (捕获 / 延迟档位 / 规格) 的自适应布局。
+        /// <para>原本是按 600 宽硬编码的固定坐标 (刷新设备右缘 489、添加输出 574),
+        /// 窗口缩到 500 宽 (客户区约 484) 时右侧控件会被挤出客户区截断。
+        /// 这里改为「右侧控件贴面板右缘、中间下拉吃掉剩余宽度」, 任意宽度都不越界。</para>
+        /// </summary>
+        void LayoutTopRows()
+        {
+            if (lblD == null || btnRefresh == null || btnAddOutput == null) return;
+            Control host = btnRefresh.Parent;
+            if (host == null) return;
+
+            int panelW = host.ClientSize.Width;
+            if (panelW == lastTopPanelW) return;   // 只改高度也会走到这里, 宽度没变就不重排
+            lastTopPanelW = panelW;
+            const int rightEdge = 10;               // 与卡片区/日志框右缘一致的留白
+            const int gap = 8;
+
+            // —— 第 1 行: [捕获(虚拟):] [下拉] [消音] [刷新设备(贴右)] ——
+            btnRefresh.Left = panelW - rightEdge - btnRefresh.Width;
+            chkMuteCapture.Left = btnRefresh.Left - gap - PreferredW(chkMuteCapture);
+            cmbDefault.Width = Math.Max(60, chkMuteCapture.Left - gap - cmbDefault.Left);
+
+            // —— 第 2 行: [延迟档位:] [下拉] [关闭最小化] [校正(贴右)] ——
+            chkDrift.Left = panelW - rightEdge - PreferredW(chkDrift);
+            chkMinimizeToTray.Left = chkDrift.Left - gap - PreferredW(chkMinimizeToTray);
+            cmbLatency.Width = Math.Max(60, chkMinimizeToTray.Left - gap - cmbLatency.Left);
+
+            // —— 第 3 行 (规格): [规格:] [下拉] [声道名…] [添加输出(贴右)] ——
+            btnAddOutput.Left = panelW - rightEdge - btnAddOutput.Width;
+            flwSpecChannels.Width = Math.Max(60, btnAddOutput.Left - gap - flwSpecChannels.Left);
+        }
+
+        /// <summary>
+        /// 日志面板标题行: 右侧 [水位监控: 间隔 N 秒] [清除日志] 整组贴右缘,
+        /// 窗口窄时不会把「清除日志」挤出面板。左侧「日志」标题固定不动。
+        /// </summary>
+        void LayoutLogHeader()
+        {
+            if (btnClearLog == null || lblWater == null) return;
+            Control host = btnClearLog.Parent;
+            if (host == null) return;
+
+            int panelW = host.ClientSize.Width;
+            if (panelW == lastLogHeaderW) return;
+            lastLogHeaderW = panelW;
+            const int rightEdge = 10;
+            const int gap = 6;
+
+            btnClearLog.Left = panelW - rightEdge - btnClearLog.Width;
+            lblWaterSec.Left = btnClearLog.Left - 8 - PreferredW(lblWaterSec);
+            nudWaterInterval.Left = lblWaterSec.Left - gap - nudWaterInterval.Width;
+            lblWaterIv.Left = nudWaterInterval.Left - gap - PreferredW(lblWaterIv);
+            lblWater.Left = lblWaterIv.Left - gap - PreferredW(lblWater);
+        }
+
         /// <summary>卡片基准宽度: 换列的步长。取 490 = 卡片里固定控件(设备/声道/延迟/百分号/静音)
         /// 占掉约 273px 之后, 滑条还剩 200px 左右的最舒适宽度, 也是默认窗口下单列卡片的取值区。</summary>
         const int CardBaseW = 490;
