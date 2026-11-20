@@ -31,9 +31,15 @@ namespace StereoSplitter
             trayIcon.MouseDoubleClick += (s, e) => { if (e.Button == MouseButtons.Left) RestoreFromTray(); };
         }
 
+        /// <summary>
+        /// 隐藏到托盘。
+        /// **不要在这里改 ShowInTaskbar** — 实测它会让 WinForms 走 RecreateHandle(),
+        /// 窗口句柄 (连所有子控件) 当场销毁重建, 可见状态下就是"窗口消失又出现一帧"的闪烁,
+        /// 800ms 内重建几百个控件 handle, 托盘"关闭时最小化"的体验直接变成闪屏。
+        /// 隐藏后任务栏按钮本来就会随窗口消失, 不需要靠 ShowInTaskbar=false 来实现。
+        /// </summary>
         void HideToTray()
         {
-            ShowInTaskbar = false;
             Hide();
             if (!trayTipShown)
             {
@@ -45,7 +51,6 @@ namespace StereoSplitter
 
         void RestoreFromTray()
         {
-            if (!ShowInTaskbar) ShowInTaskbar = true;
             if (!Visible) Show();
             if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
 
