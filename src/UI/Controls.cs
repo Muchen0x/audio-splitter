@@ -323,6 +323,52 @@ namespace StereoSplitter
     }
 
     /// <summary>
+    /// 滚轮按「鼠标位置」重定向。
+    /// <para>Windows 把 WM_MOUSEWHEEL 投递到**焦点窗口**, 不是鼠标下的窗口: 点过卡片上的
+    /// 下拉框/滑条后焦点留在卡片区, 这时把鼠标移到日志框上滚轮, 滚的却是卡片区;
+    /// 反过来(焦点在日志框、鼠标在卡片区)也一样 —— 表现为"滚一个区域, 另一个区域在动"。</para>
+    /// <para>这里只在「鼠标下控件」与「消息目标控件」**分属不同面板**(SplitterPanel)时改写目标,
+    /// 同一面板内一律不干预, 免得打乱滑条/数字框自己往卡片区转发的既有规则
+    /// (<see cref="WheelRouting"/>)。</para>
+    /// </summary>
+    class WheelByCursorRouter : IMessageFilter
+    {
+        const int WM_MOUSEWHEEL = 0x020A;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr WindowFromPoint(Point p);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        public bool PreFilterMessage(ref Message m)
+        {
+            if (m.Msg != WM_MOUSEWHEEL) return false;
+
+            // 消息自带屏幕坐标 (投递那一刻的位置), 比读 Cursor.Position 可靠
+            long lp = m.LParam.ToInt64();
+            Point at = new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
+
+            Control under = Control.FromChildHandle(WindowFromPoint(at));
+            if (under == null || under.IsDisposed || !under.Visible) return false;
+            if (under.Handle == m.HWnd) return false;          // 目标本来就是鼠标下这个控件
+
+            // 同一面板 → 不干预 (滑条该滚列表还是该调音量, 交给 VolumeWheelRouter 判断)
+            if (PanelOf(under) == PanelOf(Control.FromChildHandle(m.HWnd))) return false;
+
+            SendMessage(under.Handle, m.Msg, m.WParam, m.LParam);
+            return true;                                       // 已改投, 原消息不再派发
+        }
+
+        static Control PanelOf(Control c)
+        {
+            for (Control p = c; p != null; p = p.Parent)
+                if (p is SplitterPanel) return p;
+            return null;
+        }
+    }
+
+    /// <summary>
     /// 光标停在音量滑条上时的滚轮去向。
     /// <para>滑条刻意不抢焦点 (一抢焦点 AutoScroll 容器就会滚一下, 卡片列表会抖),
     /// 所以它收不到 WM_MOUSEWHEEL —— 这里按光标位置自己找控件。</para>

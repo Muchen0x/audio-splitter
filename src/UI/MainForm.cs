@@ -252,6 +252,11 @@ namespace StereoSplitter
             Size = new Size(500, 500);
             Font = new Font("Microsoft YaHei UI", 9F);
 
+            // 滚轮按鼠标位置派发: 系统会把 WM_MOUSEWHEEL 投给**焦点控件**, 于是"焦点留在卡片区、
+            // 鼠标却在日志框上滚"时滚的是卡片区 (反之亦然) —— 表现为滚一个区域、另一个区域在动。
+            // 这个过滤器只改写**跨面板**的目标; 必须加在 VolumeWheelRouter 之前
+            // (MessageFilter 后加的先执行), 让滑条那套规则优先判断。
+            Application.AddMessageFilter(new WheelByCursorRouter());
             // 滚轮去向: 卡片列表正在滚的时候, 光标扫过音量条也只滚列表、不改音量
             // (拖着列表往下翻, 音量不能莫名其妙跳 5%); 列表没得滚时滚轮才调音量。
             Application.AddMessageFilter(new VolumeWheelRouter());

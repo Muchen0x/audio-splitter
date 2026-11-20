@@ -52,9 +52,25 @@ namespace StereoSplitter
             {
                 VolumeSlider s = live[i];
                 if (s == null || s.IsDisposed || !s.Visible || !s.Enabled) continue;
-                if (s.RectangleToScreen(s.ClientRectangle).Contains(screenPoint)) return s;
+                if (!s.RectangleToScreen(s.ClientRectangle).Contains(screenPoint)) continue;
+                // 卡片被滚出卡片区后只是被**裁剪**掉, Visible 仍为 true、矩形仍延伸到下方 ——
+                // 不查祖先可视区的话, 鼠标在日志区滚动会命中这些"看不见的滑条",
+                // 结果日志不滚、卡片区却在动 (或音量被改)。逐级要求落在祖先客户区内。
+                if (!InsideAncestors(s, screenPoint)) continue;
+                return s;
             }
             return null;
+        }
+
+        static bool InsideAncestors(Control c, Point screenPoint)
+        {
+            for (Control p = c.Parent; p != null; p = p.Parent)
+            {
+                if (p is Form) break;                    // 窗体边界不再往下算
+                if (!p.IsHandleCreated || p.IsDisposed) return false;
+                if (!p.RectangleToScreen(p.ClientRectangle).Contains(screenPoint)) return false;
+            }
+            return true;
         }
 
         protected override void OnHandleCreated(EventArgs e)
