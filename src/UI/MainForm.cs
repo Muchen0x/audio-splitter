@@ -244,10 +244,8 @@ namespace StereoSplitter
             // 窗体本身双缓冲: 缩放/拖动分隔条时背景不会先刷成白的再画控件 (整窗闪一下的来源)
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
             DoubleBuffered = true;
-            Size = new Size(600, 554);
-            // 最小高度按布局反推: 内容区至少留到"规格行 + 一整张卡片"(约 284) +
-            // 6px 分隔条 + 日志区最小 110 → 客户区需 ~400, 再加标题栏/边框。
-            MinimumSize = new Size(600, 480);
+            // 初始窗口尺寸; 不设 MinimumSize/MaximumSize, 长宽完全交给用户自由拖动
+            Size = new Size(600, 500);
             Font = new Font("Microsoft YaHei UI", 9F);
 
             // 滚轮去向: 卡片列表正在滚的时候, 光标扫过音量条也只滚列表、不改音量
