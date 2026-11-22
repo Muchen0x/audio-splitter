@@ -34,13 +34,16 @@ namespace StereoSplitter
     sealed class LatencyCalibrationForm : Form
     {
         /// <summary>
-        /// 每路测几次。注意是"轮转"而不是"一路测完再测下一路": 按 轮次 × 路 交替进行,
-        /// 这样两路的测量条件 (房间噪声、系统调度、设备温度) 尽量相同, 差值才可信。
+        /// 每一路测几段。这些段在**同一个播放流**里连着走 (前面另有 2 段预热不计),
+        /// 取中位数。不再按"轮次 × 路"交替: 交替意味着每测一次就要重开一次流,
+        /// 而蓝牙端点每次重开都要重新建链, 那是在测冷启动延迟。
         /// </summary>
         const int Takes = 3;
 
         readonly IList<CalibLane> lanes;
         readonly Action<string, int> applyDelay;   // (deviceId, delayMs) → 写回卡片并保存
+        /// <summary>实际分流用的输出缓冲档位 (毫秒)。测量必须用同一个值, 否则两路的缓冲差测不准。</summary>
+        readonly int outLatencyMs;
 
         readonly NoWheelComboBox cmbMic = new NoWheelComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         readonly Button btnRescan = new NoCueButton { Text = "刷新" };
@@ -58,11 +61,12 @@ namespace StereoSplitter
         bool measuring;
         bool applied;
 
-        public LatencyCalibrationForm(IList<CalibLane> lanes, Action<string, int> applyDelay)
+        public LatencyCalibrationForm(IList<CalibLane> lanes, int outLatencyMs, Action<string, int> applyDelay)
         {
             if (lanes == null) throw new ArgumentNullException("lanes");
             this.lanes = lanes;
             this.applyDelay = applyDelay;
+            this.outLatencyMs = Math.Max(5, Math.Min(500, outLatencyMs));
 
             Text = "延迟校准 · 麦克风互相关";
             StartPosition = FormStartPosition.CenterParent;
@@ -97,8 +101,8 @@ namespace StereoSplitter
             lblTip.Location = new Point(12, 44);
             lblTip.Size = new Size(556, 48);
             lblTip.Text = "把麦克风放在你实际听音的位置（两只音箱中间），校准期间请保持安静。\n" +
-                "程序会逐路播放一段 60ms 扫频，用麦克风测出每一路「声音到达耳朵」的时间差，\n" +
-                "再把差值补到较快的那一路。分流器需处于「已停止」状态。";
+                "程序会逐路播放 60ms 扫频（每路先预热 2 秒再测 3 次），测出每一路「声音到达耳朵」的时间差，\n" +
+                "再把差值补到较快的那一路。缓冲按当前「延迟」档位测量，分流器需处于「已停止」状态。";
             lblTip.ForeColor = Color.FromArgb(90, 96, 106);
 
             lv.Location = new Point(12, 96);
@@ -206,7 +210,7 @@ namespace StereoSplitter
 
             if (applied && l.HasSuggestion) it.SubItems[4].Text = "已应用";
             else if (double.IsNaN(l.MeasuredMs)) it.SubItems[4].Text = "待测";
-            else if (l.SpreadMs > 25) it.SubItems[4].Text = "不稳 (极差 " + l.SpreadMs.ToString("0") + "ms)";
+            else if (l.SpreadMs > 18) it.SubItems[4].Text = "不稳 (极差 " + l.SpreadMs.ToString("0") + "ms)";
             else it.SubItems[4].Text = "r=" + l.Confidence.ToString("0.00");
         }
 
@@ -229,8 +233,9 @@ namespace StereoSplitter
             }
             else
             {
-                lblState.Text = "点「开始校准」：会轮转向每一路播放测试音，约需 " +
-                    (int)Math.Ceiling(lanes.Count * Takes * 1.4) + " 秒。";
+                // 每路 = 2 段预热 + Takes 段测量, 每段 1 秒, 再加开流/分析开销
+                lblState.Text = "点「开始校准」：会逐路播放测试音（每路预热 2 秒 + 测 " + Takes + " 次），约需 " +
+                    (int)Math.Ceiling(lanes.Count * 5.5) + " 秒。";
                 btnApply.Enabled = false;
             }
             btnStart.Enabled = !measuring;
@@ -298,42 +303,40 @@ namespace StereoSplitter
             {
                 Post(delegate { lblState.Text = "正在打开麦克风…"; Append("麦克风: " + micName); });
                 probe = new MicLatencyProbe();
+                probe.OutLatencyMs = outLatencyMs;
                 probe.Start(micId);
-                Post(delegate { Append("采集采样率 " + probe.CaptureRate + " Hz。开始轮转测量 (每路 " + Takes + " 次)。"); });
+                Post(delegate { Append("采集采样率 " + probe.CaptureRate + " Hz；按 " + outLatencyMs + "ms 缓冲测量 (" + Takes + " 段/路, 预热 2 段)。"); });
 
-                // 轮转: 第 1 轮测完每一路, 再测第 2 轮 …… 让两路的测量条件尽量一致
-                for (int k = 0; k < Takes; k++)
+                for (int i = 0; i < lanes.Count; i++)
                 {
-                    for (int i = 0; i < lanes.Count; i++)
+                    if (cancel) throw new InvalidOperationException("已取消");
+                    CalibLane lane = lanes[i];
+                    int row = i;
+                    Post(delegate
                     {
-                        if (cancel) throw new InvalidOperationException("已取消");
-                        CalibLane lane = lanes[i];
-                        int row = i;
-                        int round = k + 1;
+                        lblState.Text = "测量中… " + lane.Display + " (预热 2s + 测 " + Takes + " 次)";
+                        if (row < lv.Items.Count) lv.Items[row].SubItems[4].Text = "测量中…";
+                    });
+
+                    try
+                    {
+                        LaneMeasurement m = probe.MeasureLane(lane.DeviceId, Takes);
+                        lane.MeasuredMs = m.LatencyMs;
+                        lane.Confidence = m.Confidence;
+                        lane.SpreadMs = m.SpreadMs;
+                        lane.Samples.Clear();
+                        lane.Samples.AddRange(m.Samples);
                         Post(delegate
                         {
-                            lblState.Text = "测量中… 第 " + round + "/" + Takes + " 轮 · " + lane.Display;
-                            if (row < lv.Items.Count) lv.Items[row].SubItems[4].Text = "测量中…";
+                            UpdateRow(row);
+                            Append(string.Format("  {0}: {1:0.0} ms  (r={2:0.00}, 极差 {3:0.0}ms, {4} 段)",
+                                lane.Display, m.LatencyMs, m.Confidence, m.SpreadMs, m.Takes));
+                            Append("    各段: " + JoinMs(m.Samples));
                         });
-
-                        try
-                        {
-                            LaneMeasurement m = probe.MeasureLane(lane.DeviceId, 1);
-                            lane.Samples.Add(m.LatencyMs);
-                            if (m.Confidence > lane.Confidence) lane.Confidence = m.Confidence;
-                            RecomputeLane(lane);
-                            Post(delegate
-                            {
-                                UpdateRow(row);
-                                Append(string.Format("  {0}: {1:0.0} ms  (r={2:0.00})",
-                                    lane.Display, m.LatencyMs, m.Confidence));
-                            });
-                        }
-                        catch (Exception ex)
-                        {
-                            // 单次失败不中断: 设备刚从空闲唤醒时首包经常落在分析窗之外
-                            Post(delegate { Append("  " + lane.Display + ": 第 " + round + " 次未取到 — " + ex.Message); });
-                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Post(delegate { Append("  " + lane.Display + ": 未取到 — " + ex.Message); });
                     }
                 }
 
@@ -366,52 +369,51 @@ namespace StereoSplitter
             }
         }
 
-        /// <summary>一路的多次样本 → 中位数 + 极差。中位数比"取最可信的那次"稳: 它不受单次离群值影响。</summary>
-        static void RecomputeLane(CalibLane lane)
+        /// <summary>把各段读数拼成一行, 便于一眼看出是整体偏还是单段离群。</summary>
+        static string JoinMs(IList<double> values)
         {
-            if (lane.Samples.Count == 0) { lane.MeasuredMs = double.NaN; lane.SpreadMs = 0; return; }
-            var sorted = new List<double>(lane.Samples);
-            sorted.Sort();
-            lane.MeasuredMs = sorted[sorted.Count / 2];
-            lane.SpreadMs = sorted[sorted.Count - 1] - sorted[0];
+            if (values == null || values.Count == 0) return "-";
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < values.Count; i++)
+            {
+                if (i > 0) sb.Append(" / ");
+                sb.Append(values[i].ToString("0.0"));
+            }
+            return sb.ToString() + " ms";
         }
 
         /// <summary>
-        /// 算出建议延迟: 让"设备延迟 + 卡片延迟"最大的那一路成为基准, 其余各路补到同一总量。
-        /// 也就是说**已有的手动延迟会被保留** (它可能是用户按距离手调的), 只补差额。
+        /// 算出建议延迟: **以实测延迟最大的那一路为基准, 它的延迟设 0**, 其余各路补到与它对齐
+        /// (建议值 = 最大值 − 本路实测)。
+        /// <para>为什么基准归零而不是"统一抬到某个总量": 补延迟只会增加延迟, 不会减少。
+        /// 把基准抬起来等于给所有路白白叠加一层的等待时间; 让最慢的那一路保持 0,
+        /// 总延迟就是"最慢那台的延迟", 这是这套方案能达到的下限。</para>
+        /// <para>基准由**实测**决定, 与卡片上原有的手动值无关 —— 原有延迟会被覆盖 (日志里会写明)。</para>
         /// </summary>
         void ComputeSuggestions()
         {
-            double maxTotal = double.MinValue;
+            double maxMeasured = double.MinValue;
             int valid = 0;
             for (int i = 0; i < lanes.Count; i++)
             {
                 CalibLane l = lanes[i];
                 if (double.IsNaN(l.MeasuredMs)) continue;
                 valid++;
-                double total = l.CurrentDelayMs + l.MeasuredMs;
-                if (total > maxTotal) maxTotal = total;
+                if (l.MeasuredMs > maxMeasured) maxMeasured = l.MeasuredMs;
             }
             if (valid < 2) return;
 
-            int minSugg = int.MaxValue;
+            const int MaxDelay = 2000;   // 与卡片延迟框的上限一致
             for (int i = 0; i < lanes.Count; i++)
             {
                 CalibLane l = lanes[i];
                 if (double.IsNaN(l.MeasuredMs)) continue;
-                l.SuggestedMs = (int)Math.Round(maxTotal - l.MeasuredMs);
+                int ms = (int)Math.Round(maxMeasured - l.MeasuredMs);
+                if (ms < 0) ms = 0;      // 浮点抖动 (基准路自己)
+                if (ms > MaxDelay) ms = MaxDelay;
+                l.SuggestedMs = ms;
                 l.HasSuggestion = true;
-                if (l.SuggestedMs < minSugg) minSugg = l.SuggestedMs;
             }
-            // 理论上有基准路保证 ≥ 0; 数值抖动可能出 -1, 统一抬上来
-            if (minSugg < 0)
-            {
-                for (int i = 0; i < lanes.Count; i++)
-                    if (lanes[i].HasSuggestion) lanes[i].SuggestedMs -= minSugg;
-            }
-            const int MaxDelay = 2000;   // 与卡片延迟框的上限一致
-            for (int i = 0; i < lanes.Count; i++)
-                if (lanes[i].HasSuggestion && lanes[i].SuggestedMs > MaxDelay) lanes[i].SuggestedMs = MaxDelay;
         }
 
         void ReportSuggestions()
@@ -428,7 +430,7 @@ namespace StereoSplitter
                     diff >= 0 ? "+" : "", diff));
             }
             if (changes == 0) Append("各路到达时间本来就一致，不需要补延迟。");
-            else Append("提示: 数字来自实测, 建议先应用再试听; 若仍有声像偏移, 可在卡片上微调。");
+            else Append("提示: 最慢的一路保持在 0ms (基准), 其余按实测差值补齐; 数字来自实测, 建议应用后再试听; 若仍有声像偏移, 可在卡片上微调。");
         }
 
         void ApplySuggestions()
@@ -451,9 +453,13 @@ namespace StereoSplitter
                     Append("[写入失败] " + l.Display + ": " + ex.Message);
                 }
             }
-            applied = n > 0;
+            // 只要点过「应用」就标记为已应用: 哪怕算出来的建议刚好等于当前值,
+            // 用户也已经确认了这份结果, 不该再显示"尚未写入"。
+            bool any = false;
+            for (int i = 0; i < lanes.Count; i++) if (lanes[i].HasSuggestion) any = true;
+            applied = any;
             for (int i = 0; i < lanes.Count; i++) UpdateRow(i);
-            Append("已写入 " + n + " 路的延迟值。");
+            Append(n == 0 ? "建议值与当前一致, 无需改动。" : "已写入 " + n + " 路的延迟值。");
             RefreshState();
         }
     }

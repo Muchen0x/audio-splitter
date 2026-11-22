@@ -865,8 +865,14 @@ namespace StereoSplitter
                 return;
             }
 
-            Log("[校准] 打开延迟校准: " + list.Count + " 路 (麦克风互相关)");
-            using (var f = new LatencyCalibrationForm(list, ApplyCalibratedDelay))
+            // 校准必须用**实际分流时的输出缓冲档位**: 不同端点对同一缓冲请求的实际分配不同
+            // (USB 声卡基本照给, 蓝牙有自己的下限), 请求值不一致 → 测出的两路差值就偏。
+            int prof = cmbLatency.SelectedIndex < 0 ? 0 : cmbLatency.SelectedIndex;
+            prof = Math.Max(0, Math.Min(LatencyProfiles.Length - 1, prof));
+            int outMs = LatencyProfiles[prof][1];
+
+            Log("[校准] 打开延迟校准: " + list.Count + " 路 (麦克风互相关, 输出缓冲 " + outMs + "ms)");
+            using (var f = new LatencyCalibrationForm(list, outMs, ApplyCalibratedDelay))
                 f.ShowDialog(this);
         }
 
