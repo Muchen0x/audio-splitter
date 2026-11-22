@@ -460,14 +460,14 @@ namespace StereoSplitter
             int muteW = chkMuteMaster.Width;
             int pctW = lblVolMaster.Width;
 
-            chkMuteMaster.Location = new Point(panelW - rightEdge - muteW, 106);
+            chkMuteMaster.Location = new Point(panelW - rightEdge - muteW, 86);
             int pctX = chkMuteMaster.Left - 10 - pctW;
             int volW = Math.Max(120, pctX - 8 - leftEdge);
 
-            volGain.SetBounds(leftEdge, 72, volW, 20);
-            lblVolGain.Location = new Point(pctX, 72);
-            volMaster.SetBounds(leftEdge, 106, volW, 20);
-            lblVolMaster.Location = new Point(pctX, 106);
+            volGain.SetBounds(leftEdge, 52, volW, 20);
+            lblVolGain.Location = new Point(pctX, 52);
+            volMaster.SetBounds(leftEdge, 86, volW, 20);
+            lblVolMaster.Location = new Point(pctX, 86);
         }
 
         /// <summary>AutoSize 控件取宽: 用 PreferredSize (不依赖当前布局), 构造期也能算准。</summary>
@@ -477,14 +477,16 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 顶部三行 (捕获 / 延迟档位 / 规格) 的自适应布局。
+        /// 顶部两行 (捕获 / 规格) 的自适应布局。
         /// <para>原本是按 600 宽硬编码的固定坐标 (刷新设备右缘 489、添加输出 574),
         /// 窗口缩到 500 宽 (客户区约 484) 时右侧控件会被挤出客户区截断。
         /// 这里改为「右侧控件贴面板右缘、中间下拉吃掉剩余宽度」, 任意宽度都不越界。</para>
+        /// <para>缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准 已迁入设置页,
+        /// 不再参与这里的布局 —— 主面板顶部只剩两行, 右端由齿轮按钮收口。</para>
         /// </summary>
         void LayoutTopRows()
         {
-            if (lblD == null || btnRefresh == null || btnAddOutput == null || btnCalibrate == null) return;
+            if (lblD == null || btnRefresh == null || btnAddOutput == null || btnSettings == null) return;
             Control host = btnRefresh.Parent;
             if (host == null) return;
 
@@ -495,20 +497,14 @@ namespace StereoSplitter
             const int rightEdge = 10;               // 与卡片区/日志框右缘一致的留白
             const int gap = 8;
 
-            // —— 第 1 行: [捕获(虚拟):] [下拉] [消音] [刷新设备(贴右)] ——
-            btnRefresh.Left = panelW - rightEdge - btnRefresh.Width;
-            chkMuteCapture.Left = btnRefresh.Left - gap - PreferredW(chkMuteCapture);
-            cmbDefault.Width = Math.Max(60, chkMuteCapture.Left - gap - cmbDefault.Left);
+            // —— 第 1 行: [捕获(虚拟):] [下拉] [刷新设备] [设置(齿轮, 贴右)] ——
+            btnSettings.Left = panelW - rightEdge - btnSettings.Width;
+            btnRefresh.Left = btnSettings.Left - gap - btnRefresh.Width;
+            cmbDefault.Width = Math.Max(60, btnRefresh.Left - gap - cmbDefault.Left);
 
-            // —— 第 2 行: [延迟档位:] [下拉] [关闭最小化] [校正(贴右)] ——
-            chkDrift.Left = panelW - rightEdge - PreferredW(chkDrift);
-            chkMinimizeToTray.Left = chkDrift.Left - gap - PreferredW(chkMinimizeToTray);
-            cmbLatency.Width = Math.Max(60, chkMinimizeToTray.Left - gap - cmbLatency.Left);
-
-            // —— 第 3 行 (规格): [规格:] [下拉] [声道名…] [延迟校准] [添加输出(贴右)] ——
+            // —— 第 2 行 (规格): [规格:] [下拉] [声道名…] [添加输出(贴右)] ——
             btnAddOutput.Left = panelW - rightEdge - btnAddOutput.Width;
-            btnCalibrate.Left = btnAddOutput.Left - gap - btnCalibrate.Width;
-            flwSpecChannels.Width = Math.Max(60, btnCalibrate.Left - gap - flwSpecChannels.Left);
+            flwSpecChannels.Width = Math.Max(60, btnAddOutput.Left - gap - flwSpecChannels.Left);
 
             // —— 卡片区: 宽高都跟面板走 ——
             // 以前靠 Anchor.Right/Bottom, 但初始 559x166 是按 600x600 窗口写的, 构造期父面板
@@ -822,6 +818,86 @@ namespace StereoSplitter
                 if (!used.Contains(id)) return id;
             }
             return "";
+        }
+
+        // ==================== 设置页 ====================
+
+        /// <summary>
+        /// 交给设置页摆放的控件, 顺序与 <see cref="SettingsForm"/> 的取用顺序严格一致:
+        /// 0 缓冲档位标签 / 1 缓冲档位下拉 / 2 自动时钟校正 / 3 捕获消音 / 4 关闭进托盘 / 5 延迟校准。
+        /// </summary>
+        internal Control[] SettingsControls()
+        {
+            return new Control[] { lblLatency, cmbLatency, chkDrift, chkMuteCapture, chkMinimizeToTray, btnCalibrate };
+        }
+
+        /// <summary>缓冲档位的短名 ("极低"、"极限"), 用于设置按钮的提示文案。</summary>
+        string LatencyProfileShort()
+        {
+            string[] names = { "标准", "低延迟", "极低", "超低", "极限" };
+            int i = cmbLatency.SelectedIndex;
+            if (i < 0 || i >= names.Length) i = 0;
+            return names[i];
+        }
+
+        /// <summary>
+        /// 齿轮按钮的提示: 把已迁走的两项状态摘要出来, 主界面不必再为它们各占一行。
+        /// 状态变化 (改档位 / 开关校正) 与设置页关闭时都会刷新。
+        /// </summary>
+        void RefreshSettingsTip()
+        {
+            if (btnSettings == null || tipTop == null) return;
+            tipTop.SetToolTip(btnSettings,
+                "设置\n" +
+                "缓冲档位: " + LatencyProfileShort() + "\n" +
+                "自动时钟校正: " + (driftMode == 0 ? "关" : "开") + "\n" +
+                "关闭时收进托盘: " + (chkMinimizeToTray.Checked ? "开" : "关"));
+        }
+
+        /// <summary>
+        /// 打开设置页。控件是"借出去再收回来"的: 搬移期间把 loadingSettings 临时置真,
+        /// 避免控件换父容器 (句柄重建) 时触发 SelectedIndexChanged/CheckedChanged 把中间态写进 ini,
+        /// 也避免 chkDrift 的事件在搬移途中去调引擎。
+        /// </summary>
+        void OpenSettings()
+        {
+            if (settingsForm != null && !settingsForm.IsDisposed)
+            {
+                settingsForm.Activate();
+                return;
+            }
+
+            bool prevLoading = loadingSettings;
+            SettingsForm f = null;
+            loadingSettings = true;          // 搬入阶段: 不落盘、不产生副作用
+            try
+            {
+                f = new SettingsForm(SettingsControls());
+                settingsForm = f;
+            }
+            finally
+            {
+                loadingSettings = prevLoading;
+            }
+            if (f == null) return;
+
+            try
+            {
+                // 模态: 设置页打开期间主界面不可操作, 不会出现"设置页还在、主窗口已开始分流"的错配。
+                // 运行中可切的项 (时钟校正/消音) 在这里改完关闭即可, 与原来点一下按钮的效果相同。
+                f.ShowDialog(this);
+            }
+            finally
+            {
+                loadingSettings = true;      // 搬回阶段同样不许落盘
+                try { f.ReturnControls(); }  // 幂等: 窗体关闭时已归还过一次
+                finally
+                {
+                    settingsForm = null;
+                    loadingSettings = prevLoading;
+                }
+                RefreshSettingsTip();
+            }
         }
 
         // ==================== 延迟校准 (麦克风互相关) ====================

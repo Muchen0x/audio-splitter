@@ -15,7 +15,7 @@ namespace StereoSplitter
 {
     partial class MainForm : Form
     {
-        NoWheelComboBox cmbDefault, cmbLatency, cmbSpec;
+        NoWheelComboBox cmbDefault, cmbSpec;
         NumericUpDown nudWaterInterval;
         // 输出卡片: 每张卡片 = 一台设备 (声道 + 延迟 + 主音量 + 静音; 多声道时另有每行声道与音量)
         readonly List<OutputCardModel> models = new List<OutputCardModel>();   // UI/持久化的权威模型
@@ -48,19 +48,30 @@ namespace StereoSplitter
         VolumeSlider volMaster, volGain;
         Label lblVolMaster, lblVolGain;
         // 顶部固定行需要用到的控件 (自适应重排时要改它们的坐标/宽度)
-        Label lblD, lblLatency, lblSpec, lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
+        Label lblD, lblSpec, lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
         Label lblDot, lblStatus;
         Button btnStart;
         Button btnRefresh;
         Button btnAddOutput;      // 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
-        Button btnCalibrate;      // 运行中置灰: 校准要独占端点放测试音
         Button btnClearLog;
+
+        // ---- 设置页的入口与选项 ----
+        // 这几个控件由主界面创建 (事件绑定 / ApplyUiLock / LoadSettings 读写全在这里), 但**不放进
+        // 主面板**, 而是打开设置页时交给 SettingsForm 摆进去、关闭时搬回来 (见 SettingsForm)。
+        // 声明成 internal 是为了让设置页能直接拿到它们, 不必再维护一份"控件清单"。
+        internal Button btnCalibrate;      // 运行中置灰: 校准要独占端点放测试音
+        internal Label lblLatency;
+        internal NoWheelComboBox cmbLatency;
+        internal CheckBox chkMinimizeToTray;
+        internal CheckBox chkDrift;
+        internal CheckBox chkMuteCapture;
+        GearButton btnSettings;            // 主面板右上角的齿轮
+        SettingsForm settingsForm;         // 打开中的设置页 (null = 未打开)
+        ToolTip tipTop;                    // 顶部控件提示 (需要随状态刷新设置按钮的文案)
         Infrastructure.SessionLog sessionLog;
         SplitContainer splitContainer;
         TextBox txtLog;
-        CheckBox chkMuteMaster, chkMuteCapture;
-        CheckBox chkMinimizeToTray;
-        CheckBox chkDrift;
+        CheckBox chkMuteMaster;
         NotifyIcon trayIcon;
         EventWaitHandle activateEvent;
         volatile bool exiting = false; // 后台启动线程读 → 需 volatile
@@ -297,35 +308,47 @@ namespace StereoSplitter
 
             lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
             cmbDefault = new NoWheelComboBox { Location = new Point(110, 12), Width = 250, DropDownWidth = 375, DropDownStyle = ComboBoxStyle.DropDownList };
-            chkMuteCapture = new NoCueCheckBox { Text = "消音", Location = new Point(363, 14), AutoSize = true };
             btnRefresh = new NoCueButton { Text = "刷新设备", Location = new Point(417, 11), Width = 72, Height = 23 };
+            // 设置入口: 右上角齿轮 (位置由 LayoutTopRows 按面板宽度贴右)
+            btnSettings = new GearButton { Location = new Point(440, 8) };
+            btnSettings.Click += (s2, e2) => OpenSettings();
+
+            // 消音 / 缓冲档位 / 时钟校正 / 关闭行为 / 延迟校准 都已移入设置页:
+            // 控件照旧在这里创建 (事件与持久化路径全留在 MainForm), 但不加入主面板,
+            // 由 SettingsForm 打开时搬入、关闭时搬回。位置只是占位, 搬入时会被重设。
+            chkMuteCapture = new NoCueCheckBox { Text = "消音", AutoSize = true };
+            lblLatency = new Label { Text = "延迟档位:", AutoSize = true };
+            cmbLatency = new NoWheelComboBox { Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
+            chkMinimizeToTray = new NoCueCheckBox { Text = "关闭时最小化到托盘", AutoSize = true };
+            chkDrift = new NoCueCheckBox { Text = "校正", AutoSize = true, Checked = true };
+            btnCalibrate = new NoCueButton { Text = "延迟校准", Width = 76, Height = 26 };
 
             // 增益独占一行 (主音量上方)。自绘滑条轨道垂直居中, 标签 Top = 滑条.Top 时
             // 文字中心落在轨道线上。滑条宽度不写死, 由 LayoutVolumeRows() 按面板宽度自适应
             // (和卡片里的音量条一样, 窗口拉宽就跟着变长)。
-            var lblG = new Label { Text = "增益:", Location = new Point(15, 72), AutoSize = true };
-            volGain = new VolumeSlider { Location = new Point(78, 72), Width = 300, Minimum = 0, Maximum = 300, Value = 100, SmallChange = 5, LargeChange = 5 };
+            var lblG = new Label { Text = "增益:", Location = new Point(15, 52), AutoSize = true };
+            volGain = new VolumeSlider { Location = new Point(78, 52), Width = 300, Minimum = 0, Maximum = 300, Value = 100, SmallChange = 5, LargeChange = 5 };
             lblVolGain = new Label { Text = "100%", AutoSize = false, Width = 46, Height = 20, TextAlign = ContentAlignment.MiddleLeft };
 
             // 主音量独占一行 (增益下方)。SmallChange/LargeChange=5: 点击/方向键/滚轮每次 5%, 与输出卡片一致
-            var lblVM = new Label { Text = "主音量:", Location = new Point(15, 106), AutoSize = true };
-            volMaster = new VolumeSlider { Location = new Point(78, 106), Width = 300, Minimum = 0, Maximum = 100, Value = 100, SmallChange = 5, LargeChange = 5 };
+            var lblVM = new Label { Text = "主音量:", Location = new Point(15, 86), AutoSize = true };
+            volMaster = new VolumeSlider { Location = new Point(78, 86), Width = 300, Minimum = 0, Maximum = 100, Value = 100, SmallChange = 5, LargeChange = 5 };
             lblVolMaster = new Label { Text = "100%", AutoSize = false, Width = 46, Height = 20, TextAlign = ContentAlignment.MiddleLeft };
             chkMuteMaster = new NoCueCheckBox { Text = "静音", AutoSize = false, Width = 56, Height = 20 };
 
             // 开始分流
-            btnStart = new NoCueButton { Text = "开始分流", Location = new Point(15, 142), Width = 130, Height = 35 };
-            lblDot = new Label { Text = "●", Location = new Point(162, 147), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
-            lblStatus = new Label { Text = "状态: 就绪", Location = new Point(182, 152), AutoSize = true, ForeColor = Color.Gray };
+            btnStart = new NoCueButton { Text = "开始分流", Location = new Point(15, 122), Width = 130, Height = 35 };
+            lblDot = new Label { Text = "●", Location = new Point(162, 127), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
+            lblStatus = new Label { Text = "状态: 就绪", Location = new Point(182, 132), AutoSize = true, ForeColor = Color.Gray };
 
             // 规格行: 规格下拉 + 右侧各声道名称(带输出路数角标) + 最右「添加输出」
-            lblSpec = new Label { Text = "规格:", Location = new Point(15, 189), AutoSize = true };
-            cmbSpec = new NoWheelComboBox { Location = new Point(62, 185), Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
+            lblSpec = new Label { Text = "规格:", Location = new Point(15, 169), AutoSize = true };
+            cmbSpec = new NoWheelComboBox { Location = new Point(62, 165), Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
             cmbSpec.Items.AddRange(new object[] { "单声道", "立体声", "2.1", "四声道", "5.1" });
             cmbSpec.SelectedIndex = 1;
             flwSpecChannels = new FlowLayoutPanel
             {
-                Location = new Point(166, 182),
+                Location = new Point(166, 162),
                 Size = new Size(310, 30),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
@@ -335,16 +358,8 @@ namespace StereoSplitter
             btnAddOutput = new NoCueButton
             {
                 Text = "添加输出",
-                Location = new Point(482, 184),
+                Location = new Point(482, 164),
                 Width = 92,
-                Height = 26
-            };
-            // 延迟校准: 与「添加输出」同一行, 都在右侧贴边 (见 LayoutTopRows)
-            btnCalibrate = new NoCueButton
-            {
-                Text = "延迟校准",
-                Location = new Point(398, 184),
-                Width = 76,
                 Height = 26
             };
 
@@ -354,7 +369,7 @@ namespace StereoSplitter
             // (见 ComputeCardGrid), 所以窗口变宽是"多一列", 而不是把单张卡片拉成一根长条。
             cardHost = new BufferedFlowPanel
             {
-                Location = new Point(15, 216),
+                Location = new Point(15, 196),
                 Size = new Size(559, 166),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = true,
@@ -370,18 +385,13 @@ namespace StereoSplitter
             // 该下拉决定"预缓冲深度 + WASAPI 输出缓冲"整套组合, 直接影响稳态延迟, 不是启动耗时。
             // 选项里的总预估 = 捕获(约10ms) + 内部缓冲目标(driftTarget) + 输出缓冲, 不含 USB/DAC/声波;
             // 数字由 LatencyProfiles 现算, 改档位参数时文案自动跟随。
-            lblLatency = new Label { Text = "延迟档位:", Location = new Point(15, 45), AutoSize = true };
-            cmbLatency = new NoWheelComboBox { Location = new Point(85, 42), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
+            // 控件本身摆在设置页 (见 SettingsForm), 这里只把选项填进去。
             string[] latNames = { "标准", "低延迟", "极低", "超低", "极限" };
             string[] latWarn = { "", "", ", 易断音", ", 易断音", ", 频繁断音" };
             for (int i = 0; i < LatencyProfiles.Length; i++)
                 cmbLatency.Items.Add(latNames[i] + " (总预估" +
                     AudioEngine.EstimatedTotalMs(LatencyProfiles[i][0], LatencyProfiles[i][1]) + "ms" + latWarn[i] + ")");
             cmbLatency.SelectedIndex = 0;
-
-            chkMinimizeToTray = new NoCueCheckBox { Text = "关闭时最小化到托盘", Location = new Point(294, 44), AutoSize = true };
-            chkDrift = new NoCueCheckBox { Text = "校正", AutoSize = true, Checked = true };
-            chkDrift.Location = new Point(chkMinimizeToTray.Right + 8, chkMinimizeToTray.Top);
 
             // 卡片宽度跟随容器可视宽度。AutoScroll 的竖滚动条出现/消失只改
             // ClientSize 不改 Size (不触发 Resize), 所以两个事件都要挂:
@@ -437,27 +447,24 @@ namespace StereoSplitter
             cmsLog.Items.Add("全选", null, (s, e) => txtLog.SelectAll());
             txtLog.ContextMenuStrip = cmsLog;
 
-            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart, lblSpec, cmbSpec, flwSpecChannels, btnCalibrate, btnAddOutput, cardHost });
+            // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
+            // 都在设置页里 (控件由本类持有, 由 SettingsForm 搬入搬出)。
+            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, btnRefresh, btnSettings, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart, lblSpec, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
 
             // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。
             // 必须放在所有控件都建好之后（水位监控那几个是后面才 new 的）。
-            var tipTop = new ToolTip();
+            // 已迁入设置页的选项由设置页自己的说明文字负责解释, 这里不再挂提示。
+            tipTop = new ToolTip();
             tipTop.SetToolTip(cmbDefault, "把哪台虚拟声卡的输出抓过来。\n运行中不可改（要重开捕获端点），需先停止分流。");
             tipTop.SetToolTip(btnRefresh, "重新枚举输出设备（插拔 USB/DAC 后用）。\n运行中不可刷新（会改动卡片与链路），需先停止分流。");
-            tipTop.SetToolTip(cmbLatency, "预缓冲深度 + 输出缓冲的整套预设，决定稳态延迟与抗断音能力。\n运行中不可改（缓冲在启动时按档位建好），需先停止分流。");
             tipTop.SetToolTip(cmbSpec, "可用的逻辑声道清单（单声道…5.1）。\n运行中不可改（会改变矩阵与每路声道数），需先停止分流。");
             tipTop.SetToolTip(btnAddOutput, "新增一张输出卡片（一台设备）。\n运行中不可加卡（会改变链路），需先停止分流。");
-            tipTop.SetToolTip(btnCalibrate, "用麦克风测出各路声音到达耳朵的真实延迟差，并自动补齐。\n" +
-                "适用于有线 + 无线（蓝牙/USB）混用时对不齐的情况：延迟藏在设备内部，驱动报不出来，只能实测。\n" +
-                "麦克风请放在实际听音位置（这样距离差也会被一并补偿）。\n运行中不可校准（测试音会和分流输出混在一起），需先停止分流。");
             tipTop.SetToolTip(volGain, "总增益，作用在采样层。\n运行中可调。");
             tipTop.SetToolTip(volMaster, "总音量，作用在采样层。\n运行中可调。");
             tipTop.SetToolTip(chkMuteMaster, "总静音。\n运行中可调。");
-            tipTop.SetToolTip(chkMuteCapture, "锁定捕获端静音（外部取消静音会被恢复）。\n运行中可调。");
-            tipTop.SetToolTip(chkDrift, "漂移闭环校正。\n运行中可切（立即生效）。");
-            tipTop.SetToolTip(chkMinimizeToTray, "关闭窗口时最小化到托盘。\n与本机音频无关，随时可改。");
             tipTop.SetToolTip(nudWaterInterval, "水位监控的刷新间隔（秒，1~3600；0 = 关闭监控）。\n随时可改，回车提交。");
+            RefreshSettingsTip();
             // 增益/主音量两行的滑条宽度跟面板宽度走 (窗口拉宽自动变长);
             // 顶部三行与日志标题行同理, 窗口变窄时右侧控件贴右缘, 不会越界截断
             splitContainer.Panel1.ClientSizeChanged += (s, e) => { LayoutTopRows(); LayoutVolumeRows(); };
@@ -475,12 +482,13 @@ namespace StereoSplitter
                 txtLog.Clear();
                 if (sessionLog != null) sessionLog.Clear();
             };
-            chkMinimizeToTray.CheckedChanged += (s, e) => SaveSettings();
+            chkMinimizeToTray.CheckedChanged += (s, e) => { SaveSettings(); RefreshSettingsTip(); };
             chkDrift.CheckedChanged += (s, e) =>
             {
                 driftMode = chkDrift.Checked ? 1 : 0;
                 if (loadingSettings) return;
                 SaveSettings();
+                RefreshSettingsTip();   // 齿轮提示里要跟着显示"自动时钟校正: 开/关"
                 if (running && engine != null)
                 {
                     try
@@ -491,7 +499,13 @@ namespace StereoSplitter
                     catch (Exception ex) { Log("[错误] 切换时钟校正失败: " + ex.Message); }
                 }
             };
-            cmbLatency.SelectedIndexChanged += (s, e) => { if (!loadingSettings) SaveSettings(); };
+            // 这两项的状态只反映在齿轮提示里, 改完顺手刷新 (挂载期间 loadingSettings 为真, 不会刷)
+            cmbLatency.SelectedIndexChanged += (s, e) =>
+            {
+                if (loadingSettings) return;
+                SaveSettings();
+                RefreshSettingsTip();
+            };
             nudWaterInterval.ValueChanged += (s, e) =>
             {
                 // 间隔只要 > 0 就照用: 1~4 秒也允许 (以前强制抬到 5 秒, 想看短间隔反而改不动)
@@ -534,6 +548,7 @@ namespace StereoSplitter
             settings = new Infrastructure.SettingsStore(IniPath);
             LoadSettings();
             InitTray();
+            RefreshSettingsTip();   // 读盘后把"缓冲档位/校正状态"写进齿轮提示
 
             // 会话日志文件: 每会话一个 session 文件, UI + 文件双写
             try { sessionLog = new Infrastructure.SessionLog(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log")); }

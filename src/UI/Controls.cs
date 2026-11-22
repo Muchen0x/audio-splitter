@@ -401,6 +401,121 @@ namespace StereoSplitter
         }
     }
 
+    /// <summary>
+    /// 设置页的分组卡片: 白底 + 圆角描边。
+    /// <para>刻意照抄 <see cref="OutputCardControl"/> 的外框画法 (同一边框色、同一圆角半径),
+    /// 让设置页与主界面看起来是同一套控件, 而不是另开一套风格。圆角外的小方块用窗体底色补齐,
+    /// 否则四个角会露出白边。</para>
+    /// </summary>
+    class SoftCard : Panel
+    {
+        static readonly Color BorderColor = Color.FromArgb(203, 208, 216);
+        const int CornerRadius = 8;
+
+        public SoftCard()
+        {
+            BackColor = Color.White;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.ResizeRedraw, true);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            Color outside = Parent != null ? Parent.BackColor : BackColor;
+            using (var outsideBrush = new SolidBrush(outside))
+                g.FillRectangle(outsideBrush, ClientRectangle);
+
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (var path = UiDraw.RoundRect(rect, CornerRadius))
+            {
+                using (var fill = new SolidBrush(BackColor))
+                    g.FillPath(fill, path);
+                using (var pen = new Pen(BorderColor))
+                    g.DrawPath(pen, path);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 设置入口按钮: 自绘齿轮。
+    /// <para>不用字体图标 (Segoe MDL2 在精简版/老系统上未必存在, 缺字时会画成方块),
+    /// 也不用文字 "⚙" (不同字体渲染差异大, 有的字体画成黑白两色 emoji)。
+    /// 路径直接画: 8 个齿 + 圆盘 + 挖孔, 只在悬停/按下时给一层浅底, 与主界面其余扁平控件一致。</para>
+    /// </summary>
+    class GearButton : Control
+    {
+        static readonly Color IconColor = Color.FromArgb(95, 94, 90);
+        static readonly Color IconActive = Color.FromArgb(44, 44, 42);
+        static readonly Color HoverBack = Color.FromArgb(234, 234, 234);
+        static readonly Color PressBack = Color.FromArgb(216, 216, 216);
+
+        bool hot, down;
+
+        public GearButton()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor
+                | ControlStyles.ResizeRedraw, true);
+            BackColor = Color.Transparent;
+            Size = new Size(28, 28);
+            Cursor = Cursors.Hand;
+            TabStop = false;
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { hot = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hot = false; down = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { down = true; Invalidate(); } base.OnMouseDown(e); }
+        protected override void OnMouseUp(MouseEventArgs e) { if (down) { down = false; Invalidate(); } base.OnMouseUp(e); }
+        protected override void OnEnabledChanged(EventArgs e) { if (!Enabled) { hot = false; down = false; } Invalidate(); base.OnEnabledChanged(e); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            Color back = Parent != null ? Parent.BackColor : SystemColors.Control;
+            using (var b = new SolidBrush(back)) g.FillRectangle(b, ClientRectangle);
+
+            if (hot || down)
+            {
+                using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), 6))
+                using (var fill = new SolidBrush(down ? PressBack : HoverBack))
+                    g.FillPath(fill, path);
+            }
+
+            float cx = Width / 2f;
+            float cy = Height / 2f + (down ? 1f : 0f);
+            float rOut = Math.Min(Width, Height) * 0.36f;
+            Color icon = Enabled ? ((hot || down) ? IconActive : IconColor) : Color.FromArgb(170, 170, 170);
+            DrawGear(g, cx, cy, rOut, rOut * 0.70f, rOut * 0.28f, icon, (hot || down) ? (down ? PressBack : HoverBack) : back);
+        }
+
+        /// <summary>齿轮: 8 个齿绕中心旋转铺开 + 实心圆盘 + 用底色挖出中心孔。</summary>
+        static void DrawGear(Graphics g, float cx, float cy, float rOut, float rBody, float rHole, Color icon, Color holeBack)
+        {
+            const int teeth = 8;
+            using (var brush = new SolidBrush(icon))
+            {
+                float tw = Math.Max(2f, rOut * 0.40f);
+                float len = rOut - rBody + 1.4f;
+                System.Drawing.Drawing2D.GraphicsState st = g.Save();
+                g.TranslateTransform(cx, cy);
+                for (int i = 0; i < teeth; i++)
+                {
+                    g.RotateTransform(360f / teeth);
+                    g.FillRectangle(brush, -tw / 2f, -rOut, tw, len);
+                }
+                g.Restore(st);
+                g.FillEllipse(brush, cx - rBody, cy - rBody, rBody * 2, rBody * 2);
+            }
+            using (var bg = new SolidBrush(holeBack))
+                g.FillEllipse(bg, cx - rHole, cy - rHole, rHole * 2, rHole * 2);
+        }
+    }
+
     /// <summary>自绘用的公共绘制工具。</summary>
     static class UiDraw
     {
