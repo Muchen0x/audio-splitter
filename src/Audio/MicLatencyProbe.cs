@@ -24,6 +24,8 @@ namespace StereoSplitter
         /// <summary>多次测量之间的极差 (毫秒)。大 = 环境不稳或回声重, 建议重测。</summary>
         public double SpreadMs;
         public int Takes;
+        /// <summary>本次每一段的实测值 (毫秒), 供界面逐条打印, 便于判断是整体偏还是单段离群。</summary>
+        public readonly List<double> Samples = new List<double>();
     }
 
     /// <summary>
@@ -56,12 +58,22 @@ namespace StereoSplitter
         const float PlayGain = 0.25f;
         /// <summary>扫频之前的静音: 让 WASAPI 缓冲先排满, 保证 Play() 到出声的路径是稳态。</summary>
         const double LeadInSeconds = 0.150;
-        /// <summary>扫频之后的静音尾巴 (仅用于把播放队列填满, 不参与分析)。</summary>
-        const double TailSeconds = 0.500;
-        /// <summary>每次测量从 Play() 起等多久再分析 (毫秒)。</summary>
-        const int TakeWaitMs = 1150;
+        /// <summary>
+        /// 每段的固定周期 (秒)。同一段内 = 前导静音 + 扫频 + 余量, 段与段首尾相接。
+        /// <para>这么做是为了**一个播放流里连测多次**: 蓝牙端点每次新建流都要重新激活 A2DP 链路,
+        /// 冷启动开销可达上百毫秒且每次不同, 逐次新建流等于在测"冷启动延迟"。
+        /// 流内分段则是稳态 —— 与分流运行时的情形一致。</para>
+        /// </summary>
+        const double SegmentSeconds = 1.0;
+        /// <summary>可测延迟上限 (秒)。超过它扫频会落到下一段里, 无法与本段区分。</summary>
+        const double MaxMeasurableSeconds = SegmentSeconds - 0.05 - LeadInSeconds;
+        /// <summary>正式测量前的预热段数。2 段 ≈ 2 秒: 足够让蓝牙建链、编码器起振、功放退出待机。</summary>
+        const int WarmupSegments = 2;
         /// <summary>相关系数下限。低于它多半是没收到声/环境太吵, 结果不可信。</summary>
-        public const double MinConfidence = 0.25;
+        public const double MinConfidence = 0.35;
+
+        /// <summary>可测延迟上限 (毫秒)。超过它扫频会落进下一段, 无法与本段区分。</summary>
+        public static double MaxMeasurableMs { get { return MaxMeasurableSeconds * 1000.0; } }
 
         enum SampleKind { Unsupported, Float32, Pcm16, Pcm24, Pcm32 }
 
@@ -84,6 +96,19 @@ namespace StereoSplitter
         volatile bool captureFailed;
         Exception captureError;
         string captureDeviceId = "";
+
+        int outLatencyMs = 60;
+        /// <summary>
+        /// 播放测试音时向端点申请的缓冲 (毫秒)。
+        /// <para>必须与实际分流时用的「延迟」档位一致: 不同端点对同一个缓冲请求的实际分配不同
+        /// (USB 声卡基本照给, 蓝牙/A2DP 有自己的下限), 所以请求值不同 → 两路的缓冲差跟着变 →
+        /// 测出来的**差值**就偏了。这正是"校准完仍有先后"的主因, 所以它由上层按当前档位传入。</para>
+        /// </summary>
+        public int OutLatencyMs
+        {
+            get { return outLatencyMs; }
+            set { outLatencyMs = Math.Max(5, Math.Min(500, value)); }
+        }
 
         public string CaptureDeviceName { get { return mic == null ? "(未打开)" : Devices.DeviceCatalog.SafeName(mic); } }
         public int CaptureRate { get { return rate; } }
@@ -198,8 +223,9 @@ namespace StereoSplitter
 
         /// <summary>
         /// 测量某一路输出设备的端到端延迟。
-        /// <para><paramref name="takes"/> 次独立测量, 取相关系数最高的一次作为结果,
-        /// 同时返回两次之间的极差供上层判断稳定性。</para>
+        /// <para>一次打开播放流, 里面连续走「<see cref="WarmupSegments"/> 段预热 + <paramref name="takes"/> 段测量」。
+        /// 预热段不参与统计, 只用来把端点从空闲推到稳态 (蓝牙要建链、功放要退待机);
+        /// 测量段取中位数, 极差反映稳定性。</para>
         /// </summary>
         public LaneMeasurement MeasureLane(string renderDeviceId, int takes)
         {
@@ -217,54 +243,62 @@ namespace StereoSplitter
                 if (dev == null) throw new InvalidOperationException("输出设备已不在 (被拔出或禁用)");
 
                 var result = new LaneMeasurement { Takes = takes, LatencyMs = double.NaN, Confidence = 0 };
-                var samples = new List<double>();
                 Exception lastError = null;
 
-                for (int k = 0; k < takes; k++)
-                {
-                    if (stopping) throw new InvalidOperationException("已取消");
-                    try
-                    {
-                        double ms, conf;
-                        PlayOnce(dev, out ms, out conf);
-                        samples.Add(ms);
-                        if (conf > result.Confidence) result.Confidence = conf;
-                    }
-                    catch (Exception ex)
-                    {
-                        // 单次失败不放弃整路: 第一次最常见的失败原因是设备刚从空闲唤醒
-                        // (蓝牙/USB 声卡上电要几百毫秒, 首包可能整段落在分析窗之外)。
-                        lastError = ex;
-                    }
-                    // 两次之间留一点空隙, 免得上一次的尾巴还在采集缓冲里
-                    Thread.Sleep(150);
-                }
+                List<double> latencies, confidences;
+                List<string> errors;
+                PlayRun(dev, takes, out latencies, out confidences, out errors);
 
-                if (samples.Count == 0)
+                for (int i = 0; i < latencies.Count; i++)
+                {
+                    result.Samples.Add(latencies[i]);
+                    if (confidences[i] > result.Confidence) result.Confidence = confidences[i];
+                }
+                for (int i = 0; i < errors.Count && lastError == null; i++)
+                    lastError = new InvalidOperationException(errors[i]);
+
+                if (result.Samples.Count == 0)
                 {
                     if (lastError != null) throw lastError;
                     throw new InvalidOperationException("测量失败 (未取到有效样本)");
                 }
-                // 中位数: 单次离群 (系统调度、突发噪声) 不应该把结果拖走
-                var sorted = new List<double>(samples);
+                // 中位数: 单段离群 (系统调度、突发噪声) 不应该把结果拖走
+                var sorted = new List<double>(result.Samples);
                 sorted.Sort();
                 result.LatencyMs = sorted[sorted.Count / 2];
                 result.SpreadMs = sorted[sorted.Count - 1] - sorted[0];
-                result.Takes = samples.Count;
+                result.Takes = result.Samples.Count;
                 return result;
             }
             finally { if (dev != null) { try { dev.Dispose(); } catch { } } }
         }
 
-        /// <summary>向一个端点播一次扫频, 并算出它到达麦克风的时间。</summary>
-        void PlayOnce(MMDevice dev, out double latencyMs, out double confidence)
+        /// <summary>
+        /// 在**同一个播放流**里连播 预热段 + 测量段, 再逐段定位扫频。
+        ///
+        /// <para><b>为什么要一个流</b>: 每次新建 WasapiOut 都会让端点重新激活 —— 蓝牙 A2DP 建链、
+        /// USB 声卡退出省电, 首包要晚几十到几百毫秒, 而且每次都不同。逐次新建流测出来的是
+        /// "冷启动延迟", 与分流运行时的持续流不是一回事, 差值也因此被放大/压缩。
+        /// 流内分段则从第二段起就是稳态。</para>
+        ///
+        /// <para><b>时基</b>: 流内段间隔精确等于 <see cref="SegmentSeconds"/> (由设备时钟驱动),
+        /// 所以第 k 段的起点 = t0 + (预热段数 + k) × 段长。t0 是调用 Play() 的时刻, 它到真正出声
+        /// 还有一段固定延迟 (预填充 + 端点缓冲), 这段被算进结果里 —— 这正是运行时分流也要付的成本,
+        /// 而且两路同源可比。</para>
+        /// </summary>
+        void PlayRun(MMDevice dev, int takes, out List<double> latencies, out List<double> confidences, out List<string> errors)
         {
+            latencies = new List<double>();
+            confidences = new List<double>();
+            errors = new List<string>();
+
             WaveFormat fmt = dev.AudioClient.MixFormat;
             SampleKind kind = KindOf(fmt);
             if (kind == SampleKind.Unsupported)
                 throw new InvalidOperationException("输出设备格式不支持: " + fmt);
 
-            byte[] payload = BuildPayload(fmt, kind);
+            int segments = WarmupSegments + takes;
+            byte[] payload = BuildPayload(fmt, kind, segments);
             // 用显式 IEEE float 建 provider: WASAPI 共享模式的混音引擎永远是 float32,
             // 这样不会被 WAVE_FORMAT_EXTENSIBLE 的子格式判定坑到; 万一设备拒绝, 再退回混音格式
             // (payload 本来就是按混音格式的采样类型生成的, 两条路径共用同一份字节)。
@@ -273,7 +307,8 @@ namespace StereoSplitter
                 : fmt;
 
             double t0;
-            using (var player = new WasapiOut(dev, AudioClientShareMode.Shared, false, 60))
+            int waitMs = (int)Math.Round(segments * SegmentSeconds * 1000) + 400;
+            using (var player = new WasapiOut(dev, AudioClientShareMode.Shared, false, outLatencyMs))
             {
                 try
                 {
@@ -285,39 +320,72 @@ namespace StereoSplitter
                 }
                 t0 = clock.Elapsed.TotalSeconds;
                 player.Play();
-                Thread.Sleep(TakeWaitMs);
+                Thread.Sleep(waitMs);
                 try { player.Stop(); } catch { }
             }
 
-            Analyze(t0, out latencyMs, out confidence);
+            for (int k = 0; k < takes; k++)
+            {
+                if (stopping) return;
+                double segT0 = t0 + (WarmupSegments + k) * SegmentSeconds;
+                try
+                {
+                    double ms, conf;
+                    Analyze(segT0, out ms, out conf);
+                    latencies.Add(ms);
+                    confidences.Add(conf);
+                }
+                catch (Exception ex)
+                {
+                    // 单段失败不放弃整路: 取其余段的中位数仍然可用
+                    errors.Add(ex.Message);
+                }
+            }
         }
 
-        /// <summary>在已录到的样本里定位扫频起点。t0 = 调用 Play() 的时刻。</summary>
-        void Analyze(double t0, out double latencyMs, out double confidence)
+        /// <summary>在已录到的样本里定位本段扫频的起点。<paramref name="segT0"/> = 该段在时间轴上的起点。</summary>
+        void Analyze(double segT0, out double latencyMs, out double confidence)
         {
-            // 分析窗: t0 前 50ms 到 t0 后约 1.1s。前导静音 150ms + 设备延迟 + 采集缓冲都落在里面。
+            // 分析窗卡死在本段内: 往前留 50ms 兜住时基误差, 往后留到段末前 50ms —— 再往后就可能
+            // 抓到**下一段**的扫频 (流内分段是首尾相接的), 那会把结果算成"延迟 = 段长"。
             const double preRoll = 0.05;
-            double segStart = t0 - preRoll;
-            double segEnd = t0 + LeadInSeconds + ChirpSeconds + 0.90;
+            double segStart = segT0 - preRoll;
+            double segEnd = segT0 + SegmentSeconds - 0.05;
             int n = (int)Math.Round((segEnd - segStart) * rate);
+
             if (n <= 0) { latencyMs = double.NaN; confidence = 0; return; }
 
             // —— 时基: 采集流是连续的, 所以"采样序号 → 时刻"是一条直线, 只需要一个原点。
-            // 原点用**所有块的中位数**估计 (每块都能反推出一个原点: 到达时刻 − 该块末采样序号/采样率)。
+            // 原点用**块的中位数**估计 (每块都能反推出一个原点: 到达时刻 − 该块末采样序号/采样率)。
             // 为什么不用"逐块时间戳": DataAvailable 的到达时刻有几十毫秒抖动 (上限就是一个缓冲长度),
             // 逐块用它会让每次测量的基准都晃一下, 实测同一台设备的环路延迟在 35~44ms 之间跳。
             // 单原点则把这点抖动抹平, 剩下的固定偏差对两路完全相同, 相减时抵消。
+            //
+            // 只取**离本段最近**的若干块: 麦克风时钟与系统时钟有 ppm 级偏差, 一次校准要连着跑十几秒,
+            // 用整场会话的中位数会让前后的段各带一点点偏移。就近取则每段都自洽。
             double origin;
             int[] absIdx = null;
             float[][] datas = null;
             lock (gate)
             {
                 if (blocks.Count == 0) { latencyMs = double.NaN; confidence = 0; return; }
-                var origins = new double[blocks.Count];
+                double lo = segStart - 0.25, hi = segEnd + 0.25;
+                var near = new List<double>();
                 for (int b = 0; b < blocks.Count; b++)
-                    origins[b] = blockStart[b] - (double)blockIndex[b] / rate;
-                Array.Sort(origins);
-                origin = origins[origins.Length / 2];
+                {
+                    double t = blockStart[b];
+                    if (t + (double)blocks[b].Length / rate < lo || t > hi) continue;
+                    near.Add(t - (double)blockIndex[b] / rate);
+                }
+                if (near.Count < 3)
+                {
+                    // 段附近没有足够的块 (例如段落在采集启动之前): 退回全部块, 至少能给出结果
+                    near.Clear();
+                    for (int b = 0; b < blocks.Count; b++)
+                        near.Add(blockStart[b] - (double)blockIndex[b] / rate);
+                }
+                near.Sort();
+                origin = near[near.Count / 2];
                 datas = blocks.ToArray();
                 absIdx = blockIndex.ToArray();
             }
@@ -360,7 +428,19 @@ namespace StereoSplitter
             }
 
             double arrival = origin + (s0 + hit.Offset) / rate;
-            latencyMs = (arrival - t0 - LeadInSeconds) * 1000.0;
+            latencyMs = (arrival - segT0 - LeadInSeconds) * 1000.0;
+
+            // 超量程: 说明"扫频"其实是被本段窗口边缘截到的下一段 (或者端点延迟异常大)。
+            // 报错而不是给一个假值 —— 一个偏了整整一段的数字会让补偿方向都错。
+            if (latencyMs < -20 || latencyMs > MaxMeasurableSeconds * 1000.0)
+            {
+                double bad = latencyMs;
+                latencyMs = double.NaN;
+                throw new InvalidOperationException(
+                    "测得的延迟 " + bad.ToString("0") + " ms 超出量程 (0~" +
+                    (MaxMeasurableSeconds * 1000).ToString("0") + " ms)。" +
+                    "多半是该端点延迟异常大, 或麦克风先听到了别的声源 (另一只音箱/回声)。");
+            }
         }
 
         public void Stop()
@@ -428,6 +508,7 @@ namespace StereoSplitter
         /// <para>两步: 先用滑动峰值包络粗定位"声音从哪开始"(把搜索范围从整段压到几十毫秒),
         /// 再在这个窄窗里做归一化互相关 + 抛物线插值。归一化分母是本窗的信号能量, 所以
         /// 音量大小不影响峰的位置; 取绝对值后再插值, 所以麦克风/音箱极性反了也能正确定位。</para>
+        /// <para>**取最早的显著峰**, 不取最强峰: 直达声总比反射先到, 而反射可能更强。</para>
         /// </summary>
         public static ChirpHit LocateChirp(float[] seg, float[] tmpl)
         {
@@ -472,9 +553,14 @@ namespace StereoSplitter
             int to = Math.Min(seg.Length - m, first + blk * 40);
             if (to < from) to = from;
 
-            // —— 2) 归一化互相关 ——
+            // —— 2) 互相关 ——
+            // 同时留两份: score = 归一化余弦 (只用来判断"这段到底像不像扫频", 与音量无关),
+            // dot = 未归一化的匹配滤波输出 (线性叠加: 直达与反射的能量各算各的, 因此**先到的那个
+            // 一定先抬起来**)。判断"哪个峰是直达声"必须用 dot, 不能用 score —— 反射更强时,
+            // 归一化会把直达主瓣的得分压下去 (分母凑进了反射的能量), 直达峰反而被埋没。
             int nOff = to - from + 1;
             var score = new double[nOff];
+            var dots = new double[nOff];
             double bestAbs = 0, bestSigned = 0;
             int bestAt = -1;
             for (int o = from; o <= to; o++)
@@ -489,19 +575,66 @@ namespace StereoSplitter
                 }
                 double sc = dot / (Math.Sqrt(energy) + 1e-12);
                 score[o - from] = sc;
+                dots[o - from] = dot;
                 double a = Math.Abs(sc);
                 if (a > bestAbs) { bestAbs = a; bestAt = o; bestSigned = sc; }
             }
             if (bestAt < 0 || bestAbs <= 0) return miss;
 
-            // —— 3) 抛物线插值 (在带符号的分数上做, 极性取最优峰的正负) ——
-            double sub = 0;
-            if (bestAt > from && bestAt < to)
+            // —— 3) 直达声优先 ——
+            // 麦克风听到的是"直达声 + 一堆反射"。墙面/桌面反射叠加后会形成**比直达声更强**的峰,
+            // 直接取全局最大值就会锁到反射上, 测出来的延迟偏大几十毫秒; 而两只音箱的房间反射条件
+            // 不同 → 两路各偏一点 → 差值跟着歪 (表现为"补完还是差一口气")。
+            //
+            // 判据不是"阈值": 扫频匹配滤波的主瓣由带宽决定 (0.28ms ≈ 13 采样), 主瓣左沿早就过 25%,
+            // 按阈值找会偏到主瓣的肩上去。正确的问题是"主峰之前还有没有一个**独立的**显著峰":
+            // 从主峰向前一路走到 |dot| 掉到 25% 以下 (那就是两峰之间的谷), 再看谷**之前**的最高点 ——
+            // 它若仍达到 25%, 就是一个独立的前置峰 (直达声先到), 取它; 否则谷前只有旁瓣/噪声, 仍取主峰。
+            // 旁瓣与主峰之间没有谷, 所以这个判据天然不会把旁瓣当直达声。
+            int pick = bestAt;
+            double pickSigned = bestSigned;
+            double maxDot = 0;
+            for (int i = 0; i < nOff; i++) { double a = Math.Abs(dots[i]); if (a > maxDot) maxDot = a; }
+            if (maxDot > 0)
             {
-                double sign = bestSigned < 0 ? -1.0 : 1.0;
-                double y0 = score[bestAt - 1 - from] * sign;
-                double y1 = score[bestAt - from] * sign;
-                double y2 = score[bestAt + 1 - from] * sign;
+                // 关键约束: **只在主峰前 5ms 以外**找候选。主瓣肩和第一旁瓣都挤在峰值 ±0.3ms 内,
+                // 只要隔开 5ms, 它们就不可能被误认为"另一个声源"; 而"直达 vs 一次反射"的间隔
+                // 通常是几毫秒到几十毫秒, 正好落在这个区间里。
+                int p = bestAt - from;
+                int gap = Math.Max(8, m / 12);          // ≈5ms (<1/12 模板长)
+                int lo = Math.Max(0, p - m);            // 最多往前一个模板长 (≈60ms)
+                int hi = p - gap;
+                if (hi > lo)
+                {
+                    int j = -1;
+                    double bj = 0;
+                    for (int k = lo; k < hi; k++)
+                    {
+                        double a = Math.Abs(dots[k]);
+                        if (a > bj) { bj = a; j = k; }
+                    }
+                    // 45%: 直达声比反射弱一些也要认 (比这更弱的话, 多半是同一只音箱的余响,
+                    // 强行提前反而会把结果拉早)。归一化分数在这里不能用 —— 它会被分母里的
+                    // 反射能量稀释, 直达越弱越容易被埋掉, 所以判据建在未归一化的 dot 上。
+                    if (j >= 0 && bj >= maxDot * 0.45)
+                    {
+                        // 顺着该峰的上升沿走到峰顶 (上限 1/4 模板长, 免得跨到别的声源上)
+                        int lim = Math.Min(nOff - 1, j + m / 4);
+                        while (j < lim && Math.Abs(dots[j + 1]) >= Math.Abs(dots[j])) j++;
+                        pick = from + j;
+                        pickSigned = score[j];
+                    }
+                }
+            }
+
+            // —— 4) 抛物线插值 (在带符号的分数上做, 极性取选中峰的正负) ——
+            double sub = 0;
+            if (pick > from && pick < to)
+            {
+                double sign = pickSigned < 0 ? -1.0 : 1.0;
+                double y0 = score[pick - 1 - from] * sign;
+                double y1 = score[pick - from] * sign;
+                double y2 = score[pick + 1 - from] * sign;
                 double den = y0 - 2 * y1 + y2;
                 if (Math.Abs(den) > 1e-12)
                 {
@@ -512,7 +645,7 @@ namespace StereoSplitter
 
             return new ChirpHit
             {
-                Offset = bestAt + sub,
+                Offset = pick + sub,
                 Score = bestAbs / tmplNorm,   // 除以模板范数 → 余弦相似度, 与音量无关
                 Found = true
             };
@@ -542,23 +675,33 @@ namespace StereoSplitter
             return SampleKind.Unsupported;
         }
 
-        /// <summary>按目标格式生成整段播放缓冲: 前导静音 + 扫频(所有声道同相) + 尾巴静音。</summary>
-        static byte[] BuildPayload(WaveFormat fmt, SampleKind kind)
+        /// <summary>
+        /// 按目标格式生成整段播放缓冲: <paramref name="segments"/> 个首尾相接的等长段,
+        /// 每段 = 前导静音 + 扫频 + 余量 (所有声道同相)。
+        /// </summary>
+        static byte[] BuildPayload(WaveFormat fmt, SampleKind kind, int segments)
         {
+            if (segments < 1) segments = 1;
             int r = fmt.SampleRate;
             int ch = fmt.Channels;
             int bytesPer = fmt.BitsPerSample / 8;
+            int segLen = (int)Math.Round(SegmentSeconds * r);
             int lead = (int)Math.Round(LeadInSeconds * r);
-            int tail = (int)Math.Round(TailSeconds * r);
             float[] chirp = BuildChirp(r);
-            int total = lead + chirp.Length + tail;
+            long total = (long)segLen * segments;
             var buf = new byte[total * ch * bytesPer];
-            for (int i = 0; i < chirp.Length; i++)
+            for (int s = 0; s < segments; s++)
             {
-                float v = chirp[i] * PlayGain;
-                int frame = lead + i;
-                for (int c = 0; c < ch; c++)
-                    WriteSample(buf, (frame * ch + c) * bytesPer, kind, v);
+                int segStartFrame = s * segLen;
+                for (int i = 0; i < chirp.Length; i++)
+                {
+                    int frame = lead + i;
+                    if (frame >= segLen) break;          // 段长被削到放不下扫频时截断 (正常人不会)
+                    float v = chirp[i] * PlayGain;
+                    int at = (segStartFrame + frame) * ch;
+                    for (int c = 0; c < ch; c++)
+                        WriteSample(buf, (at + c) * bytesPer, kind, v);
+                }
             }
             return buf;
         }

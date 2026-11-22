@@ -1335,6 +1335,22 @@ namespace StereoSplitter
             float[] sig2 = SynthChirpSignal(rate2, 7777, 0.35f, 0.005f, 3);
             var hit4 = MicLatencyProbe.LocateChirp(sig2, tmpl2);
             Check("44.1kHz: 偏移误差 ≤ 2 采样", hit4.Found && Math.Abs(hit4.Offset - 7777) <= 2.0);
+
+            // 直达声 + **更强**的反射 (硬墙/桌面)。取最强峰会锁到反射上 (晚 18ms),
+            // 而两只音箱的房间反射条件不同 → 两路各偏一点 → 差值歪掉。
+            // 这是"补完仍然差一口气"的典型来源。
+            float[] reflSig = SynthChirpSignal(rate, off, 0.16f, 0.008f, 4);
+            int d = (int)Math.Round(0.018 * rate);
+            for (int i = 0; i < tmpl.Length && off + d + i < reflSig.Length; i++)
+                reflSig[off + d + i] += tmpl[i] * 0.30f;      // 反射比直达更响
+            var hit5 = MicLatencyProbe.LocateChirp(reflSig, tmpl);
+            double err5 = hit5.Found ? hit5.Offset - off : double.NaN;
+            Check("直达+更强反射: 锁直达 (误差 ≤ 3 采样, 实为 " + err5.ToString("0.0") + ")",
+                hit5.Found && Math.Abs(err5) <= 3.0);
+
+            // 量程: 分段测量的窗口必须容得下蓝牙 (A2DP 常见 150~300ms), 否则会被判成"超量程"
+            Check("可测延迟量程 ≥ 700ms (" + MicLatencyProbe.MaxMeasurableMs.ToString("0") + "ms)",
+                MicLatencyProbe.MaxMeasurableMs >= 700);
         }
 
         static OutputLane Lane(string key, string dev, int delay, int vol)
