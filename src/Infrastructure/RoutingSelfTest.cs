@@ -63,7 +63,8 @@ namespace StereoSplitter
                 CaseLifecycleGate,
                 CaseLogClassify,
                 CaseSessionLogClear,
-                CaseEmbeddedAudioResources
+                CaseEmbeddedAudioResources,
+                CaseMicChirpLocate
             };
 
             int aborted = 0;
@@ -1285,7 +1286,59 @@ namespace StereoSplitter
             Check("NAudio.Wasapi.dll 已内嵌", wasapi);
         }
 
-        static OutputLane Lane(string key, string dev, int delay, int vol)        {
+        // ==================== 麦克风延迟校准 ====================
+
+        /// <summary>合成一段"已知偏移 + 噪声"的录音, 用于验证互相关定位。</summary>
+        static float[] SynthChirpSignal(int rate, int offset, float gain, float noise, int seed)
+        {
+            float[] tmpl = MicLatencyProbe.BuildChirp(rate);
+            var sig = new float[rate];                     // 1 秒
+            var rnd = new Random(seed);
+            for (int i = 0; i < sig.Length; i++) sig[i] = (float)((rnd.NextDouble() * 2 - 1) * noise);
+            for (int i = 0; i < tmpl.Length && offset + i < sig.Length; i++) sig[offset + i] += tmpl[i] * gain;
+            return sig;
+        }
+
+        /// <summary>
+        /// 互相关定位: 用一个已知位置的扫频去测"能不能找准"。
+        /// 这个用例是校准功能的全部正确性所在 —— 68ms 就够, 但找错 100ms 就等于把声场拖偏。
+        /// 覆盖: 常规信噪比 / 反相且很轻 / 静音不误报 / 44.1kHz 采样率。
+        /// </summary>
+        static void CaseMicChirpLocate()
+        {
+            Begin("麦克风互相关延迟定位");
+            const int rate = 48000;
+            float[] tmpl = MicLatencyProbe.BuildChirp(rate);
+            Check("扫频模板长度合理 (" + tmpl.Length + " 采样)", tmpl.Length > 1000 && tmpl.Length < rate);
+
+            int off = 20000;
+            float[] sig = SynthChirpSignal(rate, off, 0.40f, 0.01f, 1);
+            var hit = MicLatencyProbe.LocateChirp(sig, tmpl);
+            Check("常规信噪比: 找到扫频", hit.Found);
+            double err1 = hit.Found ? hit.Offset - off : double.NaN;
+            Check("常规信噪比: 偏移误差 ≤ 2 采样 (" + err1.ToString("0.00") + ")", Math.Abs(err1) <= 2.0);
+            Check("常规信噪比: 相关系数 > 0.5 (" + hit.Score.ToString("0.00") + ")", hit.Score > 0.5);
+
+            // 极性反转 (麦克风/音箱接反很常见) + 很轻的音量: 位置仍须正确
+            float[] inv = SynthChirpSignal(rate, off, -0.05f, 0.01f, 2);
+            var hit2 = MicLatencyProbe.LocateChirp(inv, tmpl);
+            Check("反相+低音量: 偏移误差 ≤ 3 采样", hit2.Found && Math.Abs(hit2.Offset - off) <= 3.0);
+
+            // 静音不能"凭空找出一段扫频" (否则会把没接到声的那一路算成 0ms)
+            var silent = new float[rate];
+            var hit3 = MicLatencyProbe.LocateChirp(silent, tmpl);
+            Check("静音: 报告未找到", !hit3.Found);
+
+            // 48k 输出 / 44.1k 采集: 两个采样率各自生成模板, 时间轨迹一致
+            const int rate2 = 44100;
+            float[] tmpl2 = MicLatencyProbe.BuildChirp(rate2);
+            float[] sig2 = SynthChirpSignal(rate2, 7777, 0.35f, 0.005f, 3);
+            var hit4 = MicLatencyProbe.LocateChirp(sig2, tmpl2);
+            Check("44.1kHz: 偏移误差 ≤ 2 采样", hit4.Found && Math.Abs(hit4.Offset - 7777) <= 2.0);
+        }
+
+        static OutputLane Lane(string key, string dev, int delay, int vol)
+        {
             return new OutputLane { ChannelKey = key, DeviceId = dev, DelayMs = delay, Volume = vol };
         }
 

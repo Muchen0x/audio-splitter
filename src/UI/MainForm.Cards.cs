@@ -484,7 +484,7 @@ namespace StereoSplitter
         /// </summary>
         void LayoutTopRows()
         {
-            if (lblD == null || btnRefresh == null || btnAddOutput == null) return;
+            if (lblD == null || btnRefresh == null || btnAddOutput == null || btnCalibrate == null) return;
             Control host = btnRefresh.Parent;
             if (host == null) return;
 
@@ -505,9 +505,10 @@ namespace StereoSplitter
             chkMinimizeToTray.Left = chkDrift.Left - gap - PreferredW(chkMinimizeToTray);
             cmbLatency.Width = Math.Max(60, chkMinimizeToTray.Left - gap - cmbLatency.Left);
 
-            // —— 第 3 行 (规格): [规格:] [下拉] [声道名…] [添加输出(贴右)] ——
+            // —— 第 3 行 (规格): [规格:] [下拉] [声道名…] [延迟校准] [添加输出(贴右)] ——
             btnAddOutput.Left = panelW - rightEdge - btnAddOutput.Width;
-            flwSpecChannels.Width = Math.Max(60, btnAddOutput.Left - gap - flwSpecChannels.Left);
+            btnCalibrate.Left = btnAddOutput.Left - gap - btnCalibrate.Width;
+            flwSpecChannels.Width = Math.Max(60, btnCalibrate.Left - gap - flwSpecChannels.Left);
 
             // —— 卡片区: 宽高都跟面板走 ——
             // 以前靠 Anchor.Right/Bottom, 但初始 559x166 是按 600x600 窗口写的, 构造期父面板
@@ -821,6 +822,67 @@ namespace StereoSplitter
                 if (!used.Contains(id)) return id;
             }
             return "";
+        }
+
+        // ==================== 延迟校准 (麦克风互相关) ====================
+
+        /// <summary>
+        /// 打开延迟校准窗口。要求分流已停止: 校准会直接向每台设备播放扫频，
+        /// 若分流同时在跑，测试音会和正常音频叠在一起，相关系数被拉低、结果不可信。
+        /// </summary>
+        void OpenLatencyCalibration()
+        {
+            if (state == AppState.Starting || state == AppState.Running)
+            {
+                MessageBox.Show(this,
+                    "请先「停止分流」再校准。\n\n校准会直接向每台设备播放测试音。" +
+                    "分流同时运行时，测试音会和正常音频混在一起，测出来的延迟不可信。",
+                    "延迟校准", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var list = new List<CalibLane>();
+            var seen = new HashSet<string>();
+            for (int i = 0; i < cards.Count; i++)
+            {
+                string id = SafeDeviceId(cards[i].SelectedDeviceIndex);
+                if (string.IsNullOrEmpty(id)) continue;   // 未选设备 / 「已保存设备当前不可用」占位项
+                if (!seen.Add(id)) continue;              // 同一台设备只测一次 (延迟本来就是设备级的)
+                list.Add(new CalibLane
+                {
+                    DeviceId = id,
+                    Display = DevNameFor(id),
+                    CurrentDelayMs = (int)cards[i].nudDelay.Value
+                });
+            }
+
+            if (list.Count < 2)
+            {
+                MessageBox.Show(this,
+                    "校准需要至少两张输出卡片、且各自绑定了不同的设备。\n\n" +
+                    "当前可用设备只有 " + list.Count + " 路。",
+                    "延迟校准", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            Log("[校准] 打开延迟校准: " + list.Count + " 路 (麦克风互相关)");
+            using (var f = new LatencyCalibrationForm(list, ApplyCalibratedDelay))
+                f.ShowDialog(this);
+        }
+
+        /// <summary>
+        /// 把校准结果写回卡片。走 nudDelay.Value → ValueChanged → OnCardChanged → SaveSettings,
+        /// 与手动改延迟完全同一条路径 (含存盘与规格角标刷新), 不另开写入通道。
+        /// </summary>
+        void ApplyCalibratedDelay(string deviceId, int delayMs)
+        {
+            for (int i = 0; i < cards.Count; i++)
+            {
+                OutputCardControl c = cards[i];
+                if (SafeDeviceId(c.SelectedDeviceIndex) != deviceId) continue;
+                if ((int)c.nudDelay.Value != delayMs) c.nudDelay.Value = delayMs;
+            }
+            Log("[校准] " + DevNameFor(deviceId) + " 延迟 → " + delayMs + " ms");
         }
 
         void OnCardChanged(OutputCardControl card)

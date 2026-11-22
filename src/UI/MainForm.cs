@@ -53,6 +53,7 @@ namespace StereoSplitter
         Button btnStart;
         Button btnRefresh;
         Button btnAddOutput;      // 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
+        Button btnCalibrate;      // 运行中置灰: 校准要独占端点放测试音
         Button btnClearLog;
         Infrastructure.SessionLog sessionLog;
         SplitContainer splitContainer;
@@ -338,6 +339,14 @@ namespace StereoSplitter
                 Width = 92,
                 Height = 26
             };
+            // 延迟校准: 与「添加输出」同一行, 都在右侧贴边 (见 LayoutTopRows)
+            btnCalibrate = new NoCueButton
+            {
+                Text = "延迟校准",
+                Location = new Point(398, 184),
+                Width = 76,
+                Height = 26
+            };
 
             // 输出卡片区 (可增删, 内容超出时只有纵向滚动)
             // 宽度顶到面板右缘 (与「添加输出」右边缘对齐), 竖滚动条才会贴着右边显示。
@@ -380,6 +389,7 @@ namespace StereoSplitter
             cardHost.Resize += (s2, e2) => FitCardWidths();
             cardHost.ClientSizeChanged += (s2, e2) => FitCardWidths();
             btnAddOutput.Click += (s2, e2) => AddLaneCard(null);
+            btnCalibrate.Click += (s2, e2) => OpenLatencyCalibration();
             cmbSpec.SelectedIndexChanged += (s2, e2) =>
             {
                 if (loadingSettings) return;
@@ -427,7 +437,7 @@ namespace StereoSplitter
             cmsLog.Items.Add("全选", null, (s, e) => txtLog.SelectAll());
             txtLog.ContextMenuStrip = cmsLog;
 
-            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart, lblSpec, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, chkMuteCapture, btnRefresh, lblLatency, cmbLatency, chkMinimizeToTray, chkDrift, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart, lblSpec, cmbSpec, flwSpecChannels, btnCalibrate, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
 
             // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。
@@ -438,6 +448,9 @@ namespace StereoSplitter
             tipTop.SetToolTip(cmbLatency, "预缓冲深度 + 输出缓冲的整套预设，决定稳态延迟与抗断音能力。\n运行中不可改（缓冲在启动时按档位建好），需先停止分流。");
             tipTop.SetToolTip(cmbSpec, "可用的逻辑声道清单（单声道…5.1）。\n运行中不可改（会改变矩阵与每路声道数），需先停止分流。");
             tipTop.SetToolTip(btnAddOutput, "新增一张输出卡片（一台设备）。\n运行中不可加卡（会改变链路），需先停止分流。");
+            tipTop.SetToolTip(btnCalibrate, "用麦克风测出各路声音到达耳朵的真实延迟差，并自动补齐。\n" +
+                "适用于有线 + 无线（蓝牙/USB）混用时对不齐的情况：延迟藏在设备内部，驱动报不出来，只能实测。\n" +
+                "麦克风请放在实际听音位置（这样距离差也会被一并补偿）。\n运行中不可校准（测试音会和分流输出混在一起），需先停止分流。");
             tipTop.SetToolTip(volGain, "总增益，作用在采样层。\n运行中可调。");
             tipTop.SetToolTip(volMaster, "总音量，作用在采样层。\n运行中可调。");
             tipTop.SetToolTip(chkMuteMaster, "总静音。\n运行中可调。");
@@ -635,6 +648,7 @@ namespace StereoSplitter
             cmbLatency.Enabled = !busy && !run;
             cmbSpec.Enabled = !busy && !run;
             btnAddOutput.Enabled = !busy && !run && models.Count < Infrastructure.LaneSettingsCodec.MaxOutputCards;  // F-24: 达上限禁用
+            btnCalibrate.Enabled = !busy && !run;   // 校准要独占端点放测试音, 运行中会和分流输出混在一起
 
             volMaster.Enabled = !busy;
             volGain.Enabled = !busy;
