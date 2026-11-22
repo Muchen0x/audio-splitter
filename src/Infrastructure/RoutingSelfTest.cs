@@ -62,7 +62,8 @@ namespace StereoSplitter
                 CaseClockGroupAlignment,
                 CaseLifecycleGate,
                 CaseLogClassify,
-                CaseSessionLogClear
+                CaseSessionLogClear,
+                CaseEmbeddedAudioResources
             };
 
             int aborted = 0;
@@ -1246,6 +1247,42 @@ namespace StereoSplitter
             Check("文件以新内容开头", text.StartsWith("10:00:01.000"));
             Check("没有 NUL 空洞", text.IndexOf('\0') < 0);
             Check("旧内容已清空", text.IndexOf("旧内容", StringComparison.Ordinal) < 0);
+        }
+
+        /// <summary>
+        /// F-29: 单文件分发不能坏 —— 最终程序集必须真的内嵌 NAudio.Core / NAudio.Wasapi。
+        /// <para>
+        /// 放在自检里而不是 CI 的脚本步骤里: 本程序运行在 .NET Framework 上,
+        /// <c>GetManifestResourceNames()</c> 各版本都支持; 而 CI 用的 PowerShell 7 属于 .NET Core,
+        /// <c>Assembly.ReflectionOnlyLoadFrom</c> 在那里直接抛 PlatformNotSupportedException
+        /// (那一版 workflow 因此自 11-20 起每次都在这一步 0 秒失败)。
+        /// </para>
+        /// <para>
+        /// CI 跑自检用的正是要发布的那个 exe, 所以这里的断言与"检查发布物"等价。
+        /// </para>
+        /// </summary>
+        static void CaseEmbeddedAudioResources()
+        {
+            Begin("内嵌音频库资源");
+            string[] names;
+            try
+            {
+                names = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceNames();
+            }
+            catch (Exception ex)
+            {
+                Check("读取程序集清单: " + ex.Message, false);
+                return;
+            }
+
+            bool core = false, wasapi = false;
+            for (int i = 0; i < names.Length; i++)
+            {
+                if (names[i] == "NAudio.Core.dll") core = true;
+                else if (names[i] == "NAudio.Wasapi.dll") wasapi = true;
+            }
+            Check("NAudio.Core.dll 已内嵌", core);
+            Check("NAudio.Wasapi.dll 已内嵌", wasapi);
         }
 
         static OutputLane Lane(string key, string dev, int delay, int vol)        {

@@ -40,46 +40,10 @@ jobs:
             exit $LASTEXITCODE
           }
 
-      - name: Verify embedded NAudio (single-file distribution must not break)
-        shell: pwsh
-        run: |
-          $exe = "./bin/Release/net48/SplitterGUI.exe"
-          if (-not (Test-Path $exe)) { Write-Host "::error::exe missing"; exit 1 }
-
-          # F-29: 断言最终 exe 真的内嵌了 NAudio.Core / NAudio.Wasapi。
-          # 注意 Assembly.ReflectionOnlyLoadFrom 在 PowerShell 7 (.NET Core) 上抛
-          # PlatformNotSupportedException —— 这一步曾在 CI 上 0 秒失败就是这样来的。
-          # pwsh 7 改用 System.Reflection.Metadata 的 PEReader 读清单;
-          # Windows PowerShell 5.1 没有该程序集, 保留反射分支。
-          $names = @()
-          try {
-            if ($PSVersionTable.PSVersion.Major -ge 6) {
-              $fs = [System.IO.File]::OpenRead((Resolve-Path $exe).Path)
-              try {
-                $pe = [System.Reflection.PortableExecutable.PEReader]::new($fs)
-                try {
-                  if (-not $pe.HasMetadata) { throw "PE has no CLI metadata" }
-                  $mr = $pe.GetMetadataReader()
-                  foreach ($h in $mr.ManifestResources) {
-                    $names += $mr.GetString($mr.GetManifestResource($h).Name)
-                  }
-                } finally { $pe.Dispose() }
-              } finally { $fs.Dispose() }
-            } else {
-              $asm = [System.Reflection.Assembly]::ReflectionOnlyLoadFrom((Resolve-Path $exe).Path)
-              $names = @($asm.GetManifestResourceNames())
-            }
-          } catch {
-            Write-Host "::error::failed to inspect embedded resources: $($_.Exception.Message)"
-            exit 1
-          }
-
-          Write-Host ("embedded: " + ($names -join ', '))
-          if ($names -notcontains 'NAudio.Core.dll' -or $names -notcontains 'NAudio.Wasapi.dll') {
-            Write-Host "::error::NAudio.Core.dll / NAudio.Wasapi.dll resource missing - single-file fallback broken"
-            exit 1
-          }
-          Write-Host "embedded NAudio resources present (Core + Wasapi)"
+      # F-29 (内嵌 NAudio.Core / NAudio.Wasapi 必须存在) 已并入 `--selftest`
+      # (CaseEmbeddedAudioResources) —— 程序跑在 .NET Framework 上, 各版本都能读
+      # GetManifestResourceNames(); 而这里用 PowerShell 7 的反射读 net48 exe 会抛
+      # PlatformNotSupportedException。CI 跑自检用的就是待发布的 exe, 覆盖等价。
 
       # 打 tag (v*) 时: 用刚构建出的 exe 建 Release。
       # 说明文本取 .github/release-notes/<tag>.md, 首行 "# 标题" 同时用作 Release 标题;
