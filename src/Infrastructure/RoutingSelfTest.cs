@@ -68,7 +68,8 @@ namespace StereoSplitter
                 CaseSessionLogClear,
                 CaseEmbeddedAudioResources,
                 CaseMicChirpLocate,
-                CaseAppStateMachine
+                CaseAppStateMachine,
+                CaseCardGrid
             };
 
             int aborted = 0;
@@ -1535,6 +1536,66 @@ namespace StereoSplitter
                 !AppStateMachine.CanTransition(AppState.Running, AppState.Ready));
             Check("Stopped→Failed 拒绝 (停止与放弃各有专属入口)",
                 !AppStateMachine.CanTransition(AppState.Stopped, AppState.Failed));
+        }
+
+        /// <summary>
+        /// R-07: 卡片栅格算术。这套规则管着"列数跳档 / 多列留右侧间距 / 窄了减列 / 竖滚动条让宽"
+        /// 四件互相牵制的事，出错的表现是"偶尔多一根横向滚动条""滑条长度对不齐"—— 只能靠眼睛发现。
+        /// 抽成纯函数之后这里把它钉死。
+        /// </summary>
+        static void CaseCardGrid()
+        {
+            Begin("卡片栅格算术 (列数/宽度/竖滚动条)");
+
+            int cols, w;
+
+            CardGrid.Columns(500, 3, 500, out cols, out w);
+            Check("500px / 3 张 → 1 列 500px", cols == 1 && w == 500);
+
+            // 换列阈值 = cols 的整数除法 (avail+10)/500：989 仍 1 列，990 才 2 列
+            CardGrid.Columns(989, 3, 500, out cols, out w);
+            Check("989px → 仍 1 列 (实为 " + cols + ")", cols == 1);
+            CardGrid.Columns(990, 3, 500, out cols, out w);
+            Check("990px → 2 列, 每列 " + w + "px", cols == 2 && w >= CardGrid.MinW);
+
+            CardGrid.Columns(3000, 2, 500, out cols, out w);
+            Check("3000px 但只有 2 张 → 2 列 (实为 " + cols + ")", cols == 2);
+
+            CardGrid.Columns(5000, 1, 500, out cols, out w);
+            Check("单张 + 超宽 → 封顶 " + CardGrid.MaxW + " (实为 " + w + ")", cols == 1 && w == CardGrid.MaxW);
+
+            CardGrid.Columns(100, 3, 500, out cols, out w);
+            Check("100px → 1 列且抬到最小宽 " + CardGrid.MinW + " (实为 " + w + ")", cols == 1 && w == CardGrid.MinW);
+
+            CardGrid.Columns(0, 3, 500, out cols, out w);
+            Check("avail=0 → 用兜底宽 500", cols == 1 && w == 500);
+
+            // 不变式: 多列的宽度恒 ≥ 最小宽。也就是说 GridCols 里"多列仍小于最小宽就减列"那个
+            // 分支在当前 BaseW/MinW 组合下**数学上不可达** —— 用扫值把它钉住: 要么恒成立,
+            // 要么哪天有人改了常量组合会立刻失败 (那时那个分支才真的活过来)。
+            bool invariant = true;
+            for (int avail = 0; avail <= 6000 && invariant; avail += 7)
+            {
+                CardGrid.Columns(avail, 16, 500, out cols, out w);
+                if (cols > 1 && w < CardGrid.MinW) invariant = false;
+            }
+            Check("不变式: 0~6000px 扫描内多列宽度恒 ≥ " + CardGrid.MinW, invariant);
+
+            Check("5 张 2 列 → 3 行", CardGrid.Rows(5, 2) == 3);
+            Check("0 张 → 0 行", CardGrid.Rows(0, 2) == 0);
+
+            var heights = new[] { 200, 200 };
+            Check("2×204+0 ≤ 500 → 不需要竖条",
+                !CardGrid.NeedsVScroll(2, 1, heights, 0, 500, 4));
+            Check("2×204 > 400 → 需要竖条",
+                CardGrid.NeedsVScroll(2, 1, heights, 0, 400, 4));
+
+            // 行高取该行最高的一张: 100/300 同一行 → 304, 第三张单独一行 → 104
+            var mixed = new[] { 100, 300, 100 };
+            Check("混合高度: 304+104 = 408 ≤ 500 → 不需要",
+                !CardGrid.NeedsVScroll(3, 2, mixed, 0, 500, 4));
+            Check("同一布局压到 400 → 需要",
+                CardGrid.NeedsVScroll(3, 2, mixed, 0, 400, 4));
         }
 
         /// <summary>
