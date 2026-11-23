@@ -156,6 +156,7 @@ namespace StereoSplitter
         ButtonGlyph glyph = ButtonGlyph.None;
         int glyphRadius = 8;
         float glyphThickness = 2.8f;
+        bool outline;
 
         public RoundButton()
         {
@@ -229,6 +230,17 @@ namespace StereoSplitter
             set { if (glyphThickness != value) { glyphThickness = value; Invalidate(); } }
         }
 
+        /// <summary>
+        /// 描边样式：底色留白，只让边框和文字着色。
+        /// <para>悬停/按下的着色也换成往边框色里混（而不是混黑）—— 白底混黑会发灰，
+        /// 与蓝色或红色的描边放在一起像"脏了"。</para>
+        /// </summary>
+        public bool Outline
+        {
+            get { return outline; }
+            set { if (outline != value) { outline = value; Invalidate(); } }
+        }
+
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
@@ -254,13 +266,18 @@ namespace StereoSplitter
             Color c = Enabled
                 ? fill
                 : (fillDisabled.IsEmpty ? Blend(fill, Color.White, 0.55f) : fillDisabled);
-            if (Enabled && pressed) c = Blend(c, Color.Black, 0.16f);
-            else if (Enabled && hot) c = Blend(c, Color.Black, 0.06f);
+            if (Enabled && (pressed || hot))
+            {
+                // 描边按钮往边框色里混 (浅蓝/浅红底), 实心按钮照旧混黑压暗
+                Color tint = (outline && !borderColor.IsEmpty) ? borderColor : Color.Black;
+                c = Blend(c, tint, pressed ? 0.16f : 0.07f);
+            }
 
             // 描边: 显式给了就跟它走 (白底按钮靠这条与下拉框对齐), 否则按底色加深一档 ——
             // 纯色块在白底上边界发糊, 浅色的「+」尤其明显
             Color edge = borderColor.IsEmpty ? Blend(c, Color.Black, 0.12f) : borderColor;
-            if (!Enabled && !borderColor.IsEmpty) edge = Blend(edge, Color.White, 0.45f);
+            float edgeFade = outline ? 0.30f : 0.45f;   // 描边时边框就是主体, 别淡到看不见
+            if (!Enabled && !borderColor.IsEmpty) edge = Blend(edge, Color.White, edgeFade);
 
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
             using (var path = UiDraw.RoundRect(rect, radius))
@@ -270,8 +287,11 @@ namespace StereoSplitter
             }
 
             // 文字色: 只有在"自动淡化成的禁用态"里才跟着变浅。显式给了 FillDisabled 的
-            // (过渡态 / 图标按钮) 说明配色是特意定的, 再淡化会把深色字也洗白。
-            Color ink = (Enabled || !fillDisabled.IsEmpty) ? textColor : Blend(textColor, Color.White, 0.20f);
+            // (实心过渡态 / 图标按钮) 说明配色是特意定的, 再淡化会把深色字也洗白。
+            // 描边样式没有"禁用底色", 淡化幅度要跟边框一致 (0.30), 否则边淡字深看着别扭。
+            Color ink = (Enabled || !fillDisabled.IsEmpty)
+                ? textColor
+                : Blend(textColor, Color.White, outline ? 0.30f : 0.20f);
 
             if (glyph != ButtonGlyph.None)
             {

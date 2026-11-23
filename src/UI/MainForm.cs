@@ -373,12 +373,18 @@ namespace StereoSplitter
             // 宽 - 8 (左内缩) - 22 (箭头区), 而「立体声」在 9pt 下要 44px —— 60 宽只剩 30px,
             // 三个字会全被省略成"立…"。44 + 8 + 22 = 74 是下限, 取 76 留两像素。
             // 改小之前先跑 `uidump`, 看 COMBO[...] 行里的 selW / textRoom。
+            // 主按钮走描边样式: 白底 + 彩色边框 + 彩色文字。四态的区分只靠这一个颜色
+            // (见 UpdateStartButton), 所以换状态时改 BorderColor/TextColor 就够。
             btnStart = new RoundButton
             {
                 Text = "开始分流",
                 Location = new Point(15, 114),
                 Width = 130,
-                Height = 35
+                Height = 35,
+                Outline = true,
+                FillColor = Color.White,
+                BorderColor = Color.FromArgb(0x00, 0x78, 0xD7),
+                TextColor = Color.FromArgb(0x00, 0x78, 0xD7)
             };
             cmbSpec = new RoundedCombo
             {
@@ -390,19 +396,15 @@ namespace StereoSplitter
             };
             cmbSpec.Items.AddRange(new object[] { "单声道", "立体声", "2.1", "四声道", "5.1" });
             cmbSpec.SelectedIndex = 1;
-            // 「+」: 与规格下拉同尺寸、同圆角、同白底灰边 —— 两个控件并排时像一对。
+            // 「添加设备」: 白底灰边, 与规格下拉的边框/圆角/高度一致 —— 两个控件并排时像一对。
             // 贴右缘, 具体 Left 由 LayoutTopRows 按面板宽度重算 (这里只是构造期初值)。
-            // 加号不走字体 (见 RoundButton.Glyph 的说明), 臂长与线宽单独给 ——
-            // 14pt 字体画出来约 11×11、笔画 1.5px, 在这个 76×30 的白底块里显得太小太细。
+            // 宽 92: 四个汉字 9pt 约 52px, 左右各 20px 的内边距足够, 再窄会触发省略号。
             btnAddOutput = new RoundButton
             {
-                Text = "+",                       // 只作无障碍文本, 实际画的是 Glyph
+                Text = "添加设备",
                 Location = new Point(482, 153),
-                Width = 76,
+                Width = 92,
                 Height = 30,
-                Glyph = ButtonGlyph.Plus,
-                GlyphRadius = 6,
-                GlyphThickness = 3.2f,
                 FillColor = Color.White,
                 // 禁用态跟 RoundedCombo.DisabledBack 同值, 并排时两块的"不可用"观感一致
                 FillDisabled = Color.FromArgb(244, 245, 247),
@@ -727,16 +729,16 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 「开始分流」按钮的文案与配色。四个状态各一套，靠颜色直接读出链路在干什么：
+        /// 「开始分流」按钮的文案与配色。四个状态各一套，靠描边色直接读出链路在干什么：
         /// <list type="bullet">
         /// <item>默认 (Ready/Stopped/Failed): 蓝 +「开始分流」—— 可以开始</item>
-        /// <item>启动中 (Starting): 深蓝灰 +「启动中…」—— 正在建链路，不可点</item>
+        /// <item>启动中 (Starting): 蓝灰 +「启动中…」—— 正在建链路，不可点</item>
         /// <item>运行中 (Running): 红 +「停止分流」—— 点击即停止</item>
         /// <item>正在停止 (Stopping): 浅红 +「正在停止…」—— 正在拆链路，不可点</item>
         /// </list>
-        /// <para>过渡态同时被 <see cref="ApplyUiLock"/> 置为不可点，所以这里给的是"看得出状态、
-        /// 但明显不是可点的主按钮"的色。两态都显式给 <see cref="RoundButton.FillDisabled"/>，
-        /// 不能留 Empty —— 自动混白会把深蓝灰混成接近白底，白字直接糊掉。</para>
+        /// <para>按钮是描边样式 (白底 + 彩色边框 + 彩色字), 所以状态只用**一个**颜色表达:
+        /// 边框与文字同色, 改状态就改这一个值。过渡态被 <see cref="ApplyUiLock"/> 置为不可点,
+        /// <see cref="RoundButton"/> 会自动把边与字一起混白 30% —— 那正是"变淡 = 不可点"的效果。</para>
         /// </summary>
         void UpdateStartButton(AppState s)
         {
@@ -744,30 +746,34 @@ namespace StereoSplitter
             {
                 case AppState.Starting:
                     btnStart.Text = "启动中…";
-                    btnStart.FillDisabled = Color.FromArgb(0x5F, 0x7E, 0x9E);
-                    btnStart.TextColor = Color.White;
+                    // 比默认蓝更深更灰: 过渡态会被自动淡化 30%, 基准色太浅的话淡完就快看不见了
+                    SetStartTint(Color.FromArgb(0x47, 0x68, 0x8C));
                     break;
                 case AppState.Stopping:
                     btnStart.Text = "正在停止…";
-                    // 停止中用"浅红底 + 深红字", 与运行中的"红底白字"形成反转 ——
-                    // 两档都靠红的时候, 只调深浅在缩略图里几乎分不出来 (试过 #C97B70 白字, 又虚又像)
-                    btnStart.FillDisabled = Color.FromArgb(0xD9, 0xA3, 0x9A);
-                    btnStart.TextColor = Color.FromArgb(0x7A, 0x2E, 0x24);
+                    // 比运行中的红浅一档: 运行中全饱和 + 可点, 停止中淡化 + 不可点, 两者叠加后
+                    // 明度差已经够大, 不必再靠"底/字反转"来区分
+                    SetStartTint(Color.FromArgb(0xB4, 0x50, 0x4A));
                     break;
                 case AppState.Running:
                     btnStart.Text = "停止分流";
-                    btnStart.FillColor = Color.FromArgb(0xC4, 0x2B, 0x1C);
-                    btnStart.FillDisabled = Color.Empty;
-                    btnStart.TextColor = Color.White;
+                    SetStartTint(Color.FromArgb(0xC4, 0x2B, 0x1C));
                     break;
                 default:
                     btnStart.Text = "开始分流";
-                    btnStart.FillColor = Color.FromArgb(0x00, 0x78, 0xD7);
-                    btnStart.FillDisabled = Color.Empty;
-                    btnStart.TextColor = Color.White;
+                    SetStartTint(Color.FromArgb(0x00, 0x78, 0xD7));
                     break;
             }
             btnStart.Invalidate();
+        }
+
+        /// <summary>描边按钮的唯一着色入口: 边框与文字同色, 底色恒为白。</summary>
+        void SetStartTint(Color c)
+        {
+            btnStart.BorderColor = c;
+            btnStart.TextColor = c;
+            btnStart.FillColor = Color.White;
+            btnStart.FillDisabled = Color.Empty;   // 描边样式没有"禁用底色", 淡化交给 Outline 逻辑
         }
 
         /// <summary>
