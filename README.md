@@ -1,4 +1,4 @@
-﻿# Audio Splitter（多路音频分流）
+# Audio Splitter（多路音频分流）
 
 把系统正在播放的声音**按声道拆开**，送到一台或多台输出设备上。每一路都能独立调节延迟、音量和静音，一台设备也只被打开一次。
 
@@ -138,11 +138,15 @@ src/
   Devices/        设备枚举、端点音量绑定、默认设备变更监听
   Infrastructure/ 日志、崩溃上报、ini 配置、错误文案、路由自检
   UI/             主窗体、输出卡片、卡片 → 路由模型翻译 (LaneRouting)
-docs/             设计方案、多路内核移植说明
-log/              运行日志、自检结果 (不入库)
-app.ico           程序图标 (生成脚本在 log/make_icon.py)
+tools/uidump/     布局量测工具：实例化真实窗口，打印控件边界/重叠/文字截断
+CHANGELOG.md      更新日志 (版本号以 csproj 的 <Version> 为单一来源)
+app.ico           程序图标 (生成脚本在本地的 docs/artifacts/make_icon.py)
 build.cmd / verify.cmd
+docs/  log/       本地资料与运行日志，均不入库
 ```
+
+代码风格与行尾由 `.editorconfig` / `.gitattributes` 统一：仓库内 **LF**、UTF-8 **无 BOM**，
+两个 `.cmd` 例外（CRLF，`cmd.exe` 对 LF 批处理不可靠）。
 
 配置文件为 `SplitterGUI.ini`（不入库），随 exe 同目录。
 
@@ -162,9 +166,12 @@ build.cmd / verify.cmd
 
 ## 更多文档
 
+- [CHANGELOG.md](CHANGELOG.md) —— 各版本变更（当前版本见 `StereoSplitter.csproj` 的 `<Version>`）
 - [docs/多路内核移植.md](docs/多路内核移植.md) —— 多路内核、锁定四档、滚动/焦点等界面机制的实现说明
 - [docs/回归测试清单.md](docs/回归测试清单.md) —— 手工回归项
 - [docs/archive/](docs/archive/) —— 历史方案存档（对应旧单文件架构，不代表现行实现）
+
+> `docs/` 是本地资料，不随仓库分发；上面几个链接只在本地工作副本里有效。
 
 ## 许可
 

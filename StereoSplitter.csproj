@@ -13,13 +13,20 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <Version>1.0.0</Version>
-    <FileVersion>1.0.0.0</FileVersion>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Version>2.1.0</Version>
+    <FileVersion>2.1.0.0</FileVersion>
+    <AssemblyVersion>2.1.0.0</AssemblyVersion>
     <Product>Audio Splitter</Product>
     <Company>Audio Splitter</Company>
     <Copyright>Copyright © 2026</Copyright>
   </PropertyGroup>
+
+  <!-- tools/ 下是开发期工具 (布局量测等), 各自独立成项目; SDK 默认 glob 会把它们扫进主工程,
+       所以要显式排除, 否则会多出一个 Main 并与启动对象冲突。 -->
+  <ItemGroup>
+    <Compile Remove="tools\**" />
+    <None Remove="tools\**" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
