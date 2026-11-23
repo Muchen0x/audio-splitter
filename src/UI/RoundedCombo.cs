@@ -699,19 +699,28 @@ namespace StereoSplitter
         /// <summary>
         /// 滚轮只滚弹层列表, 绝不放它冒泡: ToolStripDropDown 不处理 WM_MOUSEWHEEL,
         /// 未处理的消息会被 DefWindowProc 转给 owner (主窗体), 再经焦点控件链落到卡片区 ——
-        /// 表现就是"滚轮在弹层上滚, 底下的卡片却动了"。截下来直接投给列表,
-        /// 与下拉本体那条路 (<see cref="RoundedCombo"/>) 共用 <see cref="DeliverWheel"/>。
+        /// 表现就是"滚轮在弹层上滚, 底下的卡片却动了"。截下来直接滚列表。
+        /// <para><b>为什么不能 SendMessage 投给列表</b>: 列表处理完滚轮消息会落到 DefWindowProc,
+        /// Win32 会把未处理的 WM_MOUSEWHEEL 冒泡给父窗口 —— 父窗口正是本弹层, 弹层又截住
+        /// 再投给列表, 无限递归, 程序直接卡死 (实测)。所以这里只调用列表的滚动入口,
+        /// 消息本身到此为止。</para>
         /// </summary>
         protected override void WndProc(ref Message m)
         {
-            if (m.Msg == WheelRouting.WM_MOUSEWHEEL) { DeliverWheel(m); return; }
+            if (m.Msg == WheelRouting.WM_MOUSEWHEEL)
+            {
+                long wp = m.WParam.ToInt64();
+                List.HandleWheel((short)((wp >> 16) & 0xFFFF));
+                return;
+            }
             base.WndProc(ref m);
         }
 
-        /// <summary>把滚轮消息转给列表 (下拉展开时滚的是选项, 不是卡片区)。</summary>
+        /// <summary>把滚轮转给列表 (下拉展开时滚的是选项, 不是卡片区)。调用方必须传真实的 delta。</summary>
         internal void DeliverWheel(Message m)
         {
-            if (List.IsHandleCreated) WheelRouting.Deliver(List, m);
+            long wp = m.WParam.ToInt64();
+            List.HandleWheel((short)((wp >> 16) & 0xFFFF));
         }
 
         /// <summary>
@@ -1017,12 +1026,28 @@ namespace StereoSplitter
             if (i >= 0) Owner.CommitSelection(i);
         }
 
-        protected override void OnMouseWheel(MouseEventArgs e)
+        /// <summary>
+        /// 滚轮就地处理并吞掉。<b>绝不调 base</b>: Control.DefWndProc 会把未处理的 WM_MOUSEWHEEL
+        /// 冒泡给父窗口, 父窗口正是弹层 —— 弹层再滚一次就是一格走两行; 若弹层又把消息投回来,
+        /// 就是无限递归、程序卡死 (两个坑都实际踩过, 见 ComboPopup.WndProc 的注释)。
+        /// </summary>
+        protected override void WndProc(ref Message m)
         {
-            base.OnMouseWheel(e);
+            if (m.Msg == WheelRouting.WM_MOUSEWHEEL)
+            {
+                long wp = m.WParam.ToInt64();
+                HandleWheel((short)((wp >> 16) & 0xFFFF));
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
+        /// <summary>滚轮滚动列表。delta > 0 (向上) 滚回去, 与鼠标滚动的直觉一致。</summary>
+        internal void HandleWheel(int delta)
+        {
             int lines = SystemInformation.MouseWheelScrollLines;
             if (lines <= 0) lines = 1;
-            ScrollBy(e.Delta > 0 ? -lines : lines);
+            ScrollBy(delta > 0 ? -lines : lines);
         }
 
         protected override void OnSizeChanged(EventArgs e)

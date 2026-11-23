@@ -45,13 +45,6 @@ namespace StereoSplitter
             return false;
         }
 
-        /// <summary>把滚轮消息原样投给指定控件 (下拉展开时用它滚选项列表)。</summary>
-        public static void Deliver(Control target, Message m)
-        {
-            if (target == null || !target.IsHandleCreated) return;
-            SendMessage(target.Handle, m.Msg, m.WParam, m.LParam);
-        }
-
         /// <summary>把滚轮转给最近的「AutoScroll 且能滚」的容器; 找不到就交给直接父窗口继续冒泡。</summary>
         public static void Forward(Control self, Message m)
         {
@@ -904,6 +897,9 @@ namespace StereoSplitter
         public RoundNumericShell(NoWheelNumeric inner, string captionText, string unitText)
         {
             Inner = inner;
+            // 数字右对齐: 默认 Left 时数字贴左缘, 与右边的上下箭头/单位隔出一大段空白,
+            // 单位看起来不像跟数字是一组。贴右之后整组读作 [延迟 …… 0⇅ms]。
+            inner.TextAlign = HorizontalAlignment.Right;
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
                 | ControlStyles.ResizeRedraw, true);
             inner.BackColor = Color.White;
