@@ -448,7 +448,7 @@ namespace StereoSplitter
 
         /// <summary>
         /// 增益/主音量两行的自适应布局 (与输出卡片里的音量条同理): 滑条右端跟着面板宽度走,
-        /// 右起固定为 [百分比][8][滑条]。
+        /// 右起固定为 [百分比][8][滑条], 行首是 22px 图标 (增益=推子, 主音量=喇叭)。
         /// <para>主音量行行首换成喇叭按钮 (点一下 = 主静音), 原来右侧那个独立的「静音」勾选框
         /// 随之前删掉, 滑条因此比增益行多出 ~66px 的可用长度 —— 但这儿刻意**不给两行不同的长度**:
         /// 滑条左端仍钉在 78 (与「增益:」标签右缘同列), 右端都收到百分比左边 8px,
@@ -464,7 +464,7 @@ namespace StereoSplitter
             // 宽度没变 (改高度/拖分隔条也会走到这里) → 摆出来的结果不会变, 直接跳过
             if (panelW == lastVolPanelW) return;
             lastVolPanelW = panelW;
-            const int leftEdge = 78;    // 滑条左端 = "增益:" 标签右缘
+            const int leftEdge = 78;    // 滑条左端: 两行共用一个起点, 图标都在 x=15..37
             const int rightEdge = 10;   // 右端留白, 与卡片区/日志框右缘一致
             int pctW = lblVolMaster.Width;
 
@@ -557,8 +557,8 @@ namespace StereoSplitter
 
             btnClearLog.Left = panelW - rightEdge - btnClearLog.Width;
             lblWaterSec.Left = btnClearLog.Left - 8 - PreferredW(lblWaterSec);
-            nudWaterInterval.Left = lblWaterSec.Left - gap - nudWaterInterval.Width;
-            lblWaterIv.Left = nudWaterInterval.Left - gap - PreferredW(lblWaterIv);
+            nudWaterShell.Left = lblWaterSec.Left - gap - nudWaterShell.Width;
+            lblWaterIv.Left = nudWaterShell.Left - gap - PreferredW(lblWaterIv);
             lblWater.Left = lblWaterIv.Left - gap - PreferredW(lblWater);
         }
 

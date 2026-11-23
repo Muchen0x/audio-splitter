@@ -3,6 +3,7 @@ using System.Collections;
 using System.Drawing;
 using System.Reflection;
 using System.Text;
+using System.Collections.Generic;
 using System.Windows.Forms;
 using StereoSplitter.Model;
 
@@ -12,8 +13,14 @@ namespace StereoSplitter
     static class Dump
     {
         [STAThread]
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool SetProcessDPIAware();
+
         static void Main(string[] args)
         {
+            // CopyFromScreen 按物理像素取屏: 不声明 DPI 感知的话, 高缩放屏上窗口会被系统
+            // 虚拟化放大, 按 Location/Size 去截只能截到左上角一块 (live/icons 全军覆没)。
+            try { SetProcessDPIAware(); } catch { }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
@@ -318,41 +325,56 @@ namespace StereoSplitter
                 return;
             }
 
-            // 喇叭图标: 22px 见方, 静音的"×"是否分得清、声波会不会糊成一团 ——
-            // 这种"看不看得懂"只能放大看像素。四种状态并排各出一张 (悬停态要点鼠标, 截不到)。
-            if (args.Length >= 1 && args[0] == "speaker")
+            // 图标总览: 喇叭三态 + 禁用 / 增益推子 / 设置螺母 / 添加设备方框加号。
+            // 这种"22px 下看不看得懂"的问题只能放大看像素, 悬停态要点鼠标截不到。
+            if (args.Length >= 1 && args[0] == "icons")
             {
-                string path = args.Length >= 2 ? args[1] : "speaker.png";
-                const int cell = 34;
-                using (var hostForm = new Form { ClientSize = new Size(cell * 4, cell), BackColor = Color.White })
+                string path = args.Length >= 2 ? args[1] : "icons.png";
+                const int cell = 34, rows = 2;
+                using (var hostForm = new Form
+                {
+                    StartPosition = FormStartPosition.Manual, Location = new Point(40, 40),
+                    ClientSize = new Size(cell * 4, cell * rows + 6), BackColor = Color.White
+                })
                 using (var host = new Panel { Dock = DockStyle.Fill, BackColor = Color.White })
                 {
-                    var btns = new SpeakerButton[4];
+                    var ctl = new Control[8];
                     for (int i = 0; i < 4; i++)
-                        btns[i] = new SpeakerButton { Location = new Point(6 + i * cell, 6) };
-                    btns[1].Muted = true;              // 静音
-                    btns[3].Enabled = false;           // 禁用
-                    host.Controls.AddRange(btns);
-                    hostForm.Controls.Add(host);
-                    hostForm.Show();
-                    for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
-
-                    using (var bmp = new Bitmap(hostForm.ClientSize.Width, hostForm.ClientSize.Height))
+                        ctl[i] = new SpeakerButton { Location = new Point(6 + i * cell, 6) };
+                    // 喇叭四态: 正常出声 / 已静音 / 音量 0 / 禁用
+                    ((SpeakerButton)ctl[1]).Muted = true;
+                    ((SpeakerButton)ctl[2]).VolumeValue = 0;
+                    ctl[3].Enabled = false;
+                    ctl[4] = new GainGlyph { Location = new Point(6, 6 + cell) };
+                    ctl[5] = new GearButton { Location = new Point(6 + cell, 4 + cell) };
+                    ctl[6] = new GearButton
                     {
-                        host.DrawToBitmap(bmp, new Rectangle(Point.Empty, hostForm.ClientSize));
-                        int z = 6;   // 最近邻放大, 便于数像素
-                        using (var big = new Bitmap(bmp.Width * z, bmp.Height * z))
-                        {
-                            using (var g = Graphics.FromImage(big))
-                            {
-                                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
-                                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
-                                g.DrawImage(bmp, 0, 0, big.Width, big.Height);
-                            }
-                            big.Save(path, System.Drawing.Imaging.ImageFormat.Png);
-                        }
+                        Glyph = ButtonGlyph.SquarePlus,
+                        Location = new Point(6 + cell * 2, 2 + cell), Size = new Size(30, 30)
+                    };
+                    ctl[7] = new GearButton
+                    {
+                        Glyph = ButtonGlyph.Cross, Location = new Point(6 + cell * 3, 4 + cell),
+                        Size = new Size(20, 20), Enabled = false
+                    };
+                    host.Controls.AddRange(ctl);
+                    hostForm.Controls.Add(host);
+                    // 截图走 CopyFromScreen —— GearButton 类在 WM_PRINT (DrawToBitmap) 下拍不到
+                    // (旧齿轮时代就有, 见类注释); 置顶防遮挡, 弹完随窗体一起关掉。
+                    hostForm.TopMost = true;
+                    hostForm.Show();
+                    hostForm.Activate();
+                    for (int i = 0; i < 12; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+
+                    string file = System.IO.Directory.Exists(path)
+                        ? System.IO.Path.Combine(path, "icons.png") : path;
+                    using (var bmp = new Bitmap(hostForm.Width, hostForm.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(hostForm.Location, Point.Empty, hostForm.Size);
+                        bmp.Save(file, System.Drawing.Imaging.ImageFormat.Png);
                     }
-                    Console.Out.WriteLine("SPEAKER normal/muted/disabled x" + 6 + " -> " + path);
+                    Console.Out.WriteLine("ICONS speaker x4 / gain / gear / add / remove -> " + file);
                 }
                 return;
             }
@@ -929,6 +951,23 @@ namespace StereoSplitter
             var m = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
             if (m != null) m.Invoke(c, new object[] { EventArgs.Empty });
             Pump();
+        }
+
+
+
+        /// <summary>最近邻放大保存, 便于数像素。</summary>
+        static void SaveZoom(System.Drawing.Image bmp, string path, int z = 6)
+        {
+            using (var big = new Bitmap(bmp.Width * z, bmp.Height * z))
+            {
+                using (var g = Graphics.FromImage(big))
+                {
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                    g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                    g.DrawImage(bmp, 0, 0, big.Width, big.Height);
+                }
+                big.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            }
         }
 
         static object Field(object o, string name)

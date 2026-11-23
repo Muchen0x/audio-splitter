@@ -18,14 +18,16 @@ namespace StereoSplitter
         public readonly OutputCardModel Model;
         public readonly RoundedCombo cmbDevice;
         public readonly RoundedCombo cmbChannel;
-        public readonly NumericUpDown nudDelay;
+        public readonly NoWheelNumeric nudDelay;
+        /// <summary>延迟数字框的圆角外壳 (数字框是原生控件, 圆角边框画在它身上)。</summary>
+        public readonly RoundNumericShell nudShell;
         public readonly VolumeSlider volTrack;
         public readonly Label lblVol;
         /// <summary>喇叭按钮: 该设备的静音开关 (原「静音」勾选框, 点图标即切换)。</summary>
         public readonly SpeakerButton btnMute;
-        public readonly Button btnRemove;
+        public readonly GearButton btnRemove;
 
-        readonly Label lblDelay, lblMs;
+        readonly Label lblMs;
 
         /// <summary>多声道行: 每个物理声道一行 (声道下拉 + 音量条 + 百分比)。</summary>
         sealed class SlotRow
@@ -102,7 +104,6 @@ namespace StereoSplitter
                 // Invalidate 就能立刻反映。
                 ItemGrayedFilter = idx => shapeLocked && idx >= MultiItemIndex
             };
-            lblDelay = new Label { Text = "延迟", AutoSize = true };
             // NoWheelNumeric: 光标停在上面滚轮不会改延迟 (误滚一下就把声场拖偏, 很难发现),
             // 但滚轮会转给外层列表照常滚动; 上下按钮 / ↑↓ 每次 ±10ms
             nudDelay = new NoWheelNumeric
@@ -112,13 +113,17 @@ namespace StereoSplitter
                 Maximum = 2000,
                 Increment = 10
             };
+            // 圆角外壳把「延迟」字样 + 数字框 + 上下箭头包成同一个圆角矩形 (用户指定);
+            // 描边画在壳身上, 数字框嵌 1px 内衬。壳的宽度在字体确定后会重算 (Recalc),
+            // 布局按壳宽右起排, 所以壳变宽时要重跑一次布局。
+            nudShell = new RoundNumericShell(nudDelay, "延迟");
+            nudShell.SizeChanged += (s, e) => LayoutControls();
             lblMs = new Label { Text = "ms", AutoSize = true };
-            btnRemove = new NoCueButton
+            // 移除按钮: "×" 图标 (用户指定), 无边框, 悬停铺浅底; 摆在卡片最右上角 (见 LayoutControls)
+            btnRemove = new GearButton
             {
-                Text = "×",
-                Width = 26,
-                Height = 24,
-                TabStop = false
+                Glyph = ButtonGlyph.Cross,
+                Size = new Size(20, 20)
             };
 
             // 第二行: 喇叭(静音开关) + 滑条 + 百分比。
@@ -149,7 +154,7 @@ namespace StereoSplitter
 
             Controls.AddRange(new Control[]
             {
-                cmbDevice, cmbChannel, lblDelay, nudDelay, lblMs, btnRemove,
+                cmbDevice, cmbChannel, nudShell, lblMs, btnRemove,
                 btnMute, volTrack, lblVol
             });
 
@@ -187,6 +192,9 @@ namespace StereoSplitter
             // 与原来的 TrackBar 一致; 拖动中的热更新走 VolumeScrolled。
             volTrack.ValueChanged += (s, e) =>
             {
+                // 图标三态之一 (音量 0 = 裸喇叭) 跟着滑条走; 放在 syncing 判断之前,
+                // RefreshFromModel 回填模型值时图标也要跟着变
+                btnMute.VolumeValue = volTrack.Value;
                 if (syncing) return;
                 lblVol.Text = volTrack.Value + "%";
                 // 音量到 0 自动静音, 拖离 0 取消 (与主音量一致)
@@ -365,13 +373,12 @@ namespace StereoSplitter
         {
             int w = Width;
 
-            // 第一行右起排: [×] ← [ms] ← [延迟数字框] ← [延迟] ← [声道], 设备下拉占满左侧。
+            // 第一行右起排: [×] ← [ms] ← [延迟圆角壳(字样+数字框+箭头)] ← [声道], 设备下拉占满左侧。
             // × 紧挨延迟组右侧 (距 ms 8px), 与单位文字不再互相遮挡。
-            btnRemove.Location = new Point(w - 8 - btnRemove.Width, 4);
+            btnRemove.Location = new Point(w - 6 - btnRemove.Width, 3);
             lblMs.Location = new Point(btnRemove.Left - 8 - lblMs.Width, 8);
-            nudDelay.Location = new Point(lblMs.Left - 4 - nudDelay.Width, 5);
-            lblDelay.Location = new Point(nudDelay.Left - 4 - lblDelay.Width, 8);
-            cmbChannel.Location = new Point(lblDelay.Left - 8 - cmbChannel.Width, 5);
+            nudShell.Location = new Point(lblMs.Left - 4 - nudShell.Width, 5);
+            cmbChannel.Location = new Point(nudShell.Left - 8 - cmbChannel.Width, 5);
             cmbDevice.Location = new Point(8, 5);
             cmbDevice.Width = Math.Max(90, cmbChannel.Left - 14);
 

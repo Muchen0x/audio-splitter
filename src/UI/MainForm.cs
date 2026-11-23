@@ -17,7 +17,8 @@ namespace StereoSplitter
     partial class MainForm : Form
     {
         RoundedCombo cmbDefault, cmbSpec;
-        NumericUpDown nudWaterInterval;
+        NoWheelNumeric nudWaterInterval;
+        RoundNumericShell nudWaterShell;    // 圆角外壳 (与卡片延迟框同一套)
         // 输出卡片: 每张卡片 = 一台设备 (声道 + 延迟 + 主音量 + 静音; 多声道时另有每行声道与音量)
         readonly List<OutputCardModel> models = new List<OutputCardModel>();   // UI/持久化的权威模型
         readonly List<OutputCardControl> cards = new List<OutputCardControl>();// 控件, 与 models 一一对应
@@ -53,7 +54,7 @@ namespace StereoSplitter
         Label lblD, lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
         RoundButton btnStart;        // 自绘圆角 + 四态配色 (默认 / 启动中 / 运行中 / 正在停止)
         Button btnRefresh;
-        RoundButton btnAddOutput;    // 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
+        GearButton btnAddOutput;     // 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
         Button btnClearLog;
 
         // ---- 设置页的入口与选项 ----
@@ -346,10 +347,12 @@ namespace StereoSplitter
             chkDrift = new NoCueCheckBox { Text = "校正", AutoSize = true, Checked = true };
             btnCalibrate = new NoCueButton { Text = "延迟校准", Width = 76, Height = 26 };
 
-            // 增益独占一行 (主音量上方)。自绘滑条轨道垂直居中, 标签 Top = 滑条.Top 时
-            // 文字中心落在轨道线上。滑条宽度不写死, 由 LayoutVolumeRows() 按面板宽度自适应
+            // 增益独占一行 (主音量上方)。自绘滑条轨道垂直居中, 图标 Top 比滑条低 1px 时
+            // 中心正好落在轨道线上。滑条宽度不写死, 由 LayoutVolumeRows() 按面板宽度自适应
             // (和卡片里的音量条一样, 窗口拉宽就跟着变长)。
-            var lblG = new Label { Text = "增益:", Location = new Point(15, 52), AutoSize = true };
+            // 行首用「推子」图标顶掉「增益:」文字: 与下面一行的喇叭看成同一列图标, 两条滑条
+            // 靠"上面那个是推子、下面是喇叭"区分。增益没有开关语义, 所以这个图标是静态的。
+            var icoGain = new GainGlyph { Location = new Point(15, 51) };
             volGain = new VolumeSlider { Location = new Point(78, 52), Width = 300, Minimum = 0, Maximum = 300, Value = 100, SmallChange = 5, LargeChange = 5 };
             lblVolGain = new Label { Text = "100%", AutoSize = false, Width = 46, Height = 20, TextAlign = ContentAlignment.MiddleLeft };
 
@@ -397,22 +400,16 @@ namespace StereoSplitter
             };
             cmbSpec.Items.AddRange(new object[] { "单声道", "立体声", "2.1", "四声道", "5.1" });
             cmbSpec.SelectedIndex = 1;
-            // 「添加设备」: 白底灰边, 与规格下拉的边框/圆角/高度一致 —— 两个控件并排时像一对。
-            // 贴右缘, 具体 Left 由 LayoutTopRows 按面板宽度重算 (这里只是构造期初值)。
-            // 宽 92: 四个汉字 9pt 约 52px, 左右各 20px 的内边距足够, 再窄会触发省略号。
-            btnAddOutput = new RoundButton
+            // 「添加设备」: 方框加号图标按钮 (用户指定图形), 无边框 —— 行里下拉已经框上加框,
+            // 图标按钮再描一圈就数不清谁是内容谁是容器; 悬停浅底足够提示可点。
+            // 高度与规格下拉同为 30, 宽度收成 30 的方形。贴右缘, 具体 Left 由 LayoutTopRows
+            // 按面板宽度重算 (这里只是构造期初值)。
+            btnAddOutput = new GearButton
             {
-                Text = "添加设备",
+                Glyph = ButtonGlyph.SquarePlus,
                 Location = new Point(482, 153),
-                Width = 92,
-                Height = 30,
-                FillColor = Color.White,
-                // 禁用态跟 RoundedCombo.DisabledBack 同值, 并排时两块的"不可用"观感一致
-                FillDisabled = Color.FromArgb(244, 245, 247),
-                TextColor = Color.FromArgb(52, 56, 64)
-                // 边框色跟进 RoundedCombo.BorderNormal (#CBD0D8), 见 RoundButton.BorderColor 注释
+                Size = new Size(30, 30)
             };
-            btnAddOutput.BorderColor = Color.FromArgb(203, 208, 216);
 
             // 声道名 + 输出路数上标: 与「规格」「＋」同一行, 在两者之间居中
             // (宽度由 CenterSpecBadges 按内容算; 高度必须容得下 Label 的字框 + 上边距 ——
@@ -479,6 +476,7 @@ namespace StereoSplitter
             lblWaterIv = new Label { Text = "间隔", Location = new Point(359, 8), AutoSize = true };
             // 间隔 0 = 关闭监控; 1 秒起, 不再卡 5 秒下限 (想看 1~4 秒的抖动就让人看)
             nudWaterInterval = new NoWheelNumeric { Location = new Point(397, 5), Width = 60, Minimum = 0, Maximum = 3600, Value = 30 };
+            nudWaterShell = new RoundNumericShell(nudWaterInterval) { Location = new Point(397, 5) };
             lblWaterSec = new Label { Text = "秒", Location = new Point(461, 8), AutoSize = true };
 
             lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true, Font = new Font("Microsoft YaHei UI", 10F) };
@@ -512,8 +510,8 @@ namespace StereoSplitter
 
             // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
             // 都在设置页里 (控件由本类持有, 由 SettingsForm 搬入搬出)。
-            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, btnRefresh, btnSettings, btnMuteMaster, volMaster, lblVolMaster, lblG, volGain, lblVolGain, btnStart, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
-            splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, btnRefresh, btnSettings, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
+            splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterShell, lblWaterSec, btnClearLog, txtLog });
 
             // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。
             // 必须放在所有控件都建好之后（水位监控那几个是后面才 new 的）。
@@ -523,6 +521,7 @@ namespace StereoSplitter
             tipTop.SetToolTip(btnRefresh, "重新枚举输出设备（插拔 USB/DAC 后用）。\n运行中不可刷新（会改动卡片与链路），需先停止分流。");
             tipTop.SetToolTip(cmbSpec, "可用的逻辑声道清单（单声道…5.1）。\n运行中不可改（会改变矩阵与每路声道数），需先停止分流。");
             tipTop.SetToolTip(btnAddOutput, "新增一张输出卡片（一台设备）。\n运行中不可加卡（会改变链路），需先停止分流。");
+            tipTop.SetToolTip(icoGain, "总增益（100% = 原样，>100% 放大）。\n作用在采样层，与「主音量」是两条独立的滑条。\n运行中可调。");
             tipTop.SetToolTip(volGain, "总增益，作用在采样层。\n运行中可调。");
             tipTop.SetToolTip(volMaster, "总音量，作用在采样层。\n运行中可调。");
             tipTop.SetToolTip(btnMuteMaster, "点击静音 / 取消静音（总静音，作用在采样层，不写设备端点）。\n音量拖到 0 会自动静音，拖回去自动恢复。\n运行中可调。");
@@ -587,6 +586,9 @@ namespace StereoSplitter
                     bindings.Master.WriteVolume(volMaster.Value / 100f);
                 SaveSettings();
             };
+            // 图标三态之一 (音量 0 = 裸喇叭) 跟着滑条走; ValueChanged (含程序赋值) 比
+            // Scroll (仅用户拖动) 全 —— 设置回填 / 设备同步改音量时图标同样要变
+            volMaster.ValueChanged += (s, e) => btnMuteMaster.VolumeValue = volMaster.Value;
             btnMuteMaster.MutedChanged += (s, e) =>
             {
                 // 主静音仅采样层(左右分流), 不写捕获设备端点 Mute

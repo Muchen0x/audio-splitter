@@ -1,4 +1,4 @@
-using System;
+﻿﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -130,7 +130,7 @@ namespace StereoSplitter
     }
 
     /// <summary><see cref="RoundButton"/> 可以画的自绘符号 (不依赖字体)。</summary>
-    enum ButtonGlyph { None, Plus }
+    enum ButtonGlyph { None, Plus, Nut, SquarePlus, Cross }
 
     /// <summary>
     /// 自绘圆角矩形按钮。
@@ -490,6 +490,13 @@ namespace StereoSplitter
     {
         SpinButtonsHook spin;
 
+        public NoWheelNumeric()
+        {
+            // 原生的凹陷立体边框不再要: 圆角描边由外壳 <see cref="RoundNumericShell"/> 画
+            // (与 RoundedCombo 同一套框色), 箭头区的立体框由 SpinButtonsHook 自绘顶掉。
+            BorderStyle = BorderStyle.None;
+        }
+
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             // 不调 base: 滚轮对数字框一律无效 (误滚一下就把延迟拖偏, 很难发现)
@@ -650,15 +657,21 @@ namespace StereoSplitter
         /// </summary>
         sealed class SpinButtonsHook : NativeWindow
         {
+            const int WM_PAINT = 0x000F;
+            const int WM_ERASEBKGND = 0x0014;
             const int WM_LBUTTONDOWN = 0x0201;
+            const int WM_MOUSEMOVE = 0x0200;
             const int WM_LBUTTONUP = 0x0202;
             const int WM_LBUTTONDBLCLK = 0x0203;
             const int WM_RBUTTONDOWN = 0x0204;
             const int WM_RBUTTONDBLCLK = 0x0206;
             const int WM_CAPTURECHANGED = 0x0215;
+            const int WM_MOUSELEAVE = 0x02A3;
 
             readonly NoWheelNumeric owner;
             readonly Control host;
+            int hoverDir, pressedDir;
+            bool leaveTracked;
 
             public SpinButtonsHook(NoWheelNumeric owner, Control host)
             {
@@ -668,13 +681,37 @@ namespace StereoSplitter
 
             protected override void WndProc(ref Message m)
             {
-                if (m.Msg == WM_LBUTTONDOWN)
+                if (m.Msg == WM_PAINT)
+                {
+                    PaintArrows(ref m);
+                    return;
+                }
+                if (m.Msg == WM_ERASEBKGND)
+                {
+                    // 底色在 PaintArrows 里自己铺, 不要系统再擦一遍 (防闪)
+                    m.Result = (IntPtr)1;
+                    return;
+                }
+                if (m.Msg == WM_MOUSEMOVE)
+                {
+                    int d = DirOf(m.LParam);
+                    if (d != hoverDir) { hoverDir = d; host.Invalidate(); }
+                    TrackLeave(m.HWnd);
+                }
+                else if (m.Msg == WM_MOUSELEAVE)
+                {
+                    leaveTracked = false;
+                    if (hoverDir != 0) { hoverDir = 0; host.Invalidate(); }
+                }
+                else if (m.Msg == WM_LBUTTONDOWN)
                 {
                     int dir = DirOf(m.LParam);
                     if (dir != 0)
                     {
                         owner.StepArrow(dir);
                         owner.BeginRepeat(dir);
+                        pressedDir = dir;
+                        host.Invalidate();
                         // 若焦点原本就在文本框 (例如刚手动输完一个数), 点箭头时也收走:
                         // 点箭头只该改数字, 不该留着插入符/选区在闪。
                         if (owner.ContainsFocus) UiFocus.ParkOnForm(owner);
@@ -697,9 +734,101 @@ namespace StereoSplitter
                 }
                 else if (m.Msg == WM_LBUTTONUP || m.Msg == WM_CAPTURECHANGED || m.Msg == WM_RBUTTONDOWN)
                 {
+                    if (pressedDir != 0) { pressedDir = 0; host.Invalidate(); }
                     owner.EndRepeat();
                 }
                 base.WndProc(ref m);
+            }
+
+            /// <summary>
+            /// 箭头自绘: 底色 + 上下两条圆头短线, 与 RoundedCombo 的下拉箭头同一笔画。
+            /// <para>原生 UpDownButtons 自带一圈立体边框和 3D 箭头, 与界面其余扁平控件放不到一起;
+            /// 悬停/按下的反馈由本类自己的 hoverDir/pressedDir 状态补上 (原生那套按下去变暗
+            /// 被吞掉点击后就没了)。</para>
+            /// </summary>
+            void PaintArrows(ref Message m)
+            {
+                var ps = new PAINTSTRUCT();
+                IntPtr hdc = BeginPaint(m.HWnd, ref ps);
+                if (hdc == IntPtr.Zero) return;
+                try
+                {
+                    using (var g = Graphics.FromHdc(hdc))
+                    {
+                        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                        // 底色跟外壳走: 禁用时外壳铺浅灰, 箭头区必须一致, 不能留一块白
+                        Color back = owner.Enabled ? Color.White : Color.FromArgb(244, 245, 247);
+                        using (var b = new SolidBrush(back))
+                            g.FillRectangle(b, 0, 0, host.Width, host.Height);
+
+                        float cx = host.Width / 2f;
+                        Color ink = Color.FromArgb(95, 94, 90);      // 与喇叭/下拉箭头同一墨色
+                        Color act = Color.FromArgb(44, 44, 42);
+                        Color off = Color.FromArgb(178, 178, 178);
+                        float topY = host.Height * 0.25f, botY = host.Height * 0.75f;
+                        DrawChevron(g, cx, topY, 1f, !owner.Enabled ? off
+                            : (pressedDir == 1 || hoverDir == 1) ? act : ink);
+                        DrawChevron(g, cx, botY, -1f, !owner.Enabled ? off
+                            : (pressedDir == -1 || hoverDir == -1) ? act : ink);
+                    }
+                }
+                finally { EndPaint(m.HWnd, ref ps); }
+                m.Result = IntPtr.Zero;
+            }
+
+            /// <summary>「^」/「v」两条圆头短线 (dir=1 朝上, -1 朝下)。</summary>
+            static void DrawChevron(Graphics g, float cx, float cy, float dir, Color ink)
+            {
+                using (var p = new Pen(ink, 1.6f))
+                {
+                    p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                    p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                    g.DrawLine(p, cx - 4f, cy + 2.2f * dir, cx, cy - 2.2f * dir);
+                    g.DrawLine(p, cx, cy - 2.2f * dir, cx + 4f, cy + 2.2f * dir);
+                }
+            }
+
+            /// <summary>悬停出了箭头区要退色 —— 系统只发一次 WM_MOUSELEAVE, 得先申请跟踪。</summary>
+            void TrackLeave(IntPtr hwnd)
+            {
+                if (leaveTracked) return;
+                leaveTracked = true;
+                var tme = new TRACKMOUSEEVENT
+                {
+                    cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(TRACKMOUSEEVENT)),
+                    dwFlags = 2,        // TME_LEAVE
+                    hwndTrack = hwnd
+                };
+                TrackMouseEvent(ref tme);
+            }
+
+            [System.Runtime.InteropServices.DllImport("user32.dll")]
+            static extern IntPtr BeginPaint(IntPtr hWnd, ref PAINTSTRUCT ps);
+            [System.Runtime.InteropServices.DllImport("user32.dll")]
+            static extern bool EndPaint(IntPtr hWnd, ref PAINTSTRUCT ps);
+            [System.Runtime.InteropServices.DllImport("user32.dll")]
+            static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT tme);
+
+            [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+            struct PAINTSTRUCT
+            {
+                public IntPtr hdc;
+                public int fErase;
+                public int rcLeft, rcTop, rcRight, rcBottom;
+                public int fRestore;
+                public int fIncUpdate;
+                [System.Runtime.InteropServices.MarshalAs(
+                    System.Runtime.InteropServices.UnmanagedType.ByValArray, SizeConst = 32)]
+                public byte[] rgbReserved;
+            }
+
+            [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+            struct TRACKMOUSEEVENT
+            {
+                public int cbSize;
+                public int dwFlags;
+                public IntPtr hwndTrack;
+                public int dwHoverTime;
             }
 
             /// <summary>上半是 +1, 下半是 −1; 落在边界外返回 0 (不处理)。</summary>
@@ -709,6 +838,124 @@ namespace StereoSplitter
                 int h = host.ClientSize.Height;
                 if (y < 0 || y >= h || h <= 0) return 0;
                 return y < h / 2 ? 1 : -1;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 圆角数字框外壳: <see cref="NoWheelNumeric"/> 是原生控件, 自己画不了圆角描边 ——
+    /// 外壳负责按 <see cref="RoundedCombo"/> 同一套框色画圆角边框, 数字框嵌在 1px 内衬里,
+    /// 并把它的窗口裁成圆角 (与 RoundButton.ShapeRound 同一手法), 方角才不会盖住边框弧线。
+    /// <para>可以带文字 (<c>new RoundNumericShell(nud, "延迟")</c>): 文字与数字框、上下箭头
+    /// 一起包进同一个圆角矩形 —— 整组控件看起来是一个完整的框, 而不是三件散件。</para>
+    /// <para>上下箭头由 <see cref="NoWheelNumeric.SpinButtonsHook"/> 自绘成两条圆头短线,
+    /// 不再带原生那圈立体边框 —— 「设置了图标的按钮不要边框」同一条规矩的延伸。</para>
+    /// </summary>
+    class RoundNumericShell : Panel
+    {
+        static readonly Color BorderNormal = Color.FromArgb(203, 208, 216);   // 与 RoundedCombo/SoftCard 同框色
+        static readonly Color BorderHot = Color.FromArgb(168, 176, 188);
+        static readonly Color BackDisabled = Color.FromArgb(244, 245, 247);
+        static readonly Color TextDisabled = Color.FromArgb(150, 154, 160);
+        const int CornerRadius = 6;
+        const int PadX = 7;          // 文字距左缘 (与 RoundedCombo.TextPadX 对齐)
+        const int GapCapInner = 5;   // 文字与数字框的间隔
+
+        public readonly NoWheelNumeric Inner;
+        readonly Label caption;      // 框内的文字 (可空)
+        bool hot;
+
+        public RoundNumericShell(NoWheelNumeric inner) : this(inner, null) { }
+
+        public RoundNumericShell(NoWheelNumeric inner, string captionText)
+        {
+            Inner = inner;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.ResizeRedraw, true);
+            inner.BackColor = Color.White;
+            Controls.Add(inner);
+            if (captionText != null)
+            {
+                caption = new Label
+                {
+                    Text = captionText,
+                    AutoSize = true,
+                    BackColor = Color.Transparent   // 让外壳的圆角填充透出来
+                };
+                Controls.Add(caption);
+            }
+            Size = new Size(ContentWidth(), Inner.Height + 2);
+            // 鼠标几乎全落在 Inner 上 (外壳只剩内衬和文字), 悬停跟踪得挂在它身上
+            inner.MouseEnter += (s, e) => { hot = true; Invalidate(); };
+            inner.MouseLeave += (s, e) => { hot = false; Invalidate(); };
+            inner.EnabledChanged += (s, e) =>
+            {
+                inner.BackColor = inner.Enabled ? Color.White : BackDisabled;
+                if (caption != null) caption.ForeColor = inner.Enabled ? SystemColors.ControlText : TextDisabled;
+                Invalidate();
+            };
+            // 字体是环境继承的: 挂进父级后才定, caption 宽度跟着变, 定了之后要重排
+            FontChanged += (s, e) => { if (IsHandleCreated) BeginInvoke((Action)Recalc); };
+        }
+
+        /// <summary>外壳总宽 = 边框 + [文字+间隔] + 数字框 + 边框。</summary>
+        int ContentWidth()
+        {
+            return 1 + (caption == null ? 0 : PadX + caption.PreferredWidth + GapCapInner)
+                     + Inner.Width + 1;
+        }
+
+        /// <summary>按内容重排: 外壳尺寸、文字与数字框的位置、数字框的圆角裁剪一次到位。</summary>
+        void Recalc()
+        {
+            if (IsDisposed) return;
+            Size = new Size(ContentWidth(), Inner.Height + 2);
+            if (caption != null)
+            {
+                caption.Location = new Point(PadX, (Height - caption.PreferredHeight) / 2);
+                int x = PadX + caption.PreferredWidth + GapCapInner;
+                PlaceInner(x, Width - x - 1);
+            }
+            else
+            {
+                PlaceInner(1, Width - 2);
+            }
+            Invalidate();
+        }
+
+        /// <summary>数字框定位到 (x,1)、给定宽, 并裁圆角 —— 否则方角会盖住外壳的边框弧线。</summary>
+        void PlaceInner(int x, int w)
+        {
+            Inner.SetBounds(x, 1, w, Height - 2);
+            using (var path = UiDraw.RoundRect(new Rectangle(0, 0, w - 1, Height - 3), CornerRadius - 1))
+            {
+                Region old = Inner.Region;
+                Inner.Region = new Region(path);
+                if (old != null) old.Dispose();
+            }
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Recalc();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            // 圆角外四个小角补成父容器底色 (与 SoftCard.OnPaint 同一手法)
+            Color outside = Parent != null ? Parent.BackColor : SystemColors.Control;
+            using (var b = new SolidBrush(outside)) g.FillRectangle(b, ClientRectangle);
+
+            using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), CornerRadius))
+            {
+                using (var fill = new SolidBrush(Inner.Enabled ? Color.White : BackDisabled))
+                    g.FillPath(fill, path);
+                using (var pen = new Pen(Inner.Enabled && hot ? BorderHot : BorderNormal))
+                    g.DrawPath(pen, path);
             }
         }
     }
@@ -884,10 +1131,15 @@ namespace StereoSplitter
     }
 
     /// <summary>
-    /// 设置入口按钮: 自绘齿轮。
+    /// 图标按钮 (无边框、透明底、悬停铺浅底): 设置=六角螺母, 添加设备=方框加号, 移除卡片=×。
     /// <para>不用字体图标 (Segoe MDL2 在精简版/老系统上未必存在, 缺字时会画成方块),
-    /// 也不用文字 "⚙" (不同字体渲染差异大, 有的字体画成黑白两色 emoji)。
-    /// 路径直接画: 8 个齿 + 圆盘 + 挖孔, 只在悬停/按下时给一层浅底, 与主界面其余扁平控件一致。</para>
+    /// 也不用文字 "⚙" (不同字体渲染差异大, 有的字体画成黑白两色 emoji)。图形全部照
+    /// 用户给的 SVG 用路径直接画, 线条粗细折算成像素, 20~30px 下都按"能读清"取整。</para>
+    /// <para>没有边框: 这些按钮周围都是内容控件 (下拉/滑条/卡片), 再带一圈边框会让
+    /// 行里"框"比内容还多; 悬停浅底已经足够提示可点。</para>
+    /// <para>已知怪癖 (旧齿轮时代就有): DrawToBitmap (WM_PRINT) 拍不到这个控件 ——
+    /// OnPaint 正常执行、裁剪区完整, 但输出不落在目标位图上, uidump 的 icons 模式里
+    /// 这一格是空的。实屏 (CopyFromScreen) 与真实运行不受影响; 截它只能用实屏。</para>
     /// </summary>
     class GearButton : Control
     {
@@ -897,6 +1149,14 @@ namespace StereoSplitter
         static readonly Color PressBack = Color.FromArgb(216, 216, 216);
 
         bool hot, down;
+        ButtonGlyph glyph = ButtonGlyph.Nut;
+
+        /// <summary>按钮上的图形 (默认螺母 = 设置)。</summary>
+        public ButtonGlyph Glyph
+        {
+            get { return glyph; }
+            set { if (glyph == value) return; glyph = value; Invalidate(); }
+        }
 
         public GearButton()
         {
@@ -923,47 +1183,98 @@ namespace StereoSplitter
             Color back = Parent != null ? Parent.BackColor : SystemColors.Control;
             using (var b = new SolidBrush(back)) g.FillRectangle(b, ClientRectangle);
 
-            if (hot || down)
+            if (Enabled && (hot || down))
             {
                 using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), 6))
                 using (var fill = new SolidBrush(down ? PressBack : HoverBack))
                     g.FillPath(fill, path);
             }
 
-            float cx = Width / 2f;
-            float cy = Height / 2f + (down ? 1f : 0f);
-            float rOut = Math.Min(Width, Height) * 0.36f;
+            float cx = (Width - 1) / 2f;
+            float cy = (Height - 1) / 2f + (down ? 1f : 0f);
             Color icon = Enabled ? ((hot || down) ? IconActive : IconColor) : Color.FromArgb(170, 170, 170);
-            DrawGear(g, cx, cy, rOut, rOut * 0.70f, rOut * 0.28f, icon, (hot || down) ? (down ? PressBack : HoverBack) : back);
+
+            switch (glyph)
+            {
+                case ButtonGlyph.Nut:
+                    // 设置: 六角螺母 —— 六边形一圈墙 + 中心一个圆环 (照用户给的 SVG 描的)。
+                    // 原图坐标: 六角对宽 824×903 (k = 24/903), 墙 85 (≈2.3px), 圆环外径 170.7 内径 85.3。
+                    DrawNut(g, cx, cy, Math.Min(Width, Height) * 0.0266f, icon,
+                        (hot || down) ? (down ? PressBack : HoverBack) : back);
+                    break;
+
+                case ButtonGlyph.SquarePlus:
+                    // 「添加设备」: 方框 + 加号。原图线条都是方框的 ~11%: 30×30 按钮里
+                    // 框画成 16×16、线宽 1.8px, 加号臂长 ±5.5。
+                    using (var p = new Pen(icon, 1.8f))
+                    {
+                        g.DrawRectangle(p, cx - 8f, cy - 8f, 16f, 16f);
+                        g.DrawLine(p, cx - 5.5f, cy, cx + 5.5f, cy);
+                        g.DrawLine(p, cx, cy - 5.5f, cx, cy + 5.5f);
+                    }
+                    break;
+
+                case ButtonGlyph.Cross:
+                    // 移除卡片: 一个干净的 "×" (用户给的 SVG 就是两条 45° 短线)。
+                    // 20×20 按钮里臂长 ±4.5、线宽 1.7px, 圆头。
+                    using (var p = new Pen(icon, 1.7f))
+                    {
+                        p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                        p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                        g.DrawLine(p, cx - 4.5f, cy - 4.5f, cx + 4.5f, cy + 4.5f);
+                        g.DrawLine(p, cx - 4.5f, cy + 4.5f, cx + 4.5f, cy - 4.5f);
+                    }
+                    break;
+            }
         }
 
-        /// <summary>齿轮: 8 个齿绕中心旋转铺开 + 实心圆盘 + 用底色挖出中心孔。</summary>
-        static void DrawGear(Graphics g, float cx, float cy, float rOut, float rBody, float rHole, Color icon, Color holeBack)
+        /// <summary>
+        /// 六角螺母: 与喇叭同一套"外轮廓填墨色 / 内轮廓填底色"的画法, 墙厚不靠笔宽,
+        /// 靠两个多边形之间的距离。上下是平的、左右是尖的 —— 螺母躺倒的样子。
+        /// </summary>
+        static void DrawNut(Graphics g, float cx, float cy, float k, Color icon, Color back)
         {
-            const int teeth = 8;
-            using (var brush = new SolidBrush(icon))
+            var outer = new PointF[]
             {
-                float tw = Math.Max(2f, rOut * 0.40f);
-                float len = rOut - rBody + 1.4f;
-                System.Drawing.Drawing2D.GraphicsState st = g.Save();
-                g.TranslateTransform(cx, cy);
-                for (int i = 0; i < teeth; i++)
-                {
-                    g.RotateTransform(360f / teeth);
-                    g.FillRectangle(brush, -tw / 2f, -rOut, tw, len);
-                }
-                g.Restore(st);
-                g.FillEllipse(brush, cx - rBody, cy - rBody, rBody * 2, rBody * 2);
+                new PointF(1.23f, -13.0f), new PointF(11.87f, -7.56f),
+                new PointF(11.87f,  7.56f), new PointF(0f,     13.0f),
+                new PointF(-11.87f,  7.56f), new PointF(-11.87f, -7.56f),
+            };
+            var inner = new PointF[]
+            {
+                new PointF(1.23f, -10.87f), new PointF(9.41f, -5.43f),
+                new PointF(9.41f,   5.43f), new PointF(0f,    10.87f),
+                new PointF(-9.41f,   5.43f), new PointF(-9.41f, -5.43f),
+            };
+            using (var fill = new SolidBrush(icon))
+            {
+                for (int i = 0; i < outer.Length; i++)
+                    outer[i] = new PointF(cx + outer[i].X * k, cy + outer[i].Y * k);
+                for (int i = 0; i < inner.Length; i++)
+                    inner[i] = new PointF(cx + inner[i].X * k, cy + inner[i].Y * k);
+                g.FillPolygon(fill, outer);
             }
-            using (var bg = new SolidBrush(holeBack))
-                g.FillEllipse(bg, cx - rHole, cy - rHole, rHole * 2, rHole * 2);
+            using (var fill = new SolidBrush(back))
+                g.FillPolygon(fill, inner);
+
+            // 中心圆环: 外圆墨色, 内圆底色。原图外径 170.7/内径 85.3 是 1024 视图的原始值,
+            // 要按六角高 903 → 本坐标系高 26 的比例归一 (170.67*26/903 ≈ 4.91) ——
+            // 直接乘 k 会得到 127px 的巨圆, 墨色圆再被底色圆盖住, 整个按钮等于被刷白。
+            float rOut = 4.91f * k, rIn = 2.46f * k;
+            using (var fill = new SolidBrush(icon))
+                g.FillEllipse(fill, cx - rOut, cy - rOut, rOut * 2, rOut * 2);
+            using (var fill = new SolidBrush(back))
+                g.FillEllipse(fill, cx - rIn, cy - rIn, rIn * 2, rIn * 2);
         }
     }
 
+
     /// <summary>
     /// 喇叭图标按钮: 顶替「音量」文字标签 + 独立静音勾选框。点一下静音, 再点恢复。
-    /// <para>图标本身就是状态: 正常时喇叭带两道声波, 静音时声波换成一个小 "×" 并转灰 ——
-    /// 喇叭本体两个状态一模一样, 所以"同一个东西被关了"这一点不需要文字解释。</para>
+    /// <para>图标有三种样子 (照用户给的 SVG 描的, 描边风格):</para>
+    /// <para>· 带两道声波 = 正常出声;  · 喇叭 + × = 已静音 (点的);  · 裸喇叭 = 音量为 0。
+    /// "音量为 0"和"被静音"是两件不同的事: 前者是滑条拖到底的自然结果, 后者是明确的开关 ——
+    /// 音量 0 时优先画裸喇叭 (没声就是没声, 不管是不是手动关的), 拖离 0 后若仍是静音再画 ×。</para>
     /// <para>比原来「文字标签 + 勾选框」省下 ~84px 横向空间 (卡片第二行), 主音量行省 ~66px,
     /// 空出来的宽度全给滑条。</para>
     /// <para>与 <see cref="GearButton"/> 同一套画法 (自绘 / 透明底 / 只在悬停按下时铺浅底),
@@ -975,14 +1286,18 @@ namespace StereoSplitter
     {
         static readonly Color IconColor = Color.FromArgb(95, 94, 90);
         static readonly Color IconActive = Color.FromArgb(44, 44, 42);
-        // 静音态: 灰蓝而不是红。红在本程序里已经等于「停止/失败」, 静音只是一个开关,
+        // 关掉的两态 (静音 / 音量 0) 都用灰蓝而不是红。红在本程序里已经等于「停止/失败」,
         // 而且同一行里滑条变灰、百分比照旧, 用红色会读成"出错了"。
         static readonly Color IconMuted = Color.FromArgb(0x8A, 0x90, 0x99);
         static readonly Color HoverBack = Color.FromArgb(234, 234, 234);
         static readonly Color PressBack = Color.FromArgb(216, 216, 216);
         static readonly Color DisabledInk = Color.FromArgb(178, 178, 178);
 
+        /// <summary>图标的三种样子 (选哪个由 Muted / VolumeValue 一起决定, 见 OnPaint)。</summary>
+        enum SpeakerLook { Waves, Cross, Bare }
+
         bool hot, down, muted;
+        int volumeValue = 100;
 
         /// <summary>静音状态 (等价于原来勾选框的 Checked)。</summary>
         public bool Muted
@@ -995,6 +1310,21 @@ namespace StereoSplitter
                 Invalidate();
                 var h = MutedChanged;
                 if (h != null) h(this, EventArgs.Empty);
+            }
+        }
+
+        /// <summary>
+        /// 音量滑条的当前值, 只用来选图标 (0 → 裸喇叭)。与 <see cref="Muted"/> 各走各的:
+        /// 这里不写任何声音逻辑, 音量到 0 自动静音那条规则仍在滑条事件里。
+        /// </summary>
+        public int VolumeValue
+        {
+            get { return volumeValue; }
+            set
+            {
+                if (volumeValue == value) return;
+                volumeValue = value;
+                Invalidate();
             }
         }
 
@@ -1063,68 +1393,156 @@ namespace StereoSplitter
                     g.FillPath(fill, path);
             }
 
+            // 选哪张脸: 音量 0 优先 (没声就是没声), 其次静音 ×, 最后正常声波。
             Color ink = !Enabled ? DisabledInk
-                : (muted ? IconMuted : ((hot || down) ? IconActive : IconColor));
+                : (muted || volumeValue == 0) ? IconMuted
+                : ((hot || down) ? IconActive : IconColor);
+            var look = volumeValue == 0 ? SpeakerLook.Bare
+                : muted ? SpeakerLook.Cross
+                : SpeakerLook.Waves;
 
             // 几何按 22×22 设计, 换尺寸时整体等比缩放 (卡片/主界面都用 22, 这里只是兜底)
             float s = Math.Min(Width, Height) / 22f;
-            DrawSpeaker(g, Width / 2f, Height / 2f, s, ink, muted);
+            DrawSpeaker(g, Width / 2f, Height / 2f, s, ink, back, look);
         }
 
-        /// <summary>画喇叭: 左侧小方箱 + 向右张开的锥形; 有声波 / 静音"×"两种收尾。</summary>
-        static void DrawSpeaker(Graphics g, float cx, float cy, float s, Color ink, bool muted)
+        /// <summary>
+        /// 画喇叭 (描边风格, 照用户给的 SVG 描的)。坐标是 1024 视图等比折算到 22×22 的结果:
+        /// 内容 866×660 装进 20px 宽 (k=20/866), 中心 (497,522.8) 对准控件中心 ——
+        /// 所以喇叭占左半边, 声波/×占右半边, 和原图一样。
+        /// 本体画法: 外轮廓填墨色, 内轮廓填底色, 两圈之间就是 1.5px 的"描边墙"
+        /// (原图内外轮廓相距 64, 折算正好 1.48px, 不用再调)。
+        /// </summary>
+        static void DrawSpeaker(Graphics g, float cx, float cy, float s, Color ink, Color back, SpeakerLook look)
         {
-            // 尺寸全部按 22×22 定, 再整体乘 s: 方箱 4×5, 锥口开到 ±6.2, 锥尖在中心右侧 1px。
-            // 锥尖让出 1px 给声波/叉号留位置 —— 22px 的图标里"锥尖顶到右边缘"会把收尾符号挤没。
-            float bx = cx - 8f * s, by = cy - 2.5f * s;
-            float bw = 4f * s, bh = 5f * s;
-            float coneX = bx + bw, tip = cx + 1f * s;
-
-            using (var brush = new SolidBrush(ink))
+            // 外轮廓 (圆角在 22px 下只剩 0.74px, 直接当直角画)
+            var outer = new[]
             {
-                g.FillRectangle(brush, bx, by, bw, bh);
-                g.FillPolygon(brush, new[]
-                {
-                    new PointF(coneX, cy - 2.5f * s),
-                    new PointF(tip,   cy - 6.2f * s),
-                    new PointF(tip,   cy + 6.2f * s),
-                    new PointF(coneX, cy + 2.5f * s),
-                });
-            }
-
-            if (!muted)
+                new PointF(-9.26f, -3.84f), new PointF(-5.46f, -3.84f),   // 方箱顶边
+                new PointF(-0.75f, -7.62f), new PointF(0.45f, -7.04f),    // 锥形上斜边 + 锥口上角
+                new PointF(0.45f,  7.05f),  new PointF(-0.75f,  7.63f),   // 锥口下角 + 下斜边
+                new PointF(-5.59f,  3.75f), new PointF(-9.26f,  3.75f),   // 方箱底边
+                new PointF(-10.0f,  3.01f), new PointF(-10.0f, -3.10f),   // 右侧圆角
+            };
+            // 内轮廓: 与外轮廓相距恒 64 (原图如此), 这 64 就是描边墙的厚度
+            var inner = new[]
             {
-                // 两道同心圆弧, 只取右侧 ~100°: 半径从锥口往外排, 间距随尺寸走
-                using (var p = new Pen(ink, Math.Max(1.2f, 1.5f * s)))
+                new PointF(-8.53f, -2.36f), new PointF(-8.53f,  2.28f),
+                new PointF(-5.09f,  2.28f), new PointF(-1.03f,  5.51f),
+                new PointF(-1.03f, -5.50f), new PointF(-4.95f, -2.36f),
+            };
+
+            using (var fill = new SolidBrush(ink))
+                g.FillPolygon(fill, Scale(outer, cx, cy, s));
+            using (var fill = new SolidBrush(back))
+                g.FillPolygon(fill, Scale(inner, cx, cy, s));
+
+            if (look == SpeakerLook.Bare) return;   // 音量 0: 只剩喇叭, 波和 × 都不画
+
+            if (look == SpeakerLook.Waves)
+            {
+                // 两道同心圆弧, 圆心在控件中心 (原图如此), 只取右侧 ~91°。
+                // 原图线宽 32 折算 0.74px —— 22px 下会断成虚线, 放到 1.1px。
+                using (var p = new Pen(ink, Math.Max(1f, 1.1f * s)))
                 {
                     p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
                     p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
                     for (int i = 0; i < 2; i++)
                     {
-                        float r = (3.5f + i * 3.4f) * s;
-                        g.DrawArc(p, tip - r, cy - r, r * 2, r * 2, -50, 100);
+                        float r = (230f + i * 205f) * 20f / 866f * s;   // 原图半径 230 / 435
+                        g.DrawArc(p, cx - 0.5f * s - r, cy - r, r * 2, r * 2, -45.5f, 91f);
                     }
                 }
                 return;
             }
 
-            // 静音: 声波的位置换成一个小 "×" (喇叭本体一个像素都不动)。
-            // 试过"斜杠贯穿整只喇叭"的经典画法, 22px 下不成立: 斜杠要么窄到看不见,
-            // 要么宽到把 4px 的方箱和锥形劈成两半, 剩下的碎片认不出是喇叭;
-            // 加一圈底色"挖槽"救回来的代价是斜杠自身变成一道灰带, 反而更糊。
-            // 换成"同一只喇叭, 只会把声音打叉", 静音与正常两个状态像同一个东西。
-            using (var p = new Pen(ink, Math.Max(1.3f, 1.6f * s)))
+            // 静音 ×: 原图是一个高瘦的叉 (半宽 2.7 / 半高 3.6), 中心在控件中心右侧 6.9px。
+            using (var p = new Pen(ink, Math.Max(1f, 1.1f * s)))
             {
                 p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
                 p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
-                // 叉号左端要离开锥尖 ≥2px: 1.6px 的笔宽各出一半, 实际只剩 1px 白色,
-                // 再近就会连成一片, 看着像喇叭尾部长了个毛刺, 而不是"把声音打叉"。
-                float mx = cx + 5.6f * s, my = cy, r = 2.5f * s;
-                g.DrawLine(p, mx - r, my - r, mx + r, my + r);
-                g.DrawLine(p, mx - r, my + r, mx + r, my - r);
+                float mx = cx + 6.9f * s, my = cy, hw = 2.7f * s, hh = 3.6f * s;
+                g.DrawLine(p, mx - hw, my - hh, mx + hw, my + hh);
+                g.DrawLine(p, mx - hw, my + hh, mx + hw, my - hh);
+            }
+        }
+
+        static PointF[] Scale(PointF[] pts, float cx, float cy, float s)
+        {
+            var r = new PointF[pts.Length];
+            for (int i = 0; i < pts.Length; i++)
+                r[i] = new PointF(cx + pts[i].X * s, cy + pts[i].Y * s);
+            return r;
+        }
+    }
+
+
+    /// <summary>
+    /// 增益图标: 四根高低不一的竖条, 其中两根套着滑块 —— 一望即知是"电平/推子"。
+    /// <para>图形照用户给的 SVG 描的 (1024 视图): 竖条中心 x = 190 / 417 / 644 / 872,
+    /// 条宽 116、端头半圆; 滑块是半径 95.7 的实心圆, 环着一圈 15 宽的空隙把竖条断开。
+    /// 这里只做一件事: **把 1024 坐标等比缩到 22×22 的内容区**, 再把那圈空隙从 0.33px
+    /// 放大到 0.7px —— 22px 下 0.33px 等于没有, 滑块会和竖条糊成一根粗线。</para>
+    /// <para>静态、不可点: 增益没有开关语义, 也没有可切换的状态。做成按钮会让人去点,
+    /// 点了却什么都不会发生 —— 那是比"少一个功能"更糟的体验。</para>
+    /// </summary>
+    class GainGlyph : Control
+    {
+        /// <summary>与 <see cref="SpeakerButton"/> 同一个墨色, 两个图标在同一列里才像一家。</summary>
+        static readonly Color Ink = Color.FromArgb(95, 94, 90);
+
+        public GainGlyph()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor
+                | ControlStyles.ResizeRedraw, true);
+            BackColor = Color.Transparent;
+            Size = new Size(22, 22);
+            TabStop = false;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            Color back = Parent != null ? Parent.BackColor : SystemColors.Control;
+            using (var b = new SolidBrush(back)) g.FillRectangle(b, ClientRectangle);
+
+            float s = Math.Min(Width, Height) / 22f;
+
+            // 坐标直接按 22×22 写, 不再从 1024 视图换算 —— 等比缩小到 22px 后,
+            // 竖条只有 2.3px、滑块与竖条之间的空隙只有 0.33px, 后者等于没有:
+            // 滑块会和竖条糊成一根粗线, 图标就读成"四根线"而不是"推子"。
+            // 所以这里保比例、放大特征: 条 2.7px, 滑块半径 2.4px, 空隙 ~0.75px。
+            float[] cx = { 3.9f, 8.9f, 13.9f, 18.9f };
+            float[] top = { 14.0f, 8.2f, 3.5f, 0.8f };   // 底端齐平, 顶端一根比一根高
+            const float bottom = 21.2f, barW = 2.2f;
+            float knobR = 2.5f, holeR = 3.3f;
+
+            using (var pen = new Pen(Ink, barW * s))
+            {
+                pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                for (int i = 0; i < cx.Length; i++)
+                    g.DrawLine(pen, cx[i] * s, top[i] * s, cx[i] * s, bottom * s);
+            }
+
+            // 两根带滑块的竖条: 先用底色在滑块位置挖一个圆, 再把滑块实心填回来 ——
+            // 顺序反了就只是一圈实心圆压住竖条, 看不出"滑块能滑"。
+            float[] knobY = { 17.6f, 7.6f };
+            int[] knobCol = { 0, 2 };
+            for (int i = 0; i < knobY.Length; i++)
+            {
+                float kx = cx[knobCol[i]] * s, ky = knobY[i] * s;
+                using (var fill = new SolidBrush(back))
+                    g.FillEllipse(fill, kx - holeR * s, ky - holeR * s, holeR * 2 * s, holeR * 2 * s);
+                using (var fill = new SolidBrush(Ink))
+                    g.FillEllipse(fill, kx - knobR * s, ky - knobR * s, knobR * 2 * s, knobR * 2 * s);
             }
         }
     }
+
 
     /// <summary>自绘用的公共绘制工具。</summary>
     static class UiDraw
