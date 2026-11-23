@@ -427,9 +427,12 @@ namespace StereoSplitter
                 }
                 else if (m.Msg == WM_LBUTTONDBLCLK)
                 {
-                    // 连续快速点击时系统会在第二次 DOWN/UP 之外**额外**投递这一条。
-                    // 基类处理它时会把焦点塞进 UpDownEdit (插入符 + 蓝选区), 还会再多走一步值。
-                    // 两次真实点击已经由两条 WM_LBUTTONDOWN 各走了一步, 这里直接吞掉。
+                    // 快速连点时, 每一对点击的**第二击**系统发的是 DBLCLK 而不是 DOWN
+                    // (序列: DOWN,UP,DBLCLK,UP)。所以它代表一次真实点击, 必须照样走一步 ——
+                    // 上一轮把它整个吞掉, 结果偶数次点击全丢, 数字只走一半, 明显不跟手。
+                    // 仍然不调 base: 那正是当初把焦点塞进 UpDownEdit 的元凶。
+                    int dir = DirOf(m.LParam);
+                    if (dir != 0) owner.StepArrow(dir);
                     return;
                 }
                 else if (m.Msg == WM_RBUTTONDBLCLK)
