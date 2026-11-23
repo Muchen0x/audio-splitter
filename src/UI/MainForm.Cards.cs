@@ -866,8 +866,9 @@ namespace StereoSplitter
         // ==================== 延迟校准 (麦克风互相关) ====================
 
         /// <summary>
-        /// 打开延迟校准窗口。要求分流已停止: 校准会直接向每台设备播放扫频，
-        /// 若分流同时在跑，测试音会和正常音频叠在一起，相关系数被拉低、结果不可信。
+        /// 打开延迟校准窗口。分流在跑或已停止都可以: 扫频直接向每台设备播放, 分流正在放的音乐
+        /// 会叠在扫频上 —— 定位算法按"能在音乐里找扫频"设计 (全段匹配滤波 + 峰显著度),
+        /// 音乐盖过扫频时会报错而不是给一个错的值。链路保持原样, 不静音、不拆流。
         /// </summary>
         void OpenLatencyCalibration()
         {
@@ -910,64 +911,14 @@ namespace StereoSplitter
             prof = Math.Max(0, Math.Min(LatencyProfiles.Length - 1, prof));
             int outMs = LatencyProfiles[prof][1];
 
-            // 运行中校准: 默认仍把分流的**采样层**静音, 但不拆链路 —— 这与旧版行为完全一致。
-            // 静音改由校准窗通过回调切换: 用户可以勾「音乐继续播放」让音乐不停, 那一条走的是
-            // 全段匹配滤波 (MicLatencyProbe.CoexistMode), 关窗后统一恢复音量。
+            // 校准不需要停音乐、也不需要停分流: 扫频叠在正在播放的音频上, 定位靠全段匹配滤波。
+            // 分流在跑时链路保持原样 (端点不动、缓冲不断流), 这里只是多开一个播放流。
             bool hostRunning = (state == AppState.Running) && engine != null;
-            Func<bool, string> setHostMute = null;
-            if (hostRunning)
-            {
-                setHostMute = delegate (bool mute)
-                {
-                    bool prev = calibMute;
-                    calibMute = mute;
-                    try
-                    {
-                        ApplyVolumes();
-                        return null;
-                    }
-                    catch (Exception ex)
-                    {
-                        // 切换失败要把标记退回去: 否则分流会停在静音态, 而界面显示"未静音"。
-                        calibMute = prev;
-                        try { ApplyVolumes(); } catch { }
-                        return ex.Message;
-                    }
-                };
 
-                string muteErr = setHostMute(true);
-                if (muteErr != null)
-                {
-                    MessageBox.Show(this,
-                        "无法临时静音分流: " + muteErr + "\n\n请先「停止分流」再校准。",
-                        "延迟校准", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                Log("[校准] 分流已临时静音（不拆链路，校准结束自动恢复；窗口内可切换为「音乐继续播放」）");
-            }
-
-            Log("[校准] 打开延迟校准: " + list.Count + " 路 (麦克风互相关, 输出缓冲 " + outMs + "ms)");
-            try
-            {
-                using (var f = new LatencyCalibrationForm(list, outMs, ApplyCalibratedDelay, hostRunning, setHostMute))
-                    f.ShowDialog(this);
-            }
-            finally
-            {
-                if (hostRunning)
-                {
-                    calibMute = false;
-                    try
-                    {
-                        ApplyVolumes();
-                        Log("[校准] 分流音量已恢复");
-                    }
-                    catch (Exception ex)
-                    {
-                        Log("[警告] 校准后恢复分流音量失败: " + ex.Message + "（可在主界面拖动主音量重新下发）");
-                    }
-                }
-            }
+            Log("[校准] 打开延迟校准: " + list.Count + " 路 (麦克风互相关, 输出缓冲 " + outMs + "ms" +
+                (hostRunning ? ", 分流继续播放" : "") + ")");
+            using (var f = new LatencyCalibrationForm(list, outMs, ApplyCalibratedDelay, hostRunning))
+                f.ShowDialog(this);
         }
 
         /// <summary>

@@ -146,14 +146,6 @@ namespace StereoSplitter
         AppState state = AppState.Ready;
 
         volatile bool volSyncing = false;
-        /// <summary>
-        /// 延迟校准期间临时静音分流 (不拆链路)。
-        /// <para>它是**采样层**的开关, 只让 ApplyVolumes 输出 0, 不碰端点音量、也不改
-        /// chkMuteMaster —— 校准结束恢复时, 用户原有的音量/静音状态原样回来。
-        /// 做成标志而不是直接 SetMaster(0) 的原因: 运行中端点音量回读会周期性调
-        /// ApplyVolumes (见 SyncVolumesFromEndpoint), 直接设 0 会被它一秒内冲掉。</para>
-        /// </summary>
-        bool calibMute;
         bool loadingDevices = false;
         string restoreDefaultId = null;
         // 点开始分流时的系统默认输出, 启动失败时回滚 (AutoConfigure 会改默认)
@@ -718,7 +710,7 @@ namespace StereoSplitter
             cmbLatency.Enabled = !busy && !run;
             cmbSpec.Enabled = !busy && !run;
             btnAddOutput.Enabled = !busy && !run && models.Count < Infrastructure.LaneSettingsCodec.MaxOutputCards;  // F-24: 达上限禁用
-            // 校准运行中可用: 打开时把分流临时静音 (见 calibMute), 不必停止再开始。
+            // 校准运行中可用: 测试音叠在正在播放的音频上, 不必停止再开始, 也不静音。
             // 启动中仍置灰 —— 链路正在建, 端点还没稳, 这时放扫频没有意义。
             btnCalibrate.Enabled = !busy;
 
@@ -1523,8 +1515,7 @@ namespace StereoSplitter
             if (engine == null) return;
             // 左右音量/静音走设备端点(已双向绑定)，主音量走采样层；
             // 其余各路音量已乘进混音矩阵 (LaneRouting 的绑定增益), 这里不用管
-            // 校准期间强制 0: 分流链路仍在跑 (缓冲不断流), 但不出声, 麦克风才只收得到扫频。
-            engine.SetMaster(calibMute ? 0f : CurrentMaster());
+            engine.SetMaster(CurrentMaster());
         }
 
         /// <summary>清空"本次运行"的设备/模型记录 (停止、失败、放弃三条路径共用)。</summary>

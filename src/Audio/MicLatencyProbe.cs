@@ -19,11 +19,11 @@ namespace StereoSplitter
     {
         /// <summary>端到端延迟 (毫秒): 从软件开始送样本, 到麦克风"听到"扫频起点, 已扣除前导静音。</summary>
         public double LatencyMs;
-        /// <summary>相关系数 (0~1)。越高越可信, 低于 <see cref="MicLatencyProbe.MinConfidence"/> 会被判为失败。</summary>
+        /// <summary>相关系数 (0~1)。只用于排除"完全不像扫频"的东西, 低于 <see cref="MicLatencyProbe.MinScore"/> 会被判为失败。</summary>
         public double Confidence;
         /// <summary>多次测量之间的极差 (毫秒)。大 = 环境不稳或回声重, 建议重测。</summary>
         public double SpreadMs;
-        /// <summary>各段峰显著度里最差的一个 (仅不静音模式)。它决定"音乐有没有盖过扫频"。</summary>
+        /// <summary>各段峰显著度里最差的一个。它决定"音乐有没有盖过扫频", 是可信度的主判据。</summary>
         public double Psr;
         public int Takes;
         /// <summary>本次每一段的实测值 (毫秒), 供界面逐条打印, 便于判断是整体偏还是单段离群。</summary>
@@ -45,6 +45,11 @@ namespace StereoSplitter
     /// <para><b>为什么用扫频而不是脉冲</b>: 单频/短脉冲与音乐、噪声容易混淆, 包络峰值也容易被
     /// 回声拖偏; 扫频在互相关中会收敛成一个很尖的峰, 且对房间反射不敏感 (反射能量被时间上摊开)。</para>
     ///
+    /// <para><b>为什么不用先把音乐停掉</b>: 分流正在放音乐时, 扫频是**叠在音乐上**出去的。
+    /// 这要求定位算法放弃"先猜声音从哪儿开始"的捷径 (包络峰值会锁在音乐最响处), 改在整段上
+    /// 做一次匹配滤波 —— 见 <see cref="ChirpMatch"/>。代价是每段多十几毫秒的计算, 换来的是
+    /// "放着音乐就能校准", 不必打断听感、也不必拆链路。</para>
+    ///
     /// <para><b>线程模型</b>: <see cref="Start"/> 打开采集并开始累积; 之后可在任意线程调用
     /// <see cref="MeasureLane"/> (内部会阻塞 ~1 秒)。采集回调在 WASAPI 线程上只做拷贝, 与测量互斥。</para>
     /// </summary>
@@ -54,31 +59,25 @@ namespace StereoSplitter
         /// <summary>扫频起始/结束频率。覆盖人声与小型音箱的主要频段, 又不至于太高被房间吸收。</summary>
         public const double ChirpStartHz = 400;
         public const double ChirpEndHz = 4000;
-        /// <summary>扫频时长。太短能量不足 (信噪比差), 太长会被回声重叠、峰变宽。</summary>
-        public const double ChirpSeconds = 0.060;
-
-        // ---------- 「分流继续出声」时的参数 ----------
-        // 安静环境下 60ms 就够; 但音乐正在放的时候, 扫频要和音乐抢信噪比。匹配滤波的处理增益
-        // = 10·log10(时间带宽积) = 10·log10(T × 3600Hz), 60→120ms 直接多 3dB, 而且主瓣更窄、
-        // 旁瓣更低。代价是听得更明显一点 (120ms 的"啾"), 这是用户明确接受过的取舍。
-        /// <summary>不静音模式下的扫频时长。</summary>
-        public const double CoexistChirpSeconds = 0.120;
         /// <summary>
-        /// 不静音模式下的播放增益。0.35 ≈ -9dBFS。
-        /// <para>比静音模式高, 是因为要往音乐里"扎"进去; 不敢再高 —— 扫频叠在满幅音乐上会让
-        /// 端点输出越过 0dBFS, 削顶产生的谐波会摊宽相关峰, 反而更不准。</para>
+        /// 扫频时长。
+        /// <para>为什么是 120ms 而不是更短的 60ms: 校准允许在音乐播放中进行, 扫频要和音乐抢信噪比。
+        /// 匹配滤波的处理增益 = 10·log10(时间带宽积) = 10·log10(T × 3600Hz), 60→120ms 直接多 3dB,
+        /// 而且主瓣更窄、旁瓣更低。代价是听得更明显一点 —— 一声 120ms 的"啾"。</para>
         /// </summary>
-        const float CoexistPlayGain = 0.35f;
+        public const double ChirpSeconds = 0.120;
         /// <summary>
-        /// 不静音模式下的前导静音。比静音模式的 150ms 短: 前面已有 2 段预热, 端点早就是稳态了,
-        /// 前导在这里只剩"给扫频让出一点位置"的作用。缩短它换来 50ms 的可测延迟量程。
+        /// 播放增益。0.35 ≈ -9dBFS。
+        /// <para>要往音乐里"扎"进去, 所以比安静环境所需的更响; 不敢再高 —— 扫频叠在满幅音乐上
+        /// 会让端点输出越过 0dBFS, 削顶产生的谐波会摊宽相关峰, 反而更不准。</para>
         /// </summary>
-        const double CoexistLeadInSeconds = 0.100;
-
-        /// <summary>播放增益。0.25 ≈ -12dBFS, 足够响但不会削顶。</summary>
-        const float PlayGain = 0.25f;
-        /// <summary>扫频之前的静音: 让 WASAPI 缓冲先排满, 保证 Play() 到出声的路径是稳态。</summary>
-        const double LeadInSeconds = 0.150;
+        const float PlayGain = 0.35f;
+        /// <summary>
+        /// 扫频之前的静音: 让 WASAPI 缓冲先排满, 保证 Play() 到出声的路径是稳态。
+        /// <para>100ms 而不是更长: 前面已有 2 段预热, 端点早就是稳态了, 前导在这里只剩
+        /// "给扫频让出一点位置"的作用, 缩短它直接换成可测延迟量程。</para>
+        /// </summary>
+        const double LeadInSeconds = 0.100;
         /// <summary>
         /// 每段的固定周期 (秒)。同一段内 = 前导静音 + 扫频 + 余量, 段与段首尾相接。
         /// <para>这么做是为了**一个播放流里连测多次**: 蓝牙端点每次新建流都要重新激活 A2DP 链路,
@@ -86,49 +85,37 @@ namespace StereoSplitter
         /// 流内分段则是稳态 —— 与分流运行时的情形一致。</para>
         /// </summary>
         const double SegmentSeconds = 1.0;
-        /// <summary>可测延迟上限 (秒)。超过它扫频会落到下一段里, 无法与本段区分。</summary>
-        const double MaxMeasurableSeconds = SegmentSeconds - 0.05 - LeadInSeconds;
+        /// <summary>
+        /// 可测延迟上限 (秒)。
+        /// <para>扫频尾部必须落在"段末前 50ms"以内, 否则会抓到**下一段**的扫频, 结果被算成"延迟 = 段长"。
+        /// 最后的 +50ms 是容差: 扫频被窗边截掉一小截时, 峰值位置仍在窗内, 结果依然可用。</para>
+        /// </summary>
+        const double MaxMeasurableSeconds = SegmentSeconds - 0.05 - LeadInSeconds - ChirpSeconds + 0.05;
         /// <summary>正式测量前的预热段数。2 段 ≈ 2 秒: 足够让蓝牙建链、编码器起振、功放退出待机。</summary>
         const int WarmupSegments = 2;
-        /// <summary>相关系数下限。低于它多半是没收到声/环境太吵, 结果不可信。</summary>
-        public const double MinConfidence = 0.35;
 
         /// <summary>
-        /// 不静音模式的峰显著度下限 (主峰 / 相关序列均方根)。
+        /// 峰显著度下限 (主峰 / 相关序列均方根)。
         /// <para>相关系数只回答"这段波形像不像扫频", 不回答"它是不是这一段里最突出的东西"。
         /// 音乐很长、扫频很短, 相关系数可能被一两处巧合推到 0.4 以上; 而 PSR 要求峰比整段的
         /// 平均起伏高出一个数量级, 巧合做不到。两者是互补的: 前者防"没收到声", 后者防"被音乐骗"。</para>
-        /// <para>这个数是自检里量出来的 (见 CaseMicChirpCoexist): 类音乐噪声下真实扫频的 PSR
+        /// <para>这个数是自检里量出来的 (见 CaseMicChirpMatch): 类音乐噪声下真实扫频的 PSR
         /// 与纯噪声的最大 PSR 之间取对数中点, 并留一倍余量。</para>
         /// </summary>
         public const double MinPsr = 9.0;
 
         /// <summary>
-        /// 不静音模式的相关系数下限 —— 比静音模式的 <see cref="MinConfidence"/> 低得多, 这是有原因的。
-        /// <para>归一化相关系数的分母是"窗内总能量", 音乐一直在响, 分母里绝大部分是音乐,
-        /// 相关系数于是被系统性压低: 实测音乐 −10dB 时真扫频只到 0.31, −2dB 时只有 0.21,
+        /// 相关系数下限。
+        /// <para>它只用来排除"完全不像扫频"的东西 (纯音乐实测 0.06~0.07), 不是用来判可信度的 ——
+        /// 归一化相关系数的分母是"窗内总能量", 音乐一直在响, 分母里绝大部分是音乐,
+        /// 于是被系统性压低: 实测音乐 −10dB 时真扫频只到 0.31, −2dB 时只有 0.21,
         /// 而定位误差仍不到半个采样。拿 0.35 去卡它, 等于把能用的结果全判死。</para>
-        /// <para>所以这道闸在这里只用来排除"完全不像扫频"的东西 (纯音乐实测 0.06~0.07),
-        /// 真正的判断交给 <see cref="MinPsr"/> —— 它是尺度无关的, 与音乐多响无关。</para>
+        /// <para>真正的判断交给 <see cref="MinPsr"/> —— 它是尺度无关的, 与音乐多响无关。</para>
         /// </summary>
-        public const double MinCoexistScore = 0.12;
+        public const double MinScore = 0.12;
 
         /// <summary>可测延迟上限 (毫秒)。超过它扫频会落进下一段, 无法与本段区分。</summary>
         public static double MaxMeasurableMs { get { return MaxMeasurableSeconds * 1000.0; } }
-
-        /// <summary>
-        /// 指定模式下的可测延迟上限 (毫秒)。不静音模式的前导与扫频都更长, 量程随之下移。
-        /// <para>算法: 扫频尾部要落在"段末前 50ms"以内, 即 LeadIn + L + Chirp ≤ 段长 − 0.05,
-        /// 再加 50ms 容差让扫频被截掉一小截时仍能给出结果 (峰值位置还在窗内)。</para>
-        /// </summary>
-        public static double MaxMeasurableMsFor(bool coexist)
-        {
-            if (!coexist) return MaxMeasurableMs;
-            return (SegmentSeconds - 0.05 - CoexistLeadInSeconds - CoexistChirpSeconds + 0.05) * 1000.0;
-        }
-
-        /// <summary>当前模式下的可测延迟上限 (毫秒)。</summary>
-        public double MaxMeasurableMsNow { get { return MaxMeasurableMsFor(CoexistMode); } }
 
         enum SampleKind { Unsupported, Float32, Pcm16, Pcm24, Pcm32 }
 
@@ -151,20 +138,6 @@ namespace StereoSplitter
         volatile bool captureFailed;
         Exception captureError;
         string captureDeviceId = "";
-
-        /// <summary>
-        /// 「分流继续出声」模式: 扫频与音乐共存, 分析改走全段匹配滤波 (<see cref="ChirpMatch"/>)。
-        /// <para>必须在 <see cref="Start"/> 之前设定 —— 它同时决定播放缓冲里的扫频时长/增益/前导,
-        /// 与分析用的模板必须是同一套参数, 中途改会让模板与录音对不上。</para>
-        /// </summary>
-        public bool CoexistMode { get; set; }
-
-        /// <summary>当前模式的扫频时长 (秒)。</summary>
-        double ChirpSecs { get { return CoexistMode ? CoexistChirpSeconds : ChirpSeconds; } }
-        /// <summary>当前模式的前导静音 (秒)。</summary>
-        double LeadInSecs { get { return CoexistMode ? CoexistLeadInSeconds : LeadInSeconds; } }
-        /// <summary>当前模式的播放增益。</summary>
-        float PlayGainNow { get { return CoexistMode ? CoexistPlayGain : PlayGain; } }
 
         int outLatencyMs = 60;
         /// <summary>
@@ -503,65 +476,40 @@ namespace StereoSplitter
                 for (int i = from; i < to; i++) seg[dst + (i - from)] = datas[b][i];
             }
 
-            float[] tmpl = BuildChirp(rate, ChirpSecs);
+            float[] tmpl = BuildChirp(rate, ChirpSeconds);
 
             float peak = 0;
             for (int i = 0; i < n; i++) { float a = Math.Abs(seg[i]); if (a > peak) peak = a; }
             LastPeakDb = peak <= 0 ? -120.0 : 20.0 * Math.Log10(peak);
 
-            // 两条定位路径, 差别只在"怎么找峰":
-            //   静音模式 → LocateChirp: 包络粗定位 + 窄窗互相关, 快, 前提是段里只有扫频;
-            //   不静音   → ChirpMatch.Locate: 整段 FFT 匹配滤波, 慢十几毫秒, 能在音乐里找。
-            // 汇合之后的一切 (时基换算、量程判断) 两条路径完全相同。
-            double offset;
+            // 唯一的定位路径: 整段匹配滤波 (见 ChirpMatch)。没有"先粗定位再窄窗互相关"那一步,
+            // 因为那一步的前提是"段里只有扫频" —— 音乐正在放的时候不成立。
             string fail = null;
+            FullChirpHit hit = ChirpMatch.Locate(seg, tmpl);
+            confidence = hit.Score;
+            psr = hit.Psr;
+            LastPsr = hit.Psr;
+            double offset = hit.Offset;
 
-            if (CoexistMode)
+            if (!hit.Found)
             {
-                FullChirpHit full = ChirpMatch.Locate(seg, tmpl);
-                confidence = full.Score;
-                psr = full.Psr;
-                LastPsr = full.Psr;
-                offset = full.Offset;
-
-                if (!full.Found)
-                {
-                    fail = "麦克风没有收到测试音 (峰值 " + LastPeakDb.ToString("0") + " dBFS)。" +
-                        "请确认麦克风没被静音/禁用、选的是正确的录音设备、该路音量不是 0。";
-                }
-                else if (full.Score < MinCoexistScore)
-                {
-                    fail = "测试音被环境声盖住了 (波形相似度 " + full.Score.ToString("0.00") + " < " +
-                        MinCoexistScore.ToString("0.00") + "，峰值 " + LastPeakDb.ToString("0") + " dBFS)。" +
-                        "请调高该路音量、把麦克风挪近一些, 或改用静音校准 (取消勾选「分流继续播放」)。";
-                }
-                else if (full.Psr < MinPsr)
-                {
-                    // 这一条是不静音模式最关键的保护: 音乐响到一定程度, 相关序列的底噪被抬高,
-                    // 真峰与假峰的差距缩小, 此时**给一个数不如不给** —— 一个偏了几十毫秒的延迟
-                    // 会让声场比不校准更歪, 而用户没法从界面上看出它是错的。
-                    fail = "测试音被音乐盖住了 (峰显著度 " + full.Psr.ToString("0.0") + " < " +
-                        MinPsr.ToString("0.0") + "，峰值 " + LastPeakDb.ToString("0") + " dBFS)。" +
-                        "请调高该路音量或暂时把音乐音量调小; 若仍失败, 请取消勾选「分流继续播放」改用静音校准。";
-                }
+                fail = "麦克风没有收到测试音 (峰值 " + LastPeakDb.ToString("0") + " dBFS)。" +
+                    "请确认麦克风没被静音/禁用、选的是正确的录音设备、该路音量不是 0。";
             }
-            else
+            else if (hit.Score < MinScore)
             {
-                ChirpHit hit = LocateChirp(seg, tmpl);
-                confidence = hit.Score;
-                offset = hit.Offset;
-
-                if (!hit.Found)
-                {
-                    fail = "麦克风完全没有收到声音 (峰值 " + LastPeakDb.ToString("0") + " dBFS)。请确认: 麦克风没被静音/禁用、" +
-                        "选的是正确的录音设备、音箱音量不是 0、并且麦克风确实能听到这两只音箱。";
-                }
-                else if (hit.Score < MinConfidence)
-                {
-                    fail = "测试音太弱或环境太吵 (相关系数 " + hit.Score.ToString("0.00") + " < " +
-                        MinConfidence.ToString("0.00") + "，峰值 " + LastPeakDb.ToString("0") + " dBFS)。" +
-                        "请调高该路音量、关掉音乐/风扇, 或把麦克风挪近一些后重试。";
-                }
+                fail = "测试音被环境声盖住了 (波形相似度 " + hit.Score.ToString("0.00") + " < " +
+                    MinScore.ToString("0.00") + "，峰值 " + LastPeakDb.ToString("0") + " dBFS)。" +
+                    "请调高该路音量、把麦克风挪近一些, 再重试一次。";
+            }
+            else if (hit.Psr < MinPsr)
+            {
+                // 最关键的保护: 音乐响到一定程度, 相关序列的底噪被抬高, 真峰与假峰的差距缩小,
+                // 此时**给一个数不如不给** —— 一个偏了几十毫秒的延迟会让声场比不校准更歪,
+                // 而用户没法从界面上看出它是错的。
+                fail = "测试音被音乐盖住了 (峰显著度 " + hit.Psr.ToString("0.0") + " < " +
+                    MinPsr.ToString("0.0") + "，峰值 " + LastPeakDb.ToString("0") + " dBFS)。" +
+                    "请调高该路音量或暂时把音乐音量调小, 再重试一次。";
             }
 
             if (fail != null)
@@ -571,17 +519,17 @@ namespace StereoSplitter
             }
 
             double arrival = origin + (s0 + offset) / rate;
-            latencyMs = (arrival - segT0 - LeadInSecs) * 1000.0;
+            latencyMs = (arrival - segT0 - LeadInSeconds) * 1000.0;
 
             // 超量程: 说明"扫频"其实是被本段窗口边缘截到的下一段 (或者端点延迟异常大)。
             // 报错而不是给一个假值 —— 一个偏了整整一段的数字会让补偿方向都错。
-            if (latencyMs < -20 || latencyMs > MaxMeasurableMsNow)
+            if (latencyMs < -20 || latencyMs > MaxMeasurableMs)
             {
                 double bad = latencyMs;
                 latencyMs = double.NaN;
                 throw new InvalidOperationException(
                     "测得的延迟 " + bad.ToString("0") + " ms 超出量程 (0~" +
-                    MaxMeasurableMsNow.ToString("0") + " ms)。" +
+                    MaxMeasurableMs.ToString("0") + " ms)。" +
                     "多半是该端点延迟异常大, 或麦克风先听到了别的声源 (另一只音箱/回声)。");
             }
         }
@@ -644,164 +592,6 @@ namespace StereoSplitter
             return s;
         }
 
-        /// <summary>互相关定位结果。</summary>
-        public struct ChirpHit
-        {
-            /// <summary>扫频起点在信号里的位置 (采样, 含小数 → 亚采样精度)。</summary>
-            public double Offset;
-            /// <summary>归一化相关系数 0~1 (与极性无关)。</summary>
-            public double Score;
-            public bool Found;
-        }
-
-        /// <summary>
-        /// 在 <paramref name="seg"/> 里找 <paramref name="tmpl"/> 的起点。
-        /// <para>两步: 先用滑动峰值包络粗定位"声音从哪开始"(把搜索范围从整段压到几十毫秒),
-        /// 再在这个窄窗里做归一化互相关 + 抛物线插值。归一化分母是本窗的信号能量, 所以
-        /// 音量大小不影响峰的位置; 取绝对值后再插值, 所以麦克风/音箱极性反了也能正确定位。</para>
-        /// <para>**取最早的显著峰**, 不取最强峰: 直达声总比反射先到, 而反射可能更强。</para>
-        /// </summary>
-        public static ChirpHit LocateChirp(float[] seg, float[] tmpl)
-        {
-            var miss = new ChirpHit { Found = false };
-            if (seg == null || tmpl == null) return miss;
-            int m = tmpl.Length;
-            if (m < 32 || seg.Length < m + 64) return miss;
-
-            double tmplNorm = 0;
-            for (int i = 0; i < m; i++) tmplNorm += (double)tmpl[i] * tmpl[i];
-            tmplNorm = Math.Sqrt(tmplNorm);
-            if (tmplNorm <= 1e-9) return miss;
-
-            // —— 1) 峰值包络粗定位 ——
-            int blk = Math.Max(16, m / 20);            // ≈3ms
-            int nb = seg.Length / blk;
-            if (nb < 3) return miss;
-            var env = new float[nb];
-            float envMax = 0;
-            for (int b = 0; b < nb; b++)
-            {
-                int off = b * blk;
-                float mx = 0;
-                for (int i = 0; i < blk; i++)
-                {
-                    float a = Math.Abs(seg[off + i]);
-                    if (a > mx) mx = a;
-                }
-                env[b] = mx;
-                if (mx > envMax) envMax = mx;
-            }
-            if (envMax <= 1e-5f) return miss;          // 近似静音 (< -100dBFS)
-
-            float th = envMax * 0.30f;
-            int first = -1;
-            for (int b = 0; b < nb; b++) if (env[b] >= th) { first = b * blk; break; }
-            if (first < 0) first = 0;
-
-            // 窗留够余量: 汉宁包络的 30% 阈值大约在扫频开始后 10~15ms 才越过,
-            // 所以往前多留 30ms; 后面留 120ms 兜住"前面有个短促噪声把阈值骗过去"的情况。
-            int from = Math.Max(0, first - blk * 10);
-            int to = Math.Min(seg.Length - m, first + blk * 40);
-            if (to < from) to = from;
-
-            // —— 2) 互相关 ——
-            // 同时留两份: score = 归一化余弦 (只用来判断"这段到底像不像扫频", 与音量无关),
-            // dot = 未归一化的匹配滤波输出 (线性叠加: 直达与反射的能量各算各的, 因此**先到的那个
-            // 一定先抬起来**)。判断"哪个峰是直达声"必须用 dot, 不能用 score —— 反射更强时,
-            // 归一化会把直达主瓣的得分压下去 (分母凑进了反射的能量), 直达峰反而被埋没。
-            int nOff = to - from + 1;
-            var score = new double[nOff];
-            var dots = new double[nOff];
-            double bestAbs = 0, bestSigned = 0;
-            int bestAt = -1;
-            for (int o = from; o <= to; o++)
-            {
-                double dot = 0, energy = 0;
-                int end = o + m;
-                for (int i = o; i < end; i++)
-                {
-                    double s = seg[i];
-                    dot += s * tmpl[i - o];
-                    energy += s * s;
-                }
-                double sc = dot / (Math.Sqrt(energy) + 1e-12);
-                score[o - from] = sc;
-                dots[o - from] = dot;
-                double a = Math.Abs(sc);
-                if (a > bestAbs) { bestAbs = a; bestAt = o; bestSigned = sc; }
-            }
-            if (bestAt < 0 || bestAbs <= 0) return miss;
-
-            // —— 3) 直达声优先 ——
-            // 麦克风听到的是"直达声 + 一堆反射"。墙面/桌面反射叠加后会形成**比直达声更强**的峰,
-            // 直接取全局最大值就会锁到反射上, 测出来的延迟偏大几十毫秒; 而两只音箱的房间反射条件
-            // 不同 → 两路各偏一点 → 差值跟着歪 (表现为"补完还是差一口气")。
-            //
-            // 判据不是"阈值": 扫频匹配滤波的主瓣由带宽决定 (0.28ms ≈ 13 采样), 主瓣左沿早就过 25%,
-            // 按阈值找会偏到主瓣的肩上去。正确的问题是"主峰之前还有没有一个**独立的**显著峰":
-            // 从主峰向前一路走到 |dot| 掉到 25% 以下 (那就是两峰之间的谷), 再看谷**之前**的最高点 ——
-            // 它若仍达到 25%, 就是一个独立的前置峰 (直达声先到), 取它; 否则谷前只有旁瓣/噪声, 仍取主峰。
-            // 旁瓣与主峰之间没有谷, 所以这个判据天然不会把旁瓣当直达声。
-            int pick = bestAt;
-            double pickSigned = bestSigned;
-            double maxDot = 0;
-            for (int i = 0; i < nOff; i++) { double a = Math.Abs(dots[i]); if (a > maxDot) maxDot = a; }
-            if (maxDot > 0)
-            {
-                // 关键约束: **只在主峰前 5ms 以外**找候选。主瓣肩和第一旁瓣都挤在峰值 ±0.3ms 内,
-                // 只要隔开 5ms, 它们就不可能被误认为"另一个声源"; 而"直达 vs 一次反射"的间隔
-                // 通常是几毫秒到几十毫秒, 正好落在这个区间里。
-                int p = bestAt - from;
-                int gap = Math.Max(8, m / 12);          // ≈5ms (<1/12 模板长)
-                int lo = Math.Max(0, p - m);            // 最多往前一个模板长 (≈60ms)
-                int hi = p - gap;
-                if (hi > lo)
-                {
-                    int j = -1;
-                    double bj = 0;
-                    for (int k = lo; k < hi; k++)
-                    {
-                        double a = Math.Abs(dots[k]);
-                        if (a > bj) { bj = a; j = k; }
-                    }
-                    // 45%: 直达声比反射弱一些也要认 (比这更弱的话, 多半是同一只音箱的余响,
-                    // 强行提前反而会把结果拉早)。归一化分数在这里不能用 —— 它会被分母里的
-                    // 反射能量稀释, 直达越弱越容易被埋掉, 所以判据建在未归一化的 dot 上。
-                    if (j >= 0 && bj >= maxDot * 0.45)
-                    {
-                        // 顺着该峰的上升沿走到峰顶 (上限 1/4 模板长, 免得跨到别的声源上)
-                        int lim = Math.Min(nOff - 1, j + m / 4);
-                        while (j < lim && Math.Abs(dots[j + 1]) >= Math.Abs(dots[j])) j++;
-                        pick = from + j;
-                        pickSigned = score[j];
-                    }
-                }
-            }
-
-            // —— 4) 抛物线插值 (在带符号的分数上做, 极性取选中峰的正负) ——
-            double sub = 0;
-            if (pick > from && pick < to)
-            {
-                double sign = pickSigned < 0 ? -1.0 : 1.0;
-                double y0 = score[pick - 1 - from] * sign;
-                double y1 = score[pick - from] * sign;
-                double y2 = score[pick + 1 - from] * sign;
-                double den = y0 - 2 * y1 + y2;
-                if (Math.Abs(den) > 1e-12)
-                {
-                    sub = 0.5 * (y0 - y2) / den;
-                    if (sub > 1) sub = 1; else if (sub < -1) sub = -1;
-                }
-            }
-
-            return new ChirpHit
-            {
-                Offset = pick + sub,
-                Score = bestAbs / tmplNorm,   // 除以模板范数 → 余弦相似度, 与音量无关
-                Found = true
-            };
-        }
-
         // ==================== 采样格式转换 ====================
 
         static SampleKind KindOf(WaveFormat f)
@@ -837,8 +627,8 @@ namespace StereoSplitter
             int ch = fmt.Channels;
             int bytesPer = fmt.BitsPerSample / 8;
             int segLen = (int)Math.Round(SegmentSeconds * r);
-            int lead = (int)Math.Round(LeadInSecs * r);
-            float[] chirp = BuildChirp(r, ChirpSecs);
+            int lead = (int)Math.Round(LeadInSeconds * r);
+            float[] chirp = BuildChirp(r, ChirpSeconds);
             long total = (long)segLen * segments;
             var buf = new byte[total * ch * bytesPer];
             for (int s = 0; s < segments; s++)
@@ -848,7 +638,7 @@ namespace StereoSplitter
                 {
                     int frame = lead + i;
                     if (frame >= segLen) break;          // 段长被削到放不下扫频时截断 (正常人不会)
-                    float v = chirp[i] * PlayGainNow;
+                    float v = chirp[i] * PlayGain;
                     int at = (segStartFrame + frame) * ch;
                     for (int c = 0; c < ch; c++)
                         WriteSample(buf, (at + c) * bytesPer, kind, v);
