@@ -129,6 +129,9 @@ namespace StereoSplitter
         }
     }
 
+    /// <summary><see cref="RoundButton"/> 可以画的自绘符号 (不依赖字体)。</summary>
+    enum ButtonGlyph { None, Plus }
+
     /// <summary>
     /// 自绘圆角矩形按钮。
     ///
@@ -150,6 +153,9 @@ namespace StereoSplitter
         Color textColor = Color.White;
         int radius = 6;
         bool hot, pressed;
+        ButtonGlyph glyph = ButtonGlyph.None;
+        int glyphRadius = 8;
+        float glyphThickness = 2.8f;
 
         public RoundButton()
         {
@@ -198,6 +204,31 @@ namespace StereoSplitter
             set { if (radius != value) { radius = value; Invalidate(); } }
         }
 
+        /// <summary>
+        /// 自绘符号。<c>None</c> 时照常画 <see cref="Control.Text"/>。
+        /// <para>图标不走字体: 字体画出的「+」粗细是字号的函数, 想加粗只能放大字号 —— 而 30px 高的
+        /// 按钮里放到 20pt 就已经顶到上下边缘被裁。自绘两条线则尺寸与线宽各自独立。</para>
+        /// </summary>
+        public ButtonGlyph Glyph
+        {
+            get { return glyph; }
+            set { if (glyph != value) { glyph = value; Invalidate(); } }
+        }
+
+        /// <summary>符号的臂长 (从中心到端点, 像素)。默认 8 → 16×16 的十字。</summary>
+        public int GlyphRadius
+        {
+            get { return glyphRadius; }
+            set { if (glyphRadius != value) { glyphRadius = value; Invalidate(); } }
+        }
+
+        /// <summary>符号线宽 (像素)。默认 2.8。</summary>
+        public float GlyphThickness
+        {
+            get { return glyphThickness; }
+            set { if (glyphThickness != value) { glyphThickness = value; Invalidate(); } }
+        }
+
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
@@ -240,11 +271,40 @@ namespace StereoSplitter
 
             // 文字色: 只有在"自动淡化成的禁用态"里才跟着变浅。显式给了 FillDisabled 的
             // (过渡态 / 图标按钮) 说明配色是特意定的, 再淡化会把深色字也洗白。
+            Color ink = (Enabled || !fillDisabled.IsEmpty) ? textColor : Blend(textColor, Color.White, 0.20f);
+
+            if (glyph != ButtonGlyph.None)
+            {
+                DrawGlyph(g, ink);
+                return;
+            }
+
             TextRenderer.DrawText(g, Text, Font, ClientRectangle,
-                (Enabled || !fillDisabled.IsEmpty) ? textColor : Blend(textColor, Color.White, 0.20f),
+                ink,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
                 | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine
                 | TextFormatFlags.EndEllipsis);
+        }
+
+        /// <summary>
+        /// 画图标符号。中心取 (W-1)/2 —— 像素坐标里 0..W-1 的中点是 (W-1)/2，
+        /// 用 W/2 会让奇数宽的线整体右下偏半像素。
+        /// </summary>
+        void DrawGlyph(Graphics g, Color ink)
+        {
+            float cx = (Width - 1) / 2f;
+            float cy = (Height - 1) / 2f;
+
+            using (var p = new Pen(ink, glyphThickness))
+            {
+                p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                if (glyph == ButtonGlyph.Plus)
+                {
+                    g.DrawLine(p, cx - glyphRadius, cy, cx + glyphRadius, cy);
+                    g.DrawLine(p, cx, cy - glyphRadius, cx, cy + glyphRadius);
+                }
+            }
         }
 
         protected override void OnMouseEnter(EventArgs e) { hot = true; Invalidate(); base.OnMouseEnter(e); }

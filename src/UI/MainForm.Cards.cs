@@ -517,11 +517,11 @@ namespace StereoSplitter
             // 宽度固定 130, 窄窗口也放得下 (panelW 最小约 340 → 居中后两侧各留 105)。
             btnStart.Left = Math.Max(leftEdge, (panelW - btnStart.Width) / 2);
 
-            // —— 第 3 行: [＋] 贴左, [规格下拉] 贴右 ——
-            // 规格标签已删, 下拉自己说明是什么; 右缘与卡片区/日志框一致 (rightEdge)。
+            // —— 第 3 行: [规格下拉] 贴左, [＋] 贴右 ——
+            // 规格标签已删, 下拉自己说明是什么: 它当行首读起来才顺, 空出来的右端留给「＋」。
             // 显式 Max: 万一面板窄到 60+8+60 都放不下, 至少不让两者压在一起。
-            btnAddOutput.Left = leftEdge;
-            cmbSpec.Left = Math.Max(btnAddOutput.Right + gap, panelW - rightEdge - cmbSpec.Width);
+            cmbSpec.Left = leftEdge;
+            btnAddOutput.Left = Math.Max(cmbSpec.Right + gap, panelW - rightEdge - btnAddOutput.Width);
 
             // —— 第 4 行 (声道名 + 角标): 单独一行水平居中 ——
             CenterSpecBadges();
@@ -1165,7 +1165,7 @@ namespace StereoSplitter
         /// <para>FlowLayoutPanel 没有 TextAlign, 铺满宽度只会把内容钉在左边, 所以先按子控件的
         /// Width+Margin 求和得到内容实际宽度, 再把**面板本身**居中 —— 面板宽度 = 内容宽度,
         /// 内容自然就居中了。</para>
-        /// <para><b>居中范围是中间那块空地, 不是整个面板</b>: 同一行左右还有「＋」和「规格」,
+        /// <para><b>居中范围是中间那块空地, 不是整个面板</b>: 同一行左边是「规格」、右边是「＋」,
         /// 按整面板居中会让标注压在它们身上 (8 路声道名能有 3500px, 光靠裁是不够的)。</para>
         /// </summary>
         void CenterSpecBadges()
@@ -1186,10 +1186,10 @@ namespace StereoSplitter
 
             // 两侧控件还没加进父容器 (构造期早于 AddRange) 时按整面板算, 之后 LayoutTopRows 会再调一次
             const int gap = 8;
-            if (btnAddOutput != null && btnAddOutput.Parent == flwSpecChannels.Parent)
-                leftBound = Math.Max(leftBound, btnAddOutput.Right + gap);
             if (cmbSpec != null && cmbSpec.Parent == flwSpecChannels.Parent)
-                rightBound = Math.Min(rightBound, cmbSpec.Left - gap);
+                leftBound = Math.Max(leftBound, cmbSpec.Right + gap);
+            if (btnAddOutput != null && btnAddOutput.Parent == flwSpecChannels.Parent)
+                rightBound = Math.Min(rightBound, btnAddOutput.Left - gap);
 
             int usable = Math.Max(0, rightBound - leftBound);
             int w = Math.Min(content, usable);

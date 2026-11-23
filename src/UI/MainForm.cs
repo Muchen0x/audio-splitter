@@ -364,8 +364,8 @@ namespace StereoSplitter
             // 横向空间让给右对齐的下拉。
             // 行序 (上面还有捕获行 y10~38、增益 y52、主音量 y86 三行, 位置由各自的块硬编码):
             //   y=114: [开始分流]   独占一行, 水平居中 (LayoutTopRows 按面板宽度算)
-            //   y=153: [＋]   ……   [声道标注]   ……   [规格下拉]
-            //          三者同一行: 加号贴左、规格贴右、标注在两者之间居中
+            //   y=153: [规格下拉]   ……   [声道标注]   ……   [＋]
+            //          三者同一行: 规格贴左 (当行首读), 加号贴右, 标注在两者之间居中
             //          (标注居中范围由 CenterSpecBadges 按两侧控件的位置收窄)
             //   y=187: 卡片区
             //
@@ -390,14 +390,19 @@ namespace StereoSplitter
             };
             cmbSpec.Items.AddRange(new object[] { "单声道", "立体声", "2.1", "四声道", "5.1" });
             cmbSpec.SelectedIndex = 1;
-            // 「+」: 与规格下拉同尺寸、同圆角、同白底灰边 —— 两个控件并排时像一对
+            // 「+」: 与规格下拉同尺寸、同圆角、同白底灰边 —— 两个控件并排时像一对。
+            // 贴右缘, 具体 Left 由 LayoutTopRows 按面板宽度重算 (这里只是构造期初值)。
+            // 加号不走字体 (见 RoundButton.Glyph 的说明), 臂长与线宽单独给 ——
+            // 14pt 字体画出来约 11×11、笔画 1.5px, 在这个 76×30 的白底块里显得太小太细。
             btnAddOutput = new RoundButton
             {
-                Text = "+",
-                Location = new Point(15, 153),
+                Text = "+",                       // 只作无障碍文本, 实际画的是 Glyph
+                Location = new Point(482, 153),
                 Width = 76,
                 Height = 30,
-                Font = new Font("Segoe UI", 14F, FontStyle.Regular),
+                Glyph = ButtonGlyph.Plus,
+                GlyphRadius = 9,
+                GlyphThickness = 3.5f,
                 FillColor = Color.White,
                 // 禁用态跟 RoundedCombo.DisabledBack 同值, 并排时两块的"不可用"观感一致
                 FillDisabled = Color.FromArgb(244, 245, 247),
