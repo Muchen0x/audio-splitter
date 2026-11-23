@@ -1196,7 +1196,8 @@ namespace StereoSplitter
                 else
                 {
                     string setErr;
-                    if (!SystemDefaultPolicy.TrySetDefault(dev.ID, out setErr))
+                    bool commSwitched;
+                    if (!SystemDefaultPolicy.TrySetDefault(dev.ID, out setErr, out commSwitched))
                     {
                         Log("[错误] 配置 1/4 设置系统默认输出 → [" + cmbDefault.SelectedIndex + "] " +
                             dev.FriendlyName + " 失败: " + setErr);
@@ -1204,7 +1205,9 @@ namespace StereoSplitter
                         if (idx1 >= 0) cmbDefault.SelectedIndex = idx1;
                         return false;
                     }
-                    Log("[配置] 1/4 设置系统默认输出 → [" + cmbDefault.SelectedIndex + "] " + dev.FriendlyName + " 成功");
+                    // R-12: 通信角色是系统级副作用 (通话/会议走哪台), 必须让用户在日志里看见
+                    Log("[配置] 1/4 设置系统默认输出 → [" + cmbDefault.SelectedIndex + "] " + dev.FriendlyName + " 成功" +
+                        (commSwitched ? "（通信设备一并切换：通话/会议声音也会走这台）" : "（通信设备未跟着切换）"));
                 }
 
                 int defIdx = cmbDefault.SelectedIndex;
@@ -1385,7 +1388,7 @@ namespace StereoSplitter
                 if (catalog.DefaultRenderId() != target)
                 {
                     string err;
-                    if (SystemDefaultPolicy.TrySetDefault(target, out err))
+                    if (SystemDefaultPolicy.TrySetDefault(target, out err, out _))
                         Log("[恢复] " + reason + "，默认输出 → " + FindNameById(target));
                     else
                         Log("[错误] 恢复默认输出失败(" + reason + "): " + err);
@@ -1571,7 +1574,7 @@ namespace StereoSplitter
                     if (catalog.DefaultRenderId() != restoreDefaultId)
                     {
                         string err;
-                        if (SystemDefaultPolicy.TrySetDefault(restoreDefaultId, out err))
+                        if (SystemDefaultPolicy.TrySetDefault(restoreDefaultId, out err, out _))
                             Log("[恢复] 默认输出 → " + FindNameById(restoreDefaultId));
                         else
                             Log("[错误] 恢复默认输出失败: " + err);

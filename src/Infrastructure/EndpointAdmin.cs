@@ -245,7 +245,7 @@ namespace StereoSplitter.Infrastructure
                 EndpointInfo ep = hits[0];
                 string before = catalog.DefaultRenderName();
                 string err;
-                if (!SystemDefaultPolicy.TrySetDefault(ep.ID, out err))
+                if (!SystemDefaultPolicy.TrySetDefault(ep.ID, out err, out _))
                 {
                     Console.WriteLine("[失败] 切换默认输出失败: " + err);
                     Audit(logDir, "SetDefault: 失败 " + needle + " -> " + err);

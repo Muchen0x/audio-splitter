@@ -317,11 +317,34 @@ namespace StereoSplitter
                         (srcCh > 0 ? " / 源 " + RoutingModel.DescribeSource(srcCh) : ""));
                 }
             }
-            else if (!quiet)
+            else
             {
-                if (delayHot) Log("[提示] 延迟已生效，但矩阵未刷新（声道数与当前链路不匹配），新配置需停止后重新开始");
-                else Log("[提示] 路由热更新未生效（与当前链路的声道数不匹配），需停止后重新开始");
+                // R-14: 延迟这一步确实成功了（ApplyDelays 返回 true），只是矩阵没换成。
+                // 不同步 runModel 的延迟字段，下次卡片一改 SameLinkShape 又会判"延迟不同" →
+                // 重复走 OnlyDelayDiffers → 重复 ApplyDelays → 重复打同一段提示，
+                // 日志里看像"改一次触发两次"，实际第二次什么也没做成。
+                if (delayHot && runModel != null) CopyDelaysInto(runModel, model);
+                if (!quiet)
+                {
+                    if (delayHot) Log("[提示] 延迟已生效，但矩阵未刷新（声道数与当前链路不匹配），新配置需停止后重新开始");
+                    else Log("[提示] 路由热更新未生效（与当前链路的声道数不匹配），需停止后重新开始");
+                }
             }
+        }
+
+        /// <summary>
+        /// 把 <paramref name="from"/> 的延迟按路键写进 <paramref name="to"/>。
+        /// 只用于"延迟已生效、矩阵没换"这一种状态: runModel 表示**链路与矩阵实际生效的样子**,
+        /// 延迟线是唯一能脱离矩阵单独生效的参数, 所以这里只同步延迟, 不动声道抽头。
+        /// </summary>
+        static void CopyDelaysInto(RoutingModel to, RoutingModel from)
+        {
+            var sa = to.EnabledSinks();
+            var sb = from.EnabledSinks();
+            if (sa.Count != sb.Count) return;
+            for (int i = 0; i < sa.Count; i++)            // 先整体校验键序, 避免改了一半才发现对不上
+                if (!string.Equals(sa[i].Key, sb[i].Key, StringComparison.Ordinal)) return;
+            for (int i = 0; i < sa.Count; i++) sa[i].DelayMs = sb[i].DelayMs;
         }
 
         /// <summary>日志用的延迟摘要, 如 "左=0ms / 右=180ms"。</summary>

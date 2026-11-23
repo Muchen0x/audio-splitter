@@ -14,6 +14,14 @@ namespace StereoSplitter.Devices
     ///   2. 角色判定: 原实现 for(role 0..2){ if(hr != 0) break; } 会把
     ///      "控制台+多媒体设置成功、仅通信角色失败" 误判为整体失败。
     ///      改为只以 eConsole / eMultimedia 判定成败, eCommunications 仅尽力而为。
+    ///
+    /// 两个必须知道的副作用 (R-12):
+    ///   - **接口是未文档化的**: `IPolicyConfig` 的 CLSID 与 IID 从来没进过公开 SDK, Windows
+    ///     更新有可能让它消失 (届时上面的双 CLSID + 回读 + 回滚会表现为"切换默认失败"并给出诊断串,
+    ///     等效于"这个功能没了", 不会静默改坏系统)。
+    ///   - **会连带切换通信设备**: 三个角色一起设, 通话/会议 (Teams、微信语音、Discord) 的声音
+    ///     也会跟着走目标设备。这是分流能捕获通话声音的前提, 但反过来也意味着通话改从分流输出放。
+    ///      调用方通过 `commRoleSwitched` 得知这件事是否真的发生了, 并写进日志。
     /// </summary>
     static class SystemDefaultPolicy
     {
@@ -48,9 +56,12 @@ namespace StereoSplitter.Devices
         /// 角色最终状态; 成功后用系统枚举 API 回读 Console/Multimedia, 不只依赖 HRESULT;
         /// 逐次 COM HRESULT 追加到诊断串, 回滚不会覆盖它。
         /// </summary>
-        public static bool TrySetDefault(string deviceId, out string error)
+        /// <param name="commRoleSwitched">通信角色 (eCommunications) 是否也跟着切了。R-12:
+        /// 这个角色决定 Teams / 微信语音 / Discord 走哪台设备, 系统级副作用, 调用方应把它写进日志。</param>
+        public static bool TrySetDefault(string deviceId, out string error, out bool commRoleSwitched)
         {
             error = null;
+            commRoleSwitched = false;
             if (string.IsNullOrEmpty(deviceId)) { error = "设备 ID 为空"; return false; }
 
             string[] before = new string[3];
@@ -79,6 +90,7 @@ namespace StereoSplitter.Devices
                     }
                     // eCommunications=2 尽力而为, 同样保留 HRESULT
                     int hrComm = cfg.SetDefaultEndpoint(deviceId, 2);
+                    commRoleSwitched = hrComm == 0;
                     diag.Append("CLSID" + i + " " + RoleName(2) + " HRESULT=0x" + hrComm.ToString("X8") + " | ");
 
                     if (requiredOk)
