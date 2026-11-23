@@ -340,7 +340,9 @@ namespace StereoSplitter
                 using (var bmp = new Bitmap(states.Length * (bw + gap) + padX, bh + padX * 2))
                 using (var g = System.Drawing.Graphics.FromImage(bmp))
                 {
-                    g.Clear(Color.White);
+                    // 背景用窗体的常态底色: 按钮四角因为 Region 裁剪会露出"没画到"的区域,
+                    // DrawToBitmap 在那里留的是控件背色 —— 白底截图上看就像角上有灰块
+                    g.Clear(SystemColors.Control);
                     for (int i = 0; i < states.Length; i++)
                     {
                         setState.Invoke(sf2, new object[] { states[i] });
@@ -350,6 +352,9 @@ namespace StereoSplitter
                             + " fill=" + btn.FillColor.Name + " fillDisabled=" + btn.FillDisabled.Name);
                         using (var one = new Bitmap(bw, bh))
                         {
+                            // 先铺白: RoundButton 用 Region 裁了圆角, 四个角不在绘制区内,
+                            // DrawToBitmap 会把它留成未初始化的黑色 —— 看着像"角上有灰块"
+                            using (var og = System.Drawing.Graphics.FromImage(one)) og.Clear(Color.White);
                             btn.DrawToBitmap(one, new Rectangle(0, 0, bw, bh));
                             g.DrawImage(one, padX + i * (bw + gap), padX);
                         }
@@ -357,6 +362,43 @@ namespace StereoSplitter
                     bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
                 }
                 Console.Out.WriteLine("STATES -> " + path);
+                return;
+            }
+
+            // 实屏截图: DrawToBitmap 走 WM_PRINT, 抓不到由系统/DWM 画在窗口上的东西
+            // (焦点矩形、默认按钮框)。要看"刚打开时长什么样", 只能 CopyFromScreen。
+            if (args.Length >= 1 && args[0] == "live")
+            {
+                int lw = 500, lh = 500;
+                if (args.Length >= 3) { int.TryParse(args[1], out lw); int.TryParse(args[2], out lh); }
+                string path = args.Length >= 4 ? args[3] : "live.png";
+                bool focusStart = args.Length >= 5 && args[4] == "focus";
+
+                var sf = new MainForm();
+                sf.StartPosition = FormStartPosition.Manual;
+                sf.Location = new Point(40, 40);
+                sf.Size = new Size(lw, lh);
+                sf.Show();
+                sf.Activate();
+                for (int i = 0; i < 12; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+
+                if (focusStart)
+                {
+                    Control btn = Field(sf, "btnStart") as Control;
+                    if (btn != null) { btn.Focus(); sf.ActiveControl = btn; }
+                    for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                }
+
+                using (var bmp = new Bitmap(sf.Width, sf.Height))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                        g.CopyFromScreen(sf.Location, Point.Empty, sf.Size);
+                    bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                }
+                Console.Out.WriteLine("LIVE form=" + sf.Size + " active="
+                    + (sf.ActiveControl == null ? "null" : sf.ActiveControl.Name + "/" + sf.ActiveControl.GetType().Name)
+                    + " -> " + path);
+                sf.Close();
                 return;
             }
 

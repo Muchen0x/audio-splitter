@@ -163,6 +163,14 @@ namespace StereoSplitter
             // UserPaint: 不走系统按钮绘制。少了它, 下面的 SetStyle 与 OnPaint 都不会生效
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
                 | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+
+            // 系统按钮类仍会在自绘内容之外补一圈"主题边框"(125% 缩放下最明显, 深灰 1px),
+            // 圆角外那四个方角正好把它露出来 —— 看着就是"两个边框"。
+            // Flat + BorderSize=0 是唯一能让 native 尽量不画边框的组合 (FlatStyle 只有三档,
+            // System/Standard 都自带边框)。但光靠它不够 (实测仍在), 真正的解法是下面的
+            // ShapeRound: 把窗口本身裁成圆角, 方角不在窗口内, 谁画都露不出来。
+            FlatStyle = FlatStyle.Flat;
+            FlatAppearance.BorderSize = 0;
         }
 
         /// <summary>常态底色。悬停/按下的派生色由它算出来，不用再给两套。</summary>
@@ -245,6 +253,33 @@ namespace StereoSplitter
         {
             base.OnHandleCreated(e);
             FocusCue.HideNow(this);          // 自绘本来就不画虚线框, 这句是防系统在别处补一刀
+            ShapeRound();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            ShapeRound();
+        }
+
+        /// <summary>
+        /// 把窗口本身裁成圆角，与 <see cref="RoundedCombo"/> 同一手法。
+        /// <para>为什么非裁不可：系统按钮类会在客户区最外一圈画自己的边框（主题色，约 #C8C8C8），
+        /// 我们的圆角在四角向内收，那一小段就露出来了 —— 表现就是"按钮有两个边框"。
+        /// 只靠 <c>FlatStyle.Flat + BorderSize=0</c> 压不住（实测仍在），矩形填充盖它也盖不住
+        /// （它画在我们之后）。裁了之后方角不属于这个窗口，谁画都露不出来。</para>
+        /// <para><b>Region 要内缩 1px</b>：那圈 native 边框正好在客户区第 0 列上，Region 与客户区
+        /// 边界重合的话它仍在裁剪区内。代价是按钮的可见尺寸小 2px，描边相应画在 (2,2) 处。</para>
+        /// </summary>
+        void ShapeRound()
+        {
+            if (Width <= 4 || Height <= 4) return;
+            using (var path = UiDraw.RoundRect(new Rectangle(1, 1, Width - 2, Height - 2), radius))
+            {
+                Region old = Region;
+                Region = new Region(path);
+                if (old != null) old.Dispose();
+            }
         }
 
         protected override void WndProc(ref Message m)
@@ -279,11 +314,19 @@ namespace StereoSplitter
             float edgeFade = outline ? 0.30f : 0.45f;   // 描边时边框就是主体, 别淡到看不见
             if (!Enabled && !borderColor.IsEmpty) edge = Blend(edge, Color.White, edgeFade);
 
-            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (var path = UiDraw.RoundRect(rect, radius))
+            // 底色铺满矩形, 圆角交给 Region (见 ShapeRound) —— 不能再用抗锯齿的圆角填充:
+            // 边缘那圈半透明像素被 Region 硬裁之后会变成暗边 (实测 #C8C8C8), 比原来的问题更显眼。
+            // 圆角处的台阶由紧随其后的描边盖住, 看不出锯齿。
+            if (Width > 4 && Height > 4)
             {
-                using (var b = new SolidBrush(c)) g.FillPath(b, path);
-                using (var p = new Pen(edge)) g.DrawPath(p, path);
+                using (var b = new SolidBrush(c))
+                    g.FillRectangle(b, ClientRectangle);
+
+                // 描边再往里 1px (即 (2,2)): Region 已经把客户区第 0 列裁掉了, 描边贴着 (1,1) 画的话
+                // 外侧半个像素会被裁掉, 线又细又淡
+                using (var edgePath = UiDraw.RoundRect(new Rectangle(2, 2, Width - 4, Height - 4), Math.Max(1, radius - 1)))
+                using (var p = new Pen(edge))
+                    g.DrawPath(p, edgePath);
             }
 
             // 文字色: 只有在"自动淡化成的禁用态"里才跟着变浅。显式给了 FillDisabled 的
