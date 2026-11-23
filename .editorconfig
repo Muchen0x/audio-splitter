@@ -1,8 +1,10 @@
 root = true
 
+# 仓库内统一 LF（与 .gitattributes 的 `* text=auto eol=lf` 一致），批处理单独 CRLF。
+# 源码一律 UTF-8 无 BOM —— C# 编译器不需要 BOM，带 BOM 会让首行在 diff/工具里粘上一个不可见字符。
 [*]
 charset = utf-8
-end_of_line = crlf
+end_of_line = lf
 insert_final_newline = true
 indent_style = space
 indent_size = 4
@@ -10,6 +12,10 @@ trim_trailing_whitespace = false
 
 [*.{csproj,props,targets,xml,ini,md}]
 indent_size = 2
+
+# cmd.exe 解析批处理时对 LF 并不完全可靠（goto / 多行块），这两个必须 CRLF
+[*.{cmd,bat}]
+end_of_line = crlf
 
 [*.md]
 trim_trailing_whitespace = false
