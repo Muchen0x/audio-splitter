@@ -520,6 +520,21 @@ namespace StereoSplitter
             BorderStyle = BorderStyle.None;
         }
 
+        /// <summary>
+        /// WS_CLIPSIBLINGS: 单位标签与数字框的窗口有一角重叠 (见 <see cref="RoundNumericShell.Recalc"/>) ——
+        /// 没有这个样式, 数字框每次重绘都会把重叠区里的「ms」左半截抹掉。
+        /// 有了它, 本窗口重绘时自动避开 z 序在上的兄弟窗口。
+        /// </summary>
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.Style |= 0x04000000;   // WS_CLIPSIBLINGS
+                return cp;
+            }
+        }
+
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             // 不调 base: 滚轮对数字框一律无效 (误滚一下就把延迟拖偏, 很难发现)
@@ -870,10 +885,12 @@ namespace StereoSplitter
     /// 外壳负责按 <see cref="RoundedCombo"/> 同一套框色画圆角边框, 数字框嵌在 1px 内衬里,
     /// 并把它的窗口裁成圆角 (与 RoundButton.ShapeRound 同一手法), 方角才不会盖住边框弧线。
     /// <para>可以带文字 (<c>new RoundNumericShell(nud, "延迟")</c>) 和单位后缀
-    /// (<c>new RoundNumericShell(nud, "延迟", "ms")</c>): 文字、数字框、上下箭头、单位
-    /// 一起包进同一个圆角矩形 —— 整组控件看起来是一个完整的框, 而不是几件散件。</para>
-    /// <para>上下箭头由 <see cref="NoWheelNumeric.SpinButtonsHook"/> 自绘成两条圆头短线,
-    /// 不再带原生那圈立体边框 —— 「设置了图标的按钮不要边框」同一条规矩的延伸。</para>
+    /// (<c>new RoundNumericShell(nud, "延迟", "ms")</c>): 文字、数字框、单位、上下箭头
+    /// 按 [文字][数字][单位][按钮] 的顺序紧靠着包进同一个圆角矩形 ——
+    /// 整组控件看起来是一个完整的框, 而不是几件散件。</para>
+    /// <para>上下箭头由外壳自绘成两条圆头短线 (原生 UpDownButtons 压成 0×0), 交互也在
+    /// 外壳的鼠标事件里: 悬停/按下变深, 只重画箭头矩形 —— 之前原生按钮自绘 hover 与
+    /// 钩子的自绘争抢重绘, 鼠标在按钮上一扫就闪; 现在外壳是双缓冲的, 闪不了。</para>
     /// </summary>
     class RoundNumericShell : Panel
     {
@@ -884,11 +901,17 @@ namespace StereoSplitter
         const int CornerRadius = 6;
         const int PadX = 7;          // 文字距左缘 (与 RoundedCombo.TextPadX 对齐)
         const int GapCapInner = 5;   // 文字与数字框的间隔
+        const int GapNumUnit = 4;    // 数字与单位的间隔
+        const int GapUnitArrow = 5;  // 单位与箭头区的间隔
+        const int ArrowW = 20;       // 上下箭头区宽度
+        const int SpinStrip = 16;    // 数字框内部给 (已藏) 原生按钮留的条宽, 见 Recalc
 
         public readonly NoWheelNumeric Inner;
         readonly Label caption;      // 框内的文字 (可空)
         readonly Label unit;         // 框内的单位后缀 (可空, 如 "ms")
         bool hot;
+        int hoverDir, pressedDir;    // 箭头的悬停/按下状态 (1=上, -1=下, 0=不在箭头上)
+        int arrowX;                  // 箭头区左缘 (客户区坐标, Recalc 时定)
 
         public RoundNumericShell(NoWheelNumeric inner) : this(inner, null, null) { }
 
@@ -925,10 +948,12 @@ namespace StereoSplitter
                 };
                 Controls.Add(unit);
             }
-            Size = new Size(ContentWidth(), Inner.Height + 2);
-            // 鼠标几乎全落在 Inner 上 (外壳只剩内衬和文字), 悬停跟踪得挂在它身上
+            Size = new Size(150, Inner.Height + 2);
+            // 鼠标几乎全落在 Inner 上 (外壳只剩箭头区和内衬), 边框悬停跟踪得挂在它身上;
+            // 移进数字框时外壳收不到 MouseMove, 顺手把箭头的悬停态清掉
             inner.MouseEnter += (s, e) => { hot = true; Invalidate(); };
             inner.MouseLeave += (s, e) => { hot = false; Invalidate(); };
+            inner.MouseMove += (s, e) => { if (hoverDir != 0) { hoverDir = 0; RefreshArrow(); } };
             inner.EnabledChanged += (s, e) =>
             {
                 inner.BackColor = inner.Enabled ? Color.White : BackDisabled;
@@ -936,56 +961,89 @@ namespace StereoSplitter
                 if (unit != null) unit.ForeColor = inner.Enabled ? UnitColor : TextDisabled;
                 Invalidate();
             };
-            // 字体是环境继承的: 挂进父级后才定, caption 宽度跟着变, 定了之后要重排
+            // 字体是环境继承的: 挂进父级后才定, caption 宽度跟着变, 定了之后要重排;
+            // 数值位数变化 (0→10→100→1000) 时数字区跟着伸缩, 用 BeginInvoke 避开
+            // ValueChanged 处理中途改布局的重入
             FontChanged += (s, e) => { if (IsHandleCreated) BeginInvoke((Action)Recalc); };
+            Inner.ValueChanged += (s, e) => { if (IsHandleCreated) BeginInvoke((Action)Recalc); };
         }
 
         /// <summary>单位后缀的常态色 (与 OutputCard 行标签同色, 禁用时换灰)。</summary>
         static readonly Color UnitColor = Color.FromArgb(120, 126, 136);
 
-        /// <summary>外壳总宽 = 边框 + [文字+间隔] + 数字框 + [间隔+单位+文字边距] + 边框。</summary>
-        int ContentWidth()
-        {
-            return 1 + (caption == null ? 0 : PadX + caption.PreferredWidth + GapCapInner)
-                     + Inner.Width
-                     + (unit == null ? 0 : GapCapInner + unit.PreferredWidth + PadX - 2)
-                     + 1;
-        }
-
-        /// <summary>按内容重排: 外壳尺寸、文字与数字框的位置、数字框的圆角裁剪一次到位。</summary>
+        /// <summary>
+        /// 按内容重排: 外壳尺寸、文字/数字框/单位/箭头区的位置一次到位。
+    /// <para>顺序 (用户指定): [文字][数字][单位][上下箭头], 彼此紧靠 ——
+    /// 数字区宽度按当前值量出 (位数变了才伸缩), 数字右对齐后正好贴住单位;
+    /// 没有按最大值预留的空位, 也就没有「延迟 …… 0」那种大空隙。</para>
+        /// </summary>
         void Recalc()
         {
             if (IsDisposed) return;
-            Size = new Size(ContentWidth(), Inner.Height + 2);
+            int innerH = Inner.Height;
             int x = 1;
             if (caption != null)
             {
                 caption.Location = new Point(PadX, (Height - caption.PreferredHeight) / 2);
                 x = PadX + caption.PreferredWidth + GapCapInner;
             }
-            int innerW = Width - x - (unit == null ? 1 : GapCapInner + unit.PreferredWidth + PadX - 2 + 1);
-            PlaceInner(x, innerW);
+            int numberW = TextRenderer.MeasureText(Inner.Value.ToString("0"), Inner.Font).Width + 6;
+            // 数字框窗口比文字区宽出一条 SpinStrip: 基类布局会把编辑框压到「客户区-按钮宽」,
+            // 与它抢 bounds 是打不赢的 (非托管侧直接摆回来, 实测拉锯到 StackOverflow) ——
+            // 干脆把这条宽度算进窗口: 编辑框正好铺到文字右缘, 数字右对齐后紧贴单位;
+            // 剩下那条 SpinStrip 是被藏掉的原生按钮占的空白, 看不见也点不到
+            PlaceInner(x, numberW + SpinStrip, innerH);
+            int unitX = x + numberW + GapNumUnit;
             if (unit != null)
-                unit.Location = new Point(x + innerW + GapCapInner, (Height - unit.PreferredHeight) / 2);
+            {
+                unit.Location = new Point(unitX, (Height - unit.PreferredHeight) / 2);
+                unitX += unit.PreferredWidth;
+                // 单位标签与数字框的窗口有一角重叠 (数字框窗口比文字区宽出一条按钮条),
+                // 必须让标签在 z 序之上, 数字框重绘才盖不到它 (配合 NoWheelNumeric
+                // 的 WS_CLIPSIBLINGS)
+                unit.BringToFront();
+            }
+            arrowX = unitX + GapUnitArrow;
+            Size = new Size(arrowX + ArrowW + 1, innerH + 2);
             Invalidate();
         }
 
-        /// <summary>数字框定位到 (x,1)、给定宽, 并裁圆角 —— 否则方角会盖住外壳的边框弧线。</summary>
-        void PlaceInner(int x, int w)
+        /// <summary>
+        /// 数字框定位到数字区。原生 UpDownButtons (数字框内部右侧那条立体按钮) 压成 0×0 藏掉:
+        /// 它不藏, 就会一直占着数字框右缘, 箭头没法按「数字→单位→按钮」的顺序排到单位后面;
+        /// 压成 0×0 后它收不到任何鼠标事件, 箭头改由外壳自绘 (见 OnPaint)。
+        /// <para>NumericUpDown 在 Resize 时会重新摆它, 所以每次重排后都要再压一次。</para>
+        /// </summary>
+        void PlaceInner(int x, int w, int h)
         {
-            Inner.SetBounds(x, 1, w, Height - 2);
-            using (var path = UiDraw.RoundRect(new Rectangle(0, 0, w - 1, Height - 3), CornerRadius - 1))
-            {
-                Region old = Inner.Region;
-                Inner.Region = new Region(path);
-                if (old != null) old.Dispose();
-            }
+            Inner.SetBounds(x, 1, w, h);
+            Region old = Inner.Region;
+            Inner.Region = null;
+            if (old != null) old.Dispose();
+            EnforceSpinHidden();
+        }
+
+        /// <summary>
+        /// 把原生 UpDownButtons (数字框内部右侧那条立体按钮) 藏起来 —— <b>只藏可见性</b>。
+        /// <para><b>为什么不动它的 bounds</b>: 数字框基类会用非托管侧的排布把编辑框压回
+        /// 「客户区-按钮宽」、把按钮摆回原位, 我们改 bounds 它就摆回去, 无穷拉锯
+        /// (实测 StackOverflow / 不停重绘)。Visible 却没人碰 —— 藏一次就稳住。
+        /// 按钮条占用的那条宽度的处理见 <see cref="Recalc"/> 的注释。</para>
+        /// </summary>
+        void EnforceSpinHidden()
+        {
+            if (IsDisposed) return;
+            foreach (Control c in Inner.Controls)
+                if (c.GetType().Name == "UpDownButtons" && c.Visible) c.Visible = false;
         }
 
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
-            Recalc();
+            // 不能在句柄刚建时就重排: 此时数字框/编辑框/原生按钮的句柄多半还没建,
+            // 摆下去的位置会被数字框随后 OnHandleCreated 里的直接摆位冲掉。
+            // 推迟到消息循环 (所有句柄就绪、数字框摆完) 之后再重排一次。
+            BeginInvoke((Action)Recalc);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -1004,6 +1062,96 @@ namespace StereoSplitter
                 using (var pen = new Pen(Inner.Enabled && hot ? BorderHot : BorderNormal))
                     g.DrawPath(pen, path);
             }
+
+            // 原生上下按钮可能在句柄创建后被数字框自己摆回来, 每次绘制前压一道保险
+            EnforceSpinHidden();
+
+            // 箭头区: 两条圆头短线, 与 RoundedCombo 下拉箭头同一笔画; 悬停/按下变深。
+            // 这里只管画, 状态变化时 RefreshArrow() 只让箭头矩形失效 —— 外壳是双缓冲的,
+            // 整框不会跟着重绘, 原生按钮那种"hover 一闪一闪"不存在了。
+            using (var b = new SolidBrush(Inner.Enabled ? Color.White : BackDisabled))
+                g.FillRectangle(b, arrowX, 1, Width - arrowX - 1, Height - 2);
+            Color off = Color.FromArgb(178, 178, 178);
+            Color ink = Color.FromArgb(95, 94, 90);
+            Color act = Color.FromArgb(44, 44, 42);
+            float cx = arrowX + ArrowW / 2f;
+            float topY = Height * 0.25f, botY = Height * 0.75f;
+            DrawChevron(g, cx, topY, 1f, !Inner.Enabled ? off
+                : (pressedDir == 1 || hoverDir == 1) ? act : ink);
+            DrawChevron(g, cx, botY, -1f, !Inner.Enabled ? off
+                : (pressedDir == -1 || hoverDir == -1) ? act : ink);
+        }
+
+        /// <summary>「^」/「v」两条圆头短线 (dir=1 朝上, -1 朝下), 与旧钩子画的同一笔画。</summary>
+        static void DrawChevron(Graphics g, float cx, float cy, float dir, Color inkColor)
+        {
+            using (var p = new Pen(inkColor, 1.6f))
+            {
+                p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                g.DrawLine(p, cx - 4f, cy + 2.2f * dir, cx, cy - 2.2f * dir);
+                g.DrawLine(p, cx, cy - 2.2f * dir, cx + 4f, cy + 2.2f * dir);
+            }
+        }
+
+        /// <summary>(x, y) 是否落在箭头区, 及其半区方向; 区外返回 0 (不处理)。</summary>
+        int DirAt(int x, int y)
+        {
+            if (x < arrowX || x >= Width - 1 || y < 1 || y > Height - 2) return 0;
+            return y < Height / 2 ? 1 : -1;
+        }
+
+        /// <summary>只让箭头矩形失效 —— 整框 (数字/单位) 不参与, 这是防闪的关键。</summary>
+        void RefreshArrow()
+        {
+            Invalidate(new Rectangle(arrowX, 0, Width - arrowX, Height));
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            base.OnMouseEnter(e);
+            hot = true;
+            Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            hot = false;
+            if (hoverDir != 0) hoverDir = 0;
+            Invalidate();          // 边框退热 + 箭头退色, 一次整框重绘足够 (离开是低频事件)
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            int d = DirAt(e.X, e.Y);
+            if (d != hoverDir) { hoverDir = d; RefreshArrow(); }
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left || !Inner.Enabled) return;
+            int d = DirAt(e.X, e.Y);
+            if (d == 0) return;
+            hoverDir = d;
+            pressedDir = d;
+            Inner.StepArrow(d);
+            Inner.BeginRepeat(d);
+            RefreshArrow();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (pressedDir != 0) { pressedDir = 0; Inner.EndRepeat(); RefreshArrow(); }
+        }
+
+        protected override void OnMouseCaptureChanged(EventArgs e)
+        {
+            base.OnMouseCaptureChanged(e);
+            if (pressedDir != 0) { pressedDir = 0; Inner.EndRepeat(); RefreshArrow(); }
         }
     }
 

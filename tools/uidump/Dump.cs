@@ -414,6 +414,66 @@ namespace StereoSplitter
                 return;
             }
 
+            // RoundNumericShell 内部布局探针: 打印数字框与其子控件的真实边界/对齐,
+            // 用来定位「数字与单位之间多出一条空隙」是哪一层布局造成的
+            if (args.Length >= 1 && args[0] == "nudprobe")
+            {
+                using (var hostForm = new Form
+                {
+                    StartPosition = FormStartPosition.Manual, Location = new Point(40, 40),
+                    ClientSize = new Size(300, 60), BackColor = Color.White, Font = new Font("Microsoft YaHei UI", 9F)
+                })
+                {
+                    var nud = new NoWheelNumeric { Minimum = 0, Maximum = 2000, Increment = 10, Value = 0 };
+                    var shell = new RoundNumericShell(nud, "延迟", "ms");
+                    shell.Location = new Point(10, 15);
+                    hostForm.Controls.Add(shell);
+                    // 谁在改边界: 打印子控件尺寸变化时的调用堆栈 (只留 Frame 行)
+                    foreach (Control c in nud.Controls)
+                    {
+                        Control cc = c;
+                        cc.SizeChanged += (s, e) =>
+                        {
+                            var st = new System.Diagnostics.StackTrace(true);
+                            var frames = st.GetFrames();
+                            var lines = new List<string>();
+                            for (int i = 1; i < frames.Length && lines.Count < 25; i++)
+                            {
+                                var mth = frames[i].GetMethod();
+                                if (mth.DeclaringType != null && !mth.DeclaringType.Name.StartsWith("StackTrace"))
+                                    lines.Add(mth.DeclaringType.Name + "." + mth.Name);
+                            }
+                            Console.Out.WriteLine("  TRACE " + cc.GetType().Name + " -> " + cc.Bounds
+                                + " | " + string.Join(" <- ", lines));
+                        };
+                    }
+                    hostForm.Show();
+                    for (int i = 0; i < 12; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                    Console.Out.WriteLine("SHELL bounds=" + shell.Bounds
+                        + " arrowX=" + shell.GetType().GetField("arrowX",
+                              System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                              ?.GetValue(shell));
+                    Console.Out.WriteLine("INNER bounds=" + nud.Bounds
+                        + " align=" + nud.TextAlign + " client=" + nud.ClientSize);
+                    foreach (Control c in nud.Controls)
+                        Console.Out.WriteLine("  CHILD " + c.GetType().Name + " bounds=" + c.Bounds
+                            + " visible=" + c.Visible);
+                    foreach (Control c in shell.Controls)
+                        Console.Out.WriteLine("  SHELLCHILD " + c.GetType().Name
+                            + " '" + (c is Label lb ? lb.Text : "?") + "' bounds=" + c.Bounds);
+                    // 时间序列: 每 100ms 打一次编辑框/按钮边界, 看它们何时被谁改回去
+                    for (int i = 0; i < 10; i++)
+                    {
+                        System.Threading.Thread.Sleep(100);
+                        Application.DoEvents();
+                        foreach (Control c in nud.Controls)
+                            Console.Out.WriteLine("  t+" + (i + 1) + "00ms " + c.GetType().Name
+                                + " bounds=" + c.Bounds + " visible=" + c.Visible);
+                    }
+                }
+                return;
+            }
+
             // 静音按钮的接线自检: 「点一下真的静音」这件事光看图证明不了 ——
             // 图只能证明图标换了样子, 证明不了 MutedChanged 有没有接到增益计算/落盘上。
             // 这里把按钮的 OnClick 反射调一遍, 再读引擎真正用的 CurrentMaster()。
