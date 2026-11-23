@@ -110,6 +110,17 @@ namespace StereoSplitter
             set { outLatencyMs = Math.Max(5, Math.Min(500, value)); }
         }
 
+        /// <summary>
+        /// 外部取消钩子: 返回 true 表示"立刻停下"。
+        /// <para>为什么要传进来而不是只在上层两路之间检查: 一路要放 2 段预热 + 3 段测量 ≈ 5 秒,
+        /// 只在外层检查的话点「停止」后还要再响 5 秒才停, 用户会以为没反应。
+        /// 这里在播放等待 (50ms 一片) 和分析逐段之间都会问一次, 停下来的延迟 ≈ 50ms。</para>
+        /// <para>它只做"中止", 不做清理 —— 清理仍在 <see cref="Stop"/>/<see cref="Dispose"/>。</para>
+        /// </summary>
+        public Func<bool> ShouldCancel;
+
+        bool Canceled { get { Func<bool> f = ShouldCancel; return f != null && f(); } }
+
         public string CaptureDeviceName { get { return mic == null ? "(未打开)" : Devices.DeviceCatalog.SafeName(mic); } }
         public int CaptureRate { get { return rate; } }
         /// <summary>最近一次分析窗内的峰值电平 (dBFS)。用来在失败时告诉用户"麦克风到底听见了多响"，比笼统的"没收到声"好定位。</summary>
@@ -232,6 +243,7 @@ namespace StereoSplitter
             if (capture == null) throw new InvalidOperationException("采集尚未启动");
             if (captureFailed) throw new InvalidOperationException("麦克风采集中断: " + (captureError == null ? "未知原因" : captureError.Message));
             if (string.IsNullOrEmpty(renderDeviceId)) throw new InvalidOperationException("该输出卡片没有绑定设备");
+            if (Canceled) throw new OperationCanceledException();
             if (takes < 1) takes = 1;
             if (takes > 4) takes = 4;
 
@@ -320,13 +332,21 @@ namespace StereoSplitter
                 }
                 t0 = clock.Elapsed.TotalSeconds;
                 player.Play();
-                Thread.Sleep(waitMs);
+                // 等待这段播完。切成 50ms 一片是为了让「停止」能马上生效:
+                // 一觉睡 5 秒的话, 用户点了停止还要听满 5 秒的扫频。
+                for (int waited = 0; waited < waitMs; waited += 50)
+                {
+                    if (Canceled) break;
+                    int slice = Math.Min(50, waitMs - waited);
+                    Thread.Sleep(slice);
+                }
                 try { player.Stop(); } catch { }
             }
 
+            if (Canceled) return;
             for (int k = 0; k < takes; k++)
             {
-                if (stopping) return;
+                if (stopping || Canceled) return;
                 double segT0 = t0 + (WarmupSegments + k) * SegmentSeconds;
                 try
                 {

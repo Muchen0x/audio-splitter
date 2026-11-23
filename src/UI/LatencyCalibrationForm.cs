@@ -67,6 +67,8 @@ namespace StereoSplitter
         volatile bool cancel;
         bool measuring;
         bool applied;
+        /// <summary>测量中点了关闭: 先停止, 等线程收尾后再真正关窗 (不让声音留在半空)。</summary>
+        bool closeAfterStop;
 
         public LatencyCalibrationForm(IList<CalibLane> lanes, int outLatencyMs, Action<string, int> applyDelay, bool hostMuted = false)
         {
@@ -136,7 +138,7 @@ namespace StereoSplitter
 
             btnStart.Location = new Point(12, 268);
             btnStart.Size = new Size(112, 28);
-            btnStart.Click += (s, e) => StartMeasure();
+            btnStart.Click += (s, e) => ToggleMeasure();
 
             btnApply.Location = new Point(132, 268);
             btnApply.Size = new Size(112, 28);
@@ -164,6 +166,15 @@ namespace StereoSplitter
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             cancel = true;       // 测量线程是后台线程, 让它自己发现取消并退出
+            // 测量中直接销毁窗口会把还在响的播放流丢在半空: 转成"停止", 线程收尾后自己关。
+            // 只拦用户关闭 (Alt+F4 / 关闭按钮); 系统关机等其它原因照常放行, 免得拖住系统。
+            if (measuring && (e.CloseReason == CloseReason.UserClosing || e.CloseReason == CloseReason.None))
+            {
+                closeAfterStop = true;
+                e.Cancel = true;
+                StopMeasure();
+                return;
+            }
             base.OnFormClosing(e);
         }
 
@@ -249,8 +260,8 @@ namespace StereoSplitter
             else
             {
                 // 每路 = 2 段预热 + Takes 段测量, 每段 1 秒, 再加开流/分析开销
-                lblState.Text = "点「开始校准」：会逐路播放测试音（每路预热 2 秒 + 测 " + Takes + " 次），约需 " +
-                    (int)Math.Ceiling(lanes.Count * 5.5) + " 秒。";
+                lblState.Text = "点「开始校准」逐路播放测试音（约 " +
+                    (int)Math.Ceiling(lanes.Count * 5.5) + " 秒），过程中可点「停止校准」中止。";
                 btnApply.Enabled = false;
             }
             btnStart.Enabled = !measuring;
@@ -276,6 +287,37 @@ namespace StereoSplitter
 
         // ==================== 测量流程 ====================
 
+        /// <summary>同一个按钮两副面孔: 空闲时开始, 测量中变成停止。宽度按"停止校准"排的, 不跳。</summary>
+        void ToggleMeasure()
+        {
+            if (measuring) StopMeasure();
+            else StartMeasure();
+        }
+
+        /// <summary>
+        /// 请求停止。真正的收尾 (按钮复位、状态文案) 在线程的 finally 里做 ——
+        /// 这里只负责让线程**尽快**发现, 并立刻给出"正在停止"的反馈, 免得用户以为点了没反应。
+        /// </summary>
+        void StopMeasure()
+        {
+            if (!measuring) return;
+            cancel = true;
+            btnStart.Text = "正在停止…";
+            btnStart.Enabled = false;
+            lblState.Text = "正在停止…（当前这段放完就停）";
+        }
+
+        /// <summary>测量期间锁住输入: 换麦克风/刷新/应用都会和采集线程打架。</summary>
+        void SetMeasuringUi(bool on)
+        {
+            btnStart.Text = on ? "停止校准" : "开始校准";
+            btnStart.Enabled = on || mics.Count > 0;
+            btnClose.Enabled = !on;
+            cmbMic.Enabled = !on;
+            btnRescan.Enabled = !on;
+            if (on) btnApply.Enabled = false;
+        }
+
         void StartMeasure()
         {
             if (measuring) return;
@@ -296,12 +338,10 @@ namespace StereoSplitter
 
             measuring = true;
             cancel = false;
-            btnStart.Enabled = false;
-            btnApply.Enabled = false;
-            btnClose.Enabled = false;
-            cmbMic.Enabled = false;
-            btnRescan.Enabled = false;
+            closeAfterStop = false;
+            SetMeasuringUi(true);
             txtLog.Clear();
+            lblState.Text = "正在打开麦克风…";
 
             string micId = mics[idx].Id;
             string micName = mics[idx].Name;
@@ -314,17 +354,21 @@ namespace StereoSplitter
         void Worker(string micId, string micName)
         {
             MicLatencyProbe probe = null;
+            // 已有结果的路数: 中途停止时用它告诉用户"停在哪", 也是"这半套数据不能用"的依据。
+            int measured = 0;
             try
             {
                 Post(delegate { lblState.Text = "正在打开麦克风…"; Append("麦克风: " + micName); });
                 probe = new MicLatencyProbe();
                 probe.OutLatencyMs = outLatencyMs;
+                probe.ShouldCancel = delegate { return cancel; };
                 probe.Start(micId);
                 Post(delegate { Append("采集采样率 " + probe.CaptureRate + " Hz；按 " + outLatencyMs + "ms 缓冲测量 (" + Takes + " 段/路, 预热 2 段)。"); });
+                if (cancel) return;
 
                 for (int i = 0; i < lanes.Count; i++)
                 {
-                    if (cancel) throw new InvalidOperationException("已取消");
+                    if (cancel) return;
                     CalibLane lane = lanes[i];
                     int row = i;
                     Post(delegate
@@ -336,11 +380,15 @@ namespace StereoSplitter
                     try
                     {
                         LaneMeasurement m = probe.MeasureLane(lane.DeviceId, Takes);
+                        // 停止可能恰好落在测量返回之后: 这一路的结果已经不可信 (分段可能没测全),
+                        // 丢弃比留下更安全 —— 半路的数据会被算进建议值, 补出来的延迟是歪的。
+                        if (cancel) return;
                         lane.MeasuredMs = m.LatencyMs;
                         lane.Confidence = m.Confidence;
                         lane.SpreadMs = m.SpreadMs;
                         lane.Samples.Clear();
                         lane.Samples.AddRange(m.Samples);
+                        measured++;
                         Post(delegate
                         {
                             UpdateRow(row);
@@ -351,6 +399,7 @@ namespace StereoSplitter
                     }
                     catch (Exception ex)
                     {
+                        if (cancel) return;
                         Post(delegate { Append("  " + lane.Display + ": 未取到 — " + ex.Message); });
                     }
                 }
@@ -366,6 +415,7 @@ namespace StereoSplitter
             }
             catch (Exception ex)
             {
+                if (cancel) return;      // 停止引起的异常不进"失败"分支, 由 finally 统一收尾
                 string msg = ex == null ? "(未知错误)" : ex.Message;
                 // 运行中校准最常见的失败原因: 该系统的驱动不允许同一端点被两个共享流同时打开
                 string hint = hostMuted
@@ -376,14 +426,32 @@ namespace StereoSplitter
             finally
             {
                 try { if (probe != null) probe.Dispose(); } catch { }
+                bool stopped = cancel;
+                int done = measured;
                 Post(delegate
                 {
                     measuring = false;
-                    btnStart.Enabled = true;
-                    btnClose.Enabled = true;
-                    cmbMic.Enabled = true;
-                    btnRescan.Enabled = true;
-                    if (!applied) RefreshState();
+                    SetMeasuringUi(false);
+                    if (stopped)
+                    {
+                        // 已测到的行保留 (方便判断是不是某台设备有问题), 但不出建议值:
+                        // 只测了一部分就补延迟, 结果是按"残缺的基准"算的。
+                        btnApply.Enabled = false;
+                        lblState.Text = done == 0
+                            ? "已停止校准，未测到有效数据。"
+                            : "已停止校准（测到 " + done + "/" + lanes.Count + " 路），未应用任何改动。";
+                        Append(done == 0
+                            ? "[已停止] 校准被手动停止。"
+                            : "[已停止] 校准被手动停止，已测到的结果保留在表里，但不生成建议值 —— 需要完整测完才能算差值。");
+                    }
+                    else if (!applied) RefreshState();
+
+                    // 测量中点了关闭: 停稳了才真正关窗 (此时播放流已释放, 不会有残响)
+                    if (closeAfterStop)
+                    {
+                        closeAfterStop = false;
+                        Close();
+                    }
                 });
             }
         }
