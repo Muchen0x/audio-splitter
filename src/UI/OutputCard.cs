@@ -16,7 +16,7 @@ namespace StereoSplitter
     class OutputCardControl : UserControl
     {
         public readonly OutputCardModel Model;
-        public readonly NoWheelComboBox cmbDevice;
+        public readonly FlatCombo cmbDevice;
         public readonly NoWheelComboBox cmbChannel;
         public readonly NumericUpDown nudDelay;
         public readonly VolumeSlider volTrack;
@@ -30,7 +30,7 @@ namespace StereoSplitter
         sealed class SlotRow
         {
             public Label Tag;
-            public NoWheelComboBox Cmb;
+            public FlatCombo Cmb;
             public VolumeSlider Vol;
             public Label Lbl;
         }
@@ -83,11 +83,7 @@ namespace StereoSplitter
             // 先定尺寸再摆子控件; 位置统一由 LayoutControls() 按实际宽度摆放, 不用 Anchor
             Size = new Size(CardWidth, CardHeight);
 
-            cmbDevice = new NoWheelComboBox
-            {
-                DropDownWidth = 375,
-                DropDownStyle = ComboBoxStyle.DropDownList
-            };
+            cmbDevice = new FlatCombo { DropDownWidth = 375 };
             cmbChannel = new NoWheelComboBox
             {
                 Width = 92,
@@ -277,10 +273,11 @@ namespace StereoSplitter
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = RowLabelColor
             };
-            r.Cmb = new NoWheelComboBox
+            // 与第一行的设备/声道下拉同一档 (ItemHeight 18 → 高 24): 卡片里混用 24/25 两种高度
+            // 会让同一列控件的底边对不齐, 差 1px 也看得出来
+            r.Cmb = new FlatCombo
             {
                 Width = 92,
-                DropDownStyle = ComboBoxStyle.DropDownList,
                 Enabled = !channelLocked        // 启动中新建的行也要是禁用状态
             };
             r.Vol = new VolumeSlider

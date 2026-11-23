@@ -229,6 +229,65 @@ namespace StereoSplitter
         }
     }
 
+    /// <summary>
+    /// 自绘条目的下拉框: 展开列表里的背景/文字/选中态全部自己画, 让条目高度与配色跟界面其它
+    /// 自绘控件 (VolumeSlider、输出卡片) 用同一套语言。
+    ///
+    /// <para><b>为什么需要它</b>: 原生 DropDownList 的条目高度由字体决定 (约 21px), 选中项用的是
+    /// 系统 Highlight 色 —— 与滑条的 #0078D7、卡片边框的 #CBD0D8 对不上。而 <c>DropDownList</c>
+    /// 的 <c>Height</c> 是**无效属性** (高度由条目高度推出来), 所以"想让下拉高一点"的唯一入口
+    /// 就是 <see cref="ComboBox.ItemHeight"/>, 它只有 OwnerDraw 模式下才被尊重。</para>
+    ///
+    /// <para><b>控件外框和右侧箭头仍然由系统画</b> —— 那是 ComboBox 窗口类写死的, 圆角与自绘
+    /// 箭头只能整个重写控件 (键盘/滚轮/无障碍全部要自己做), 代价不成比例。想更扁平可以把
+    /// <see cref="Control.FlatStyle"/> 设成 Flat, 由调用方决定 (默认保留系统观感)。</para>
+    ///
+    /// <para><b>ItemHeight 与控件高度</b>: 实测 高 = ItemHeight + 6。默认 18 (即 24px) 是为了与
+    /// 卡片里原有的声道下拉逐像素对齐; 空间宽松的地方 (主界面顶部) 可以调到 22 (28px),
+    /// 但卡片第一行只有 25px 可用, 那里**不能**加高, 否则会压到下面一行。</para>
+    /// </summary>
+    class FlatCombo : NoWheelComboBox
+    {
+        /// <summary>与 VolumeSlider.Accent 同值, 保证"选中的东西"在整界面是同一个蓝。</summary>
+        static readonly Color Accent = Color.FromArgb(0, 120, 215);
+        static readonly Color DisabledBack = Color.FromArgb(244, 245, 247);
+        static readonly Color DisabledText = Color.FromArgb(150, 154, 160);
+
+        public FlatCombo()
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList;
+            DrawMode = DrawMode.OwnerDrawFixed;
+            ItemHeight = 18;
+            BackColor = Color.White;
+            DrawItem += OnDrawItem;
+        }
+
+        void OnDrawItem(object sender, DrawItemEventArgs e)
+        {
+            bool off = !Enabled;
+            bool sel = !off && (e.State & DrawItemState.Selected) != 0;
+
+            using (var b = new SolidBrush(off ? DisabledBack : (sel ? Accent : BackColor)))
+                e.Graphics.FillRectangle(b, e.Bounds);
+
+            // 收起状态 (e.Index < 0) 要按 SelectedIndex 画, 否则控件上那一行是空白
+            int idx = e.Index >= 0 ? e.Index : SelectedIndex;
+            if (idx < 0 || idx >= Items.Count) return;
+
+            Color fg = off ? DisabledText : (sel ? Color.White : ForeColor);
+            Rectangle r = e.Bounds;
+            // 收起状态的 Bounds 含边框, 内缩 3px 才与系统默认的文字位置对齐;
+            // 展开项左缩 6px, 与卡片里的声道下拉保持同一内边距
+            r = e.Index < 0
+                ? new Rectangle(r.X + 3, r.Y, Math.Max(0, r.Width - 6), r.Height)
+                : new Rectangle(r.X + 6, r.Y, Math.Max(0, r.Width - 6), r.Height);
+
+            TextRenderer.DrawText(e.Graphics, GetItemText(Items[idx]), Font, r, fg,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            // 不画 DrawFocusRectangle: 下拉项上的虚线焦点框是"点一下留一圈虚线"的来源
+        }
+    }
+
     // 鼠标滚轮不改值的 NumericUpDown (只允许手动输入/上下按钮, 每次 ±Increment)
     class NoWheelNumeric : NumericUpDown
     {

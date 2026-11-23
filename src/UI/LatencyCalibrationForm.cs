@@ -59,7 +59,7 @@ namespace StereoSplitter
         /// </summary>
         readonly bool hostRunning;
 
-        readonly NoWheelComboBox cmbMic = new NoWheelComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+        readonly FlatCombo cmbMic = new FlatCombo();
         readonly Button btnRescan = new NoCueButton { Text = "刷新" };
         readonly ListView lv = new ListView();
         readonly Label lblTip = new Label();
