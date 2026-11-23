@@ -495,6 +495,7 @@ namespace StereoSplitter
         void LayoutTopRows()
         {
             if (lblD == null || btnRefresh == null || btnAddOutput == null || btnSettings == null) return;
+            if (btnStart == null || cmbSpec == null) return;
             Control host = btnRefresh.Parent;
             if (host == null) return;
 
@@ -510,9 +511,18 @@ namespace StereoSplitter
             btnRefresh.Left = btnSettings.Left - gap - btnRefresh.Width;
             cmbDefault.Width = Math.Max(60, btnRefresh.Left - gap - cmbDefault.Left);
 
-            // —— 第 2 行 (规格): [规格:] [下拉] [声道名…] [添加输出(贴右)] ——
+            // —— 第 2 行 (规格): [规格:] [下拉] [开始分流] [添加输出(贴右)] ——
+            // 开始分流紧贴下拉右侧 (它是主操作, 位置固定比贴右更稳); 窗口窄到放不下时先压它的
+            // 宽度, 到 70px 为止 —— 宁可挤一点, 也不能让它压住「添加输出」。
             btnAddOutput.Left = panelW - rightEdge - btnAddOutput.Width;
-            flwSpecChannels.Width = Math.Max(60, btnAddOutput.Left - gap - flwSpecChannels.Left);
+            const int startBaseW = 130;
+            int startLeft = cmbSpec.Right + gap;
+            int startRoom = btnAddOutput.Left - gap - startLeft;
+            btnStart.Width = Math.Max(70, Math.Min(startBaseW, startRoom));
+            btnStart.Left = startLeft;
+
+            // —— 第 3 行 (声道名 + 角标): 单独一行水平居中 ——
+            CenterSpecBadges();
 
             // —— 卡片区: 宽高都跟面板走 ——
             // 以前靠 Anchor.Right/Bottom, 但初始 559x166 是按 600x600 窗口写的, 构造期父面板
@@ -1142,6 +1152,37 @@ namespace StereoSplitter
                 }
             }
             finally { flwSpecChannels.ResumeLayout(); }
+
+            // 内容变了 → 总宽变了 → 重新居中。LayoutTopRows 有"尺寸没变就早退"的优化,
+            // 这里必须自己调一次, 否则换规格后角标从 2 个变 6 个仍然按旧宽度居中 (偏右)。
+            CenterSpecBadges();
+        }
+
+        /// <summary>
+        /// 把「声道名 + 输出路数角标」那一行水平居中。
+        /// <para>FlowLayoutPanel 没有 TextAlign, 铺满宽度只会把内容钉在左边, 所以先按子控件的
+        /// Width+Margin 求和得到内容实际宽度, 再把**面板本身**居中 —— 面板宽度 = 内容宽度,
+        /// 内容自然就居中了。</para>
+        /// </summary>
+        void CenterSpecBadges()
+        {
+            if (flwSpecChannels == null || flwSpecChannels.IsDisposed || flwSpecChannels.Parent == null) return;
+
+            int content = 0;
+            for (int i = 0; i < flwSpecChannels.Controls.Count; i++)
+            {
+                Control c = flwSpecChannels.Controls[i];
+                content += c.Width + c.Margin.Left + c.Margin.Right;
+            }
+
+            int panelW = flwSpecChannels.Parent.ClientSize.Width;
+            const int sideMargin = 15;   // 与其它行左缘一致; 居中后左右各留这么多
+            int usable = Math.Max(0, panelW - sideMargin * 2);
+            int w = Math.Min(content, usable);
+
+            if (flwSpecChannels.Width != w) flwSpecChannels.Width = w;
+            int left = Math.Max(sideMargin, (panelW - w) / 2);
+            if (flwSpecChannels.Left != left) flwSpecChannels.Left = left;
         }
 
         /// <summary>从 ini 装载输出模型: 编解码在 LaneSettingsCodec (纯数据), 这里只做控件与卡片联动。</summary>

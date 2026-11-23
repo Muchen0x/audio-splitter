@@ -51,7 +51,6 @@ namespace StereoSplitter
         Label lblVolMaster, lblVolGain;
         // 顶部固定行需要用到的控件 (自适应重排时要改它们的坐标/宽度)
         Label lblD, lblSpec, lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
-        Label lblDot, lblStatus;
         Button btnStart;
         Button btnRefresh;
         Button btnAddOutput;      // 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
@@ -352,31 +351,30 @@ namespace StereoSplitter
             lblVolMaster = new Label { Text = "100%", AutoSize = false, Width = 46, Height = 20, TextAlign = ContentAlignment.MiddleLeft };
             chkMuteMaster = new NoCueCheckBox { Text = "静音", AutoSize = false, Width = 56, Height = 20 };
 
-            // 开始分流
-            btnStart = new NoCueButton { Text = "开始分流", Location = new Point(15, 122), Width = 130, Height = 35 };
-            lblDot = new Label { Text = "●", Location = new Point(162, 127), AutoSize = true, ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 10F) };
-            lblStatus = new Label { Text = "状态: 就绪", Location = new Point(182, 132), AutoSize = true, ForeColor = Color.Gray };
-
-            // 规格行: 规格下拉 + 右侧各声道名称(带输出路数角标) + 最右「添加输出」
-            lblSpec = new Label { Text = "规格:", Location = new Point(15, 169), AutoSize = true };
-            cmbSpec = new NoWheelComboBox { Location = new Point(62, 165), Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
+            // 规格行: [规格:] [下拉] [开始分流] [添加输出(贴右)]
+            // 行高按「开始分流」按钮的 35px 算: 下拉/标签/添加输出都与按钮中心对齐, 见下方 y 值。
+            // 水平位置里只有「添加输出」贴右、其它随面板宽度走 → 交给 LayoutTopRows 重算 Left/Width。
+            lblSpec = new Label { Text = "规格:", Location = new Point(15, 129), AutoSize = true };
+            cmbSpec = new NoWheelComboBox { Location = new Point(62, 127), Width = 100, DropDownStyle = ComboBoxStyle.DropDownList };
             cmbSpec.Items.AddRange(new object[] { "单声道", "立体声", "2.1", "四声道", "5.1" });
             cmbSpec.SelectedIndex = 1;
+            btnStart = new NoCueButton { Text = "开始分流", Location = new Point(170, 120), Width = 130, Height = 35 };
+            btnAddOutput = new NoCueButton
+            {
+                Text = "添加输出",
+                Location = new Point(482, 127),
+                Width = 92,
+                Height = 26
+            };
+
+            // 声道名 + 输出路数角标: 单独一行, 水平居中 (宽度由 CenterSpecBadges 按内容算)
             flwSpecChannels = new FlowLayoutPanel
             {
-                Location = new Point(166, 162),
+                Location = new Point(166, 158),
                 Size = new Size(310, 30),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
                 AutoScroll = false
-                // 宽度与右缘由 LayoutTopRows() 按面板实际宽度摆放 (Anchor 会按"构造时的负右距"把控件推出窗口)
-            };
-            btnAddOutput = new NoCueButton
-            {
-                Text = "添加输出",
-                Location = new Point(482, 164),
-                Width = 92,
-                Height = 26
             };
 
             // 输出卡片区 (可增删, 内容超出时只有纵向滚动)
@@ -465,7 +463,7 @@ namespace StereoSplitter
 
             // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
             // 都在设置页里 (控件由本类持有, 由 SettingsForm 搬入搬出)。
-            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, btnRefresh, btnSettings, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, lblDot, lblStatus, btnStart, lblSpec, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, btnRefresh, btnSettings, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, btnStart, lblSpec, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
 
             // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。
@@ -655,23 +653,18 @@ namespace StereoSplitter
             else SetThreadExecutionState(ES_CONTINUOUS);
 
             string txt;
-            Color c;
             switch (s)
             {
-                case AppState.Starting:
-                    c = Color.Orange; txt = "启动中..."; break;
-                case AppState.Running:
-                    c = Color.LimeGreen; txt = "运行中"; break;
-                case AppState.Stopped:
-                    c = Color.Gray; txt = "已停止"; break;
-                case AppState.Failed:
-                    c = Color.Red; txt = "启动失败(见日志)"; break;
-                default:
-                    c = Color.Gray; txt = "就绪"; break;
+                case AppState.Starting: txt = "启动中..."; break;
+                case AppState.Running: txt = "运行中"; break;
+                case AppState.Stopped: txt = "已停止"; break;
+                case AppState.Failed: txt = "启动失败(见日志)"; break;
+                default: txt = "就绪"; break;
             }
-            lblDot.ForeColor = c;
-            lblStatus.ForeColor = c;
-            lblStatus.Text = "状态: " + txt;
+            // 状态不再常驻在按钮旁 (那一行已让给规格行)。改为"变化时写一条日志":
+            // 只在真正的迁移时记 —— 四条恢复路径会反复 SetAppState 同一个状态, 无条件写会刷屏。
+            // 点击「开始分流」后日志第一行就是 [状态] 启动中..., 信息量与原标签相同且可回溯。
+            if (prev != s) Log("[状态] " + txt);
 
             running = (s == AppState.Running);
             btnStart.Text = running ? "停止分流" : "开始分流";
