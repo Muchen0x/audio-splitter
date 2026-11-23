@@ -17,14 +17,14 @@
 - **时钟漂移校正**：闭环微调重采样比率，多设备长时间对齐不漂移
 - **运行态自适应**：改声道热生效不停链路；不能热改的控件自动置灰
 - **响应式界面**：卡片区按窗口宽度自动分栏，不出横向滚动条；日志区可拖到占满整窗
-- **单文件分发**：NAudio 以嵌入资源打进 exe，拷走一个文件就能用
+- **单文件分发**：NAudio 以嵌入资源打进 exe，`bin\Release\net48\SplitterGUI.exe` 拷走一个文件就能用
 
 ---
 
 ## 快速上手
 
 1. **装一个虚拟声卡**（如 VB-Audio Virtual Cable、VoiceMeeter，需自行安装），把系统默认播放设备切到它。
-2. 启动 `SplitterGUI.exe`：捕获端选虚拟声卡的捕获端点，选规格，给每台输出设备建一张卡片（选设备、选声道、调音量）。
+2. 双击 `SplitterGUI.cmd`：它会先做一次增量构建，再启动 `bin\Release\net48\SplitterGUI.exe`（构建失败会停在窗口里显示错误，不会悄悄跑旧二进制）。捕获端选虚拟声卡的捕获端点，选规格，给每台输出设备建一张卡片（选设备、选声道、调音量）。
 3. 点**「开始分流」**。停止或退出时，各端点的音量/静音会自动还原。
 
 > 也可以不装虚拟声卡直接捕获真实设备，此时系统声音会同时外放。
@@ -106,12 +106,14 @@
 ## 命令行工具
 
 ```bat
-SplitterGUI.exe --selftest        :: 路由自检 (16 项断言, 不发声, 退出码 0 = 全过)
-SplitterGUI.exe --volprobe        :: 打印各端点真值 (音量/静音/默认) 与 ini 保存值, 只读
-SplitterGUI.exe --list ["片段"]   :: 列出渲染端点 (可按名字过滤), 改之前先确认目标, 只读
-SplitterGUI.exe --setvol "设备名片段:百分比"     :: 直接写端点音量 (可重复)
-SplitterGUI.exe --setdefault "设备名片段"        :: 切换系统默认输出
+SplitterGUI.cmd --selftest        :: 路由自检 (32 项断言, 不发声, 退出码 0 = 全过)
+SplitterGUI.cmd --volprobe        :: 打印各端点真值 (音量/静音/默认) 与 ini 保存值, 只读
+SplitterGUI.cmd --list ["片段"]   :: 列出渲染端点 (可按名字过滤), 改之前先确认目标, 只读
+SplitterGUI.cmd --setvol "设备名片段:百分比"     :: 直接写端点音量 (可重复)
+SplitterGUI.cmd --setdefault "设备名片段"        :: 切换系统默认输出
 ```
+
+（`SplitterGUI.cmd` 只是「增量构建 + 运行 `bin\Release\net48\SplitterGUI.exe`」，带参数时前台执行并把退出码原样透传；等价于直接调后者。）
 
 `--setvol` / `--setdefault` 用于**强杀实例后的善后**：任务管理器结束进程或崩溃会跳过还原，端点音量停在分流值、默认输出挂在虚拟声卡上（整机无声）。先 `--list` 确认名字片段匹配到哪台设备，再用这两个开关修回。名字按子串匹配、不区分大小写；**片段匹配到多台设备时会拒绝执行并列出全部候选**（防止改错设备），换更长的片段重试即可。不加参数时程序是纯 GUI，没有任何隐式副作用。
 
@@ -122,8 +124,9 @@ SplitterGUI.exe --setdefault "设备名片段"        :: 切换系统默认输�
 需要 .NET SDK 6.0+（编译 net48 目标）：
 
 ```bat
-build.cmd     :: restore → Release 编译 → 校验 NAudio 内嵌 → 同步根目录 exe
-verify.cmd    :: 构建 + 未提交改动检查 + log/ 体积统计
+SplitterGUI.cmd  :: 增量构建 + 启动 (平时双击这个)
+build.cmd        :: restore → Release 编译 → 校验 NAudio 内嵌 → 守卫根目录无游离 dll
+verify.cmd       :: 构建 + 自检 + 未提交改动检查 + log/ 体积统计
 ```
 
 路由/上混系数改动后建议先跑 `--selftest`，结果写在 `log/selftest-routing.txt`。
@@ -141,6 +144,7 @@ src/
 tools/uidump/     布局量测工具：实例化真实窗口，打印控件边界/重叠/文字截断
 CHANGELOG.md      更新日志 (版本号以 csproj 的 <Version> 为单一来源)
 app.ico           程序图标 (生成脚本在本地的 docs/artifacts/make_icon.py)
+SplitterGUI.cmd   启动脚本：增量构建后运行 bin/Release/net48/SplitterGUI.exe
 build.cmd / verify.cmd
 docs/  log/       本地资料与运行日志，均不入库
 ```
@@ -148,7 +152,8 @@ docs/  log/       本地资料与运行日志，均不入库
 代码风格与行尾由 `.editorconfig` / `.gitattributes` 统一：仓库内 **LF**、UTF-8 **无 BOM**，
 两个 `.cmd` 例外（CRLF，`cmd.exe` 对 LF 批处理不可靠）。
 
-配置文件为 `SplitterGUI.ini`（不入库），随 exe 同目录。
+配置文件为 `SplitterGUI.ini`（不入库），随 exe 同目录，因此现在位于 `bin\Release\net48\`。
+根目录刻意不放 exe / ini 副本：那份副本会与源码脱节，双击到的往往是几天前的旧二进制。
 
 ---
 

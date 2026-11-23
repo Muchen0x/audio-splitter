@@ -29,6 +29,9 @@
 - 自检 29 → **32** 项（新增扫频定位、延迟线重定向 11 条、接缝交叉 7 条）
 - `.editorconfig` 行尾改为 LF（与 `.gitattributes` 一致）、源码统一去 BOM；开发工具移入 `tools/`
 - 版本号改为单一来源：`StereoSplitter.csproj` 的 `<Version>`，本文件与 tag 跟随
+- 根目录不再保留 `SplitterGUI.exe` / `SplitterGUI.ini` 副本，改为 `SplitterGUI.cmd`：增量构建后启动
+  `bin\Release\net48\SplitterGUI.exe`（带参数时前台执行并透传退出码）；`build.cmd` 相应去掉「发布到根目录」一步，
+  从 5 步变 4 步。根目录那份副本会与源码脱节，双击到的是几天前的二进制，且配置在两处各写一份
 
 ## [2.1.0-stable] - 2026-11-22
 
