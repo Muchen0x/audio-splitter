@@ -1014,15 +1014,26 @@ namespace StereoSplitter
             }
             if (running)
             {
-                // 改延迟是"改本路延迟线深度", 可以热生效; 但数字框每敲一位都会触发一次
-                // ValueChanged, 逐次跳变会连成一串"咔"。攒 180ms 再用最终值跳一次。
-                if (DelayDiffersFromRunning())
-                {
-                    delayHotTimer.Stop();
-                    delayHotTimer.Start();
-                }
+                if (DelayDiffersFromRunning()) ApplyDelayHot();
                 else ApplyRoutingHot("卡片改动", false);
             }
+        }
+
+        /// <summary>
+        /// 运行中改延迟: **第一下立刻生效** (点箭头就该马上听到), 之后合并窗口内的连续改动
+        /// 攒成一次。
+        /// <para>为什么要合并: 数字框每敲一位都会触发 ValueChanged, 敲 "180" 会依次产生
+        /// 1 / 18 / 180, 逐次跳变就是三声"咔"。但也不能一律延后 —— 点一下箭头却要等
+        /// 180ms 才听到, 手感像没响应。</para>
+        /// <para>所以用"前沿 + 后沿": 窗口没开就立即应用并开窗; 窗口已开就只更新数值,
+        /// 由窗口到点用最终值再应用一次 (那次若已一致则跳过, 见 delayHotTimer.Tick)。</para>
+        /// </summary>
+        void ApplyDelayHot()
+        {
+            if (delayHotTimer == null) { ApplyRoutingHot("延迟", false); return; }
+            if (delayHotTimer.Enabled) return;      // 已在本轮窗口内, 交给 Tick 收口
+            ApplyRoutingHot("延迟", false);
+            delayHotTimer.Start();
         }
 
         /// <summary>

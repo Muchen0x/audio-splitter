@@ -577,13 +577,15 @@ namespace StereoSplitter
             watchTimer = new System.Windows.Forms.Timer { Interval = 2000 };
             watchTimer.Tick += (s, e) => WatchdogTick();
 
-            // 延迟热改合并窗口: 数字框每敲一位都会 ValueChanged, 逐次跳变会连成一串"咔"。
-            // 攒一小段再一次性应用, 最终值只跳一次 (跳变是改时间轴绕不开的代价, 但没必要跳三次)。
+            // 延迟热改的合并窗口: 第一下立即生效 (点箭头要马上听到), 窗口内后续改动攒到
+            // 到点用最终值再应用一次 —— 数字框每敲一位都会 ValueChanged, 逐位跳会连成一串"咔"。
             delayHotTimer = new System.Windows.Forms.Timer { Interval = 180 };
             delayHotTimer.Tick += (s, e) =>
             {
                 delayHotTimer.Stop();
-                if (running) ApplyRoutingHot("延迟", false);
+                // 值已经和链路一致就不必再跑一遍 (前沿那次已经应用过); 这样只点一下箭头
+                // 只产生一条日志, 不会多出一条"路由已热更新"。
+                if (running && DelayDiffersFromRunning()) ApplyRoutingHot("延迟", false);
             };
 
             // 休眠唤醒: 等端点恢复再重建, 太早重建大概率失败

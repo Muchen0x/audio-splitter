@@ -232,6 +232,8 @@ namespace StereoSplitter
     // 鼠标滚轮不改值的 NumericUpDown (只允许手动输入/上下按钮, 每次 ±Increment)
     class NoWheelNumeric : NumericUpDown
     {
+        SpinButtonsHook spin;
+
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             // 不调 base: 滚轮对数字框一律无效 (误滚一下就把延迟拖偏, 很难发现)
@@ -241,7 +243,123 @@ namespace StereoSplitter
         {
             base.OnHandleCreated(e);
             FocusCue.HideNow(this);
+            AttachSpinHook();
         }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            DetachSpinHook();
+            base.OnHandleDestroyed(e);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                DetachSpinHook();
+                if (repeatTimer != null)
+                {
+                    repeatTimer.Stop();
+                    repeatTimer.Dispose();
+                    repeatTimer = null;
+                }
+            }
+            base.Dispose(disposing);
+        }
+
+        /// <summary>
+        /// 接管上下按钮的点击 (见 <see cref="SpinButtonsHook"/>)。
+        /// <para>UpDownBase 内部有两个子控件: UpDownEdit (文本框) 与 UpDownButtons (箭头区)。
+        /// 原生逻辑是"点箭头 → 先把焦点交给文本框再改值", 于是文本框会亮起插入符、整段
+        /// 内容被选中, 看着像进了编辑态。我们改为自己改值、把点击吞掉, 焦点和插入符都不动。</para>
+        /// <para>挂载时机: OnHandleCreated 里箭头区的句柄往往还没建好 (UpDownBase 在
+        /// 自己的 OnHandleCreated 里才去建), 所以这里既接 HandleCreated, 也留一次
+        /// 延后重试, 双保险。</para>
+        /// </summary>
+        void AttachSpinHook()
+        {
+            if (spin != null || IsDisposed) return;
+            foreach (Control c in Controls)
+            {
+                if (c is TextBox) continue;          // 跳过 UpDownEdit
+                if (c.IsHandleCreated) { HookSpin(c); return; }
+                c.HandleCreated += OnSpinHandleCreated;
+                return;
+            }
+            // 子控件还没进 Controls: 本轮消息处理完再试一次
+            if (IsHandleCreated && !IsDisposed)
+            {
+                try { BeginInvoke(new Action(AttachSpinHook)); } catch { }
+            }
+        }
+
+        void OnSpinHandleCreated(object sender, EventArgs e)
+        {
+            Control c = sender as Control;
+            if (c == null) return;
+            c.HandleCreated -= OnSpinHandleCreated;
+            if (spin == null && !IsDisposed) HookSpin(c);
+        }
+
+        void HookSpin(Control buttons)
+        {
+            spin = new SpinButtonsHook(this, buttons);
+            spin.AssignHandle(buttons.Handle);
+        }
+
+        void DetachSpinHook()
+        {
+            if (spin == null) return;
+            try { spin.ReleaseHandle(); } catch { }
+            spin = null;
+        }
+
+        /// <summary>
+        /// 按箭头方向走一步 (点数由 <see cref="NumericUpDown.Increment"/> 决定)。
+        /// <para>先把正在输入的文字落成值, 否则"输入 18 还没提交就点箭头"会从旧值算起。</para>
+        /// </summary>
+        internal void StepArrow(int dir)
+        {
+            if (!IsHandleCreated || !Enabled) return;
+            ValidateEditText();
+            decimal v = Value + dir * Increment;
+            if (v < Minimum) v = Minimum;
+            else if (v > Maximum) v = Maximum;
+            Value = v;
+        }
+
+        /// <summary>按住箭头连发: 首拍等 400ms, 之后每 120ms 一步 (与原生手感接近)。</summary>
+        internal void BeginRepeat(int dir)
+        {
+            if (repeatTimer == null)
+            {
+                repeatTimer = new System.Windows.Forms.Timer { Interval = 120 };
+                repeatTimer.Tick += (s, e) =>
+                {
+                    // 松开按钮就收尾 (鼠标移出后按键状态仍然可查, 不依赖 WM_MOUSELEAVE)
+                    if (Control.MouseButtons != MouseButtons.Left) { EndRepeat(); return; }
+                    if (repeatTimer.Interval != 120)
+                    {
+                        repeatTimer.Interval = 120;   // 首拍之后转为连发节奏
+                        return;
+                    }
+                    StepArrow(repeatDir);
+                };
+            }
+            repeatDir = dir;
+            repeatTimer.Interval = 400;   // 首拍慢: 点一下只走一步, 不会因为抖动走两步
+            repeatTimer.Start();
+        }
+
+        internal void EndRepeat()
+        {
+            if (repeatTimer == null) return;
+            repeatTimer.Stop();
+            repeatTimer.Interval = 400;   // 下一轮重新从"首拍"开始
+        }
+
+        System.Windows.Forms.Timer repeatTimer;
+        int repeatDir;
 
         protected override void OnKeyDown(KeyEventArgs e)
         {
@@ -266,6 +384,56 @@ namespace StereoSplitter
             }
             if (m.Msg == FocusCue.WM_UPDATEUISTATE) FocusCue.Suppress(ref m);
             base.WndProc(ref m);
+        }
+
+        /// <summary>
+        /// 箭头区的窗口过程: 吞掉左键按下/抬起, 自己走一步, 不让基类把焦点挪进文本框。
+        /// <para>代价是原生那点"按下去变暗"的视觉反馈没了 —— 值当场变了, 反馈其实更直接。
+        /// 连发由 <see cref="BeginRepeat"/> 补上, 所以按住箭头仍然能连续走。</para>
+        /// </summary>
+        sealed class SpinButtonsHook : NativeWindow
+        {
+            const int WM_LBUTTONDOWN = 0x0201;
+            const int WM_LBUTTONUP = 0x0202;
+            const int WM_RBUTTONDOWN = 0x0204;
+            const int WM_CAPTURECHANGED = 0x0215;
+
+            readonly NoWheelNumeric owner;
+            readonly Control host;
+
+            public SpinButtonsHook(NoWheelNumeric owner, Control host)
+            {
+                this.owner = owner;
+                this.host = host;
+            }
+
+            protected override void WndProc(ref Message m)
+            {
+                if (m.Msg == WM_LBUTTONDOWN)
+                {
+                    int dir = DirOf(m.LParam);
+                    if (dir != 0)
+                    {
+                        owner.StepArrow(dir);
+                        owner.BeginRepeat(dir);
+                        return;      // 吞掉: 基类不会再 SetFocus 到文本框
+                    }
+                }
+                else if (m.Msg == WM_LBUTTONUP || m.Msg == WM_CAPTURECHANGED || m.Msg == WM_RBUTTONDOWN)
+                {
+                    owner.EndRepeat();
+                }
+                base.WndProc(ref m);
+            }
+
+            /// <summary>上半是 +1, 下半是 −1; 落在边界外返回 0 (不处理)。</summary>
+            int DirOf(IntPtr lParam)
+            {
+                int y = (short)((long)lParam >> 16);
+                int h = host.ClientSize.Height;
+                if (y < 0 || y >= h || h <= 0) return 0;
+                return y < h / 2 ? 1 : -1;
+            }
         }
     }
 
