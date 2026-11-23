@@ -10,6 +10,23 @@
     <Platforms>AnyCPU</Platforms>
     <Prefer32Bit>false</Prefer32Bit>
     <ApplicationIcon>app.ico</ApplicationIcon>
+
+    <!--
+      R-18: EnableNETAnalyzers 只在 net5.0+ 默认开启, net48 下是**关着的** —— 一道白丢的闸门。
+      开着 33 项自检却关着编译器分析, 等于只测了算法、没测代码。
+
+      档位选择有讲究, 三个档位的实测结果:
+        AnalysisLevel=latest              → 0 条 (默认 AnalysisMode, 只开高置信度规则)
+        AnalysisLevel=latest-recommended  → 181 条 (CA1852 "可以密封" 这类为主, 全是风格项)
+        -p:AnalysisMode=All               → 1262 条 (CA1031 空 catch 508 / CA1303 字面量 152 / CA1305 152 …)
+
+      所以这里只接默认档并让警告直接失败: 它当前是干净的, 能把新引入的问题挡在构建期;
+      更激进的档位留给 `dotnet build -p:AnalysisMode=All` 手动体检, 不写进本文件
+      (把 1262 条历史风格问题一次性变成错误, 只会让人把整个分析器关掉)。
+    -->
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <PropertyGroup>

@@ -77,7 +77,8 @@ namespace StereoSplitter.Infrastructure
                 sb.AppendLine("== ini 里记录的 UI 值 (SettingsStore) ==");
                 try
                 {
-                    var st = new SettingsStore(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "SplitterGUI.ini"));
+                    // R-04: 必须读 GUI 真正在用的那个 ini, 否则日志里"对照 UI 值"整段是默认值
+                    var st = new SettingsStore(AppPaths.IniPath);
                     st.Load();
 
                     // F-25: LastLoadError != null 时默认值不可信, 必须明示

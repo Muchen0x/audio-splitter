@@ -304,7 +304,7 @@ namespace StereoSplitter
                         if (s.Label == label) label = label + (sinkOfDevice.Count + 1);
                     sink = new SinkSpec(key, label, dev, 0, Math.Max(0, lane.DelayMs));
                     sink.Volume = 1f;                 // 音量进绑定增益 / 端点，不走这一层
-                    sink.ClockGroupId = shareClock ? "g0" : "";
+                    sink.ClockGroupId = shareClock ? ClockGroupIdFor(sinkOfDevice.Count) : "";
                     sink.CachedName = deviceNameOf == null ? "" : (deviceNameOf(dev) ?? "");
                     sinkOfDevice[dev] = sink;
                     usedPhys[dev] = new HashSet<int>();
@@ -331,6 +331,23 @@ namespace StereoSplitter
                 if (model.SinkSpecs[i].OutChannels <= 0) model.SinkSpecs.RemoveAt(i);
 
             return model;
+        }
+
+        /// <summary>
+        /// R-03: 共享时钟组编号。一组 (ClockGroup) 的成员数组是定长的, 上限
+        /// <see cref="ClockGroup.MaxMembers"/>; 越界的成员会被静默丢弃 —— 它不进共享平均、
+        /// 自己的欠载不联动别人, 却仍被组级削峰绕过, 于是和组内其它路的相对时间轴会永久错位
+        /// (共享 ratio 只能保证此后同速, 补不回已丢的那段)。这正是 ClockGroup 类注释里
+        /// F-01 要防的故障。
+        /// <para>以前所有设备一律塞进 "g0", 第 9 台起就落进上述状态。现在按上限切分:
+        /// 每 <see cref="ClockGroup.MaxMembers"/> 台一组, "g0"/"g1"/…, 每组各自共享 ratio。
+        /// 跨组之间没有共同的时间基准, 但至少每台设备都在一个自洽的组里 ——
+        /// 比"静默脱管"可预测得多, 且 9 台以上本来就已是该换多声道规格的配置。</para>
+        /// </summary>
+        static string ClockGroupIdFor(int deviceIndex)
+        {
+            int g = deviceIndex / ClockGroup.MaxMembers;
+            return g == 0 ? "g0" : "g" + g.ToString();
         }
 
         static ChannelLayout LayoutOf(int specIndex)

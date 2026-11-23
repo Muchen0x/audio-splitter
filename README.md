@@ -106,7 +106,7 @@
 ## 命令行工具
 
 ```bat
-SplitterGUI.cmd --selftest        :: 路由自检 (32 项断言, 不发声, 退出码 0 = 全过)
+SplitterGUI.cmd --selftest        :: 路由自检 (33 项断言, 不发声, 退出码 0 = 全过)
 SplitterGUI.cmd --volprobe        :: 打印各端点真值 (音量/静音/默认) 与 ini 保存值, 只读
 SplitterGUI.cmd --list ["片段"]   :: 列出渲染端点 (可按名字过滤), 改之前先确认目标, 只读
 SplitterGUI.cmd --setvol "设备名片段:百分比"     :: 直接写端点音量 (可重复)
@@ -154,6 +154,11 @@ docs/  log/       本地资料与运行日志，均不入库
 
 配置文件为 `SplitterGUI.ini`（不入库），随 exe 同目录，因此现在位于 `bin\Release\net48\`。
 根目录刻意不放 exe / ini 副本：那份副本会与源码脱节，双击到的往往是几天前的旧二进制。
+
+> **exe 目录不可写时**（例如装到 `C:\Program Files\`）配置与日志会自动改存
+> `%LOCALAPPDATA%\AudioSplitter\`，并尝试把 exe 目录里原有的 ini 迁移过去一次；
+> 启动日志第一行会打印实际使用的路径。这是"便携优先、不可写才回退"的规则（`AppPaths.cs`），
+> 可写目录下行为与以前完全一致。
 
 ---
 

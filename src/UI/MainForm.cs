@@ -66,6 +66,11 @@ namespace StereoSplitter
         internal CheckBox chkMinimizeToTray;
         internal CheckBox chkDrift;
         internal CheckBox chkMuteCapture;
+        // R-10: 三个滚轮/焦点路由器。原先直接 AddMessageFilter(new Xxx()) 丢弃引用,
+        // 于是关窗时无从 Remove —— 过滤器链是进程级静态表, 会一直留着指向本窗体的委托。
+        // 单实例进程退出即回收, 但"隐藏到托盘再真正退出"不该靠这个假设。
+        readonly System.Collections.Generic.List<IMessageFilter> msgFilters =
+            new System.Collections.Generic.List<IMessageFilter>();
         GearButton btnSettings;            // 主面板右上角的齿轮
         SettingsForm settingsForm;         // 打开中的设置页 (null = 未打开)
         ToolTip tipTop;                    // 顶部控件提示 (需要随状态刷新设置按钮的文案)
@@ -175,6 +180,13 @@ namespace StereoSplitter
         // 端点音量不可用的设备 (端点没有音量接口/被独占): 这些设备的卡片退回混音增益
         readonly HashSet<string> noEndpointVolumeDevices = new HashSet<string>();
 
+        // R-05: 端点声道数缓存。读一次要激活音频客户端 (COM, USB/蓝牙端点 10~100ms),
+        // 而卡片事件会走"NormalizeModels → EnsureSlots → 每张多声道卡一次"。
+        // 只缓存成功值 (>0); 失效点见 EndpointChannels 的注释。
+        const int ChannelCacheMs = 30000;
+        readonly Dictionary<string, int> chanCache = new Dictionary<string, int>(StringComparer.Ordinal);
+        readonly Dictionary<string, int> chanCacheTick = new Dictionary<string, int>(StringComparer.Ordinal);
+
         static readonly IReadOnlyList<EndpointInfo> NoDevices = new List<EndpointInfo>();
         IReadOnlyList<EndpointInfo> Devices
         {
@@ -277,12 +289,12 @@ namespace StereoSplitter
             // 鼠标却在日志框上滚"时滚的是卡片区 (反之亦然) —— 表现为滚一个区域、另一个区域在动。
             // 这个过滤器只改写**跨面板**的目标; 必须加在 VolumeWheelRouter 之前
             // (MessageFilter 后加的先执行), 让滑条那套规则优先判断。
-            Application.AddMessageFilter(new WheelByCursorRouter());
+            AddMessageFilter(new WheelByCursorRouter());
             // 滚轮去向: 卡片列表正在滚的时候, 光标扫过音量条也只滚列表、不改音量
             // (拖着列表往下翻, 音量不能莫名其妙跳 5%); 列表没得滚时滚轮才调音量。
-            Application.AddMessageFilter(new VolumeWheelRouter());
+            AddMessageFilter(new VolumeWheelRouter());
             // 点到空白处 (标签/面板/卡片底色) 时把焦点交回整个窗口, 别让它赖在最后那个输入框里
-            Application.AddMessageFilter(new FocusParkRouter());
+            AddMessageFilter(new FocusParkRouter());
 
             // 上下可拖动面板: 内容区 | 6px灰分隔条 | 日志区 (参照 tk.PanedWindow)
             // FixedPanel=Panel2: 窗口变矮时先收缩上面的内容区, 日志区高度保持不变
@@ -560,8 +572,19 @@ namespace StereoSplitter
             RefreshSettingsTip();   // 读盘后把"缓冲档位/校正状态"写进齿轮提示
 
             // 会话日志文件: 每会话一个 session 文件, UI + 文件双写
-            try { sessionLog = new Infrastructure.SessionLog(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log")); }
+            // R-04: 目录由 AppPaths 决定 (便携优先, exe 目录不可写则退 LOCALAPPDATA)
+            try { sessionLog = new Infrastructure.SessionLog(Infrastructure.AppPaths.LogDir); }
             catch { sessionLog = null; }
+
+            // 落位说明: 便携模式下为空 (老行为, 不刷日志); 发生回退/迁移时提示一次,
+            // 并明确写出 ini 与 log 的真实位置 —— 否则用户找不到自己的配置,
+            // 也说不清"为什么设置没保住"。
+            string pathNote = Infrastructure.AppPaths.ResolveNote;
+            if (!string.IsNullOrEmpty(pathNote)) Log("[提示] " + pathNote);
+            Log("[环境] 配置: " + IniPath + " / 日志: " + Infrastructure.AppPaths.LogDir);
+            // R-04(b): 同目录 NAudio dll 与内嵌副本不一致 → 明确告警 (CLR 会优先用同目录那份)
+            string dllNote = Program.AudioDllWarning;
+            if (!string.IsNullOrEmpty(dllNote)) Log("[警告] " + dllNote);
 
             waterTimer = new System.Windows.Forms.Timer
             {
@@ -736,7 +759,7 @@ namespace StereoSplitter
                 catalog = new DeviceCatalog();
                 bindings = new ChannelBindingSet(catalog, Log);
                 // 监听系统默认输出变化: 绑定期间被切走→解绑还原, 切回→自动重绑; 设备断开→日志警告
-                defaultWatcher = new DefaultChangeWatcher(OnSystemDefaultChanged, OnDeviceLost);
+                defaultWatcher = new DefaultChangeWatcher(OnSystemDefaultChanged, OnDeviceLost, InvalidateChannelCache);
                 try { catalog.Enumerator.RegisterEndpointNotificationCallback(defaultWatcher); }
                 catch (Exception ex) { Log("[警告] 注册默认输出监听失败: " + ex.Message); }
                 RefreshDevices();
@@ -798,6 +821,9 @@ namespace StereoSplitter
 
         void HandleDeviceLost(string id)
         {
+            // R-05: 先失效, 且要放在下面三个提前 return 之前 —— 设备断开与"是否在本次运行
+            // 的输出集合里"无关 (未运行时用户也可能拔设备), 缓存该丢就得丢。
+            InvalidateChannelCache(id);
             if (state != AppState.Starting && state != AppState.Running) return;
             if (id != runCaptureId && !runSinkIds.Contains(id)) return;
             if (!warnedLostIds.Add(id)) return;
@@ -1033,14 +1059,35 @@ namespace StereoSplitter
         /// <para>一张卡片 = 一台设备 → 卡片主音量就是该设备的端点音量;
         /// 多声道卡片的各行音量是混音增益, 不碰端点 (端点音量是设备级单值, 分不了声道)。</para>
         /// </summary>
-        bool BindEndpointVolumeSync(string stage)
+        /// <param name="incremental">
+        /// true = 运行中设备集合刚变过, **只还原并释放离开集合的端点**, 留下的原样保留。
+        /// false (默认) = 启动 / 从"外部切默认输出"恢复 / 睡眠唤醒后重绑, 端点可能已整体失效,
+        /// 必须全量重来。
+        /// <para>为什么不让所有调用方都走 incremental: 睡眠唤醒与切默认输出之后,
+        /// <c>EndpointVolumeBinding</c> 里的 COM 对象可能"看起来还有效"但指向的已不是同一个端点,
+        /// 只有全量 Dispose + 重新 <c>catalog.Open</c> 才能保证拿到当前的真实端点。</para>
+        /// </param>
+        bool BindEndpointVolumeSync(string stage, bool incremental = false)
         {
             SyncLanesFromCards();
             noEndpointVolumeDevices.Clear();
 
             // 设备集合可能已变 (换设备/删卡) → 先按旧基线还原并释放, 再按新集合重绑;
             // 同一设备仍在 → BindSink 复用原对象, 还原基线不会被冲掉
-            bindings.UnbindSinks(true);
+            if (incremental)
+            {
+                var wanted = new List<string>(models.Count);
+                for (int i = 0; i < models.Count; i++)
+                {
+                    string d = models[i].DeviceId;
+                    if (!string.IsNullOrEmpty(d) && !wanted.Contains(d)) wanted.Add(d);
+                }
+                bindings.RetainSinks(wanted, true);
+            }
+            else
+            {
+                bindings.UnbindSinks(true);
+            }
 
             for (int i = 0; i < models.Count; i++)
             {
@@ -1280,7 +1327,8 @@ namespace StereoSplitter
             if (same) return;
 
             Log("[变更] 输出设备已变，同步端点绑定（被弃设备的音量立即还原）");
-            BindEndpointVolumeSync("[变更]");
+            // incremental: 只动离开集合的那几台, 留下的端点不还原、不 Dispose、不重新订阅
+            BindEndpointVolumeSync("[变更]", true);
             WriteUIValuesToDevice();
             SetVolumeBindVisual(true);
         }
@@ -1402,6 +1450,8 @@ namespace StereoSplitter
         void RefreshDevices()
         {
             warnedLostIds.Clear(); // 列表重建, 断开警告去重一并复位
+            // R-05: 设备集合真的重新枚举了, 端点声道数全部视为陈旧
+            InvalidateChannelCache(null);
             loadingDevices = true;
             try
             {
@@ -1477,6 +1527,14 @@ namespace StereoSplitter
             DisarmSinkRetry();
         }
 
+        /// <summary>注册进程级消息过滤器并留住引用 (R-10: 关窗时按它逐个摘除)。</summary>
+        void AddMessageFilter(IMessageFilter f)
+        {
+            if (f == null) return;
+            Application.AddMessageFilter(f);
+            msgFilters.Add(f);
+        }
+
         void MainForm_FormClosing(object sender, FormClosingEventArgs e)
         {
             // 用户点×且勾选「关闭时最小化到托盘」→ 藏到托盘, 分流继续 (关机等系统关闭不拦截)
@@ -1523,52 +1581,54 @@ namespace StereoSplitter
 
             SaveSettings();
             FlushSettings(); // 退出前立即落最后一次 (debounce 不再等)
-            if (waterTimer != null)
+            ReleaseRuntimeResources();
+        }
+
+        /// <summary>
+        /// 关窗时的运行时资源释放 (R-10)。
+        /// <para>原先这一段散在 <see cref="MainForm_FormClosing"/> 里, 逐个 if-null 手写, 漏了
+        /// `deviceReturnTimer` / `sinkRetryTimer` / 两个 `ManualResetEventSlim` / 设置页 /
+        /// 顶部 ToolTip / 三个消息过滤器。收成一处, 以后加东西只有这里要改。</para>
+        /// <para>幂等: 每个字段释放后置 null, 重复调用安全。调用前提见调用点 ——
+        /// 两个 ManualResetEventSlim 在这里**释放**, 所以调用前必须已经 Wait 完在途任务
+        /// (否则 Wait 会抛 ObjectDisposedException)。</para>
+        /// </summary>
+        void ReleaseRuntimeResources()
+        {
+            // 消息过滤器先摘: 它们会在任意控件的消息循环里跑, 留着就可能碰到已经 Dispose 的控件
+            for (int i = 0; i < msgFilters.Count; i++)
             {
-                waterTimer.Stop();
-                waterTimer.Dispose();
-                waterTimer = null;
+                try { Application.RemoveMessageFilter(msgFilters[i]); } catch { }
             }
-            if (saveDebounce != null)
-            {
-                saveDebounce.Stop();
-                saveDebounce.Dispose();
-                saveDebounce = null;
-            }
+            msgFilters.Clear();
+
+            // 定时器: 一律先 Stop 再 Dispose —— 只 Dispose 的话, 已排进消息队列的 Tick
+            // 仍可能在下一个消息循环里回调到已释放的窗体上。
+            DisposeTimer(ref waterTimer);
+            DisposeTimer(ref saveDebounce);
+            DisposeTimer(ref watchTimer);
+            DisposeTimer(ref powerTimer);
+            DisposeTimer(ref delayHotTimer);
+            DisposeTimer(ref deviceReturnTimer);   // R-10 补
+            DisposeTimer(ref sinkRetryTimer);      // R-10 补
+
             try { Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged; } catch { }
-            if (watchTimer != null)
-            {
-                watchTimer.Stop();
-                watchTimer.Dispose();
-                watchTimer = null;
-            }
-            if (powerTimer != null)
-            {
-                powerTimer.Stop();
-                powerTimer.Dispose();
-                powerTimer = null;
-            }
-            if (delayHotTimer != null)
-            {
-                delayHotTimer.Stop();
-                delayHotTimer.Dispose();
-                delayHotTimer = null;
-            }
+
             if (activateEvent != null)
             {
                 try { activateEvent.Close(); } catch { }
                 activateEvent = null;
-            }
-            if (sessionLog != null)
-            {
-                try { sessionLog.Dispose(); } catch { }
-                sessionLog = null;
             }
             // 注销默认输出监听 (须在枚举器释放前)
             if (defaultWatcher != null && catalog != null)
             {
                 try { catalog.Enumerator.UnregisterEndpointNotificationCallback(defaultWatcher); } catch { }
                 defaultWatcher = null;
+            }
+            if (sessionLog != null)
+            {
+                try { sessionLog.Dispose(); } catch { }
+                sessionLog = null;
             }
             // 释放端点绑定 + 设备目录 (引擎已停, 设备不再被引用)
             if (bindings != null)
@@ -1587,6 +1647,57 @@ namespace StereoSplitter
                 trayIcon.Dispose();
                 trayIcon = null;
             }
+            // R-10 补: 设置页是模态打开的, 正常路径上已经关掉; 但 AppState 切换失败等
+            // 异常路径可能留下一个未释放的实例 (它自己也有 Timer 与 ToolTip)。
+            if (settingsForm != null)
+            {
+                try { if (!settingsForm.IsDisposed) settingsForm.Dispose(); } catch { }
+                settingsForm = null;
+            }
+            // R-10 补: 顶部 ToolTip 持有一个 TOOLTIPS_CLASS 原生窗口 (与 R-02 同一类资源)
+            if (tipTop != null)
+            {
+                try { tipTop.RemoveAll(); } catch { }
+                try { tipTop.Dispose(); } catch { }
+                tipTop = null;
+            }
+            // R-10 补: 两个 ManualResetEventSlim 内部各持一个 WaitHandle, 但**只在确认没有
+            // 在途任务时才释放**。释放是有代价的: 上面 Wait(2000) 超时后, 后台线程仍可能走到
+            // finally { startFinished.Set() } (MainForm.Engine.cs:405) 或
+            // sinkRestartFinished.Set() (:864), 那会抛 ObjectDisposedException —— 而且是在
+            // finally 里抛, 线程池上没人接 = 崩进程。IsSet=true 的语义就是"已结束/空闲",
+            // 此时不会有在途的 Set; 没等到就让进程退出时由 OS 回收。
+            // 外面再包一层 try: 万一本方法被重复调用, 对已释放的对象读 IsSet 也不该抛。
+            try { if (startFinished.IsSet) startFinished.Dispose(); } catch { }
+            try { if (sinkRestartFinished.IsSet) sinkRestartFinished.Dispose(); } catch { }
+        }
+
+        /// <summary>
+        /// R-10 补: 把 <see cref="ReleaseRuntimeResources"/> 也接到 <c>Dispose</c> 上。
+        ///
+        /// <para>原先清理**只**挂在 <see cref="MainForm_FormClosing"/> 里, 等于假设"窗体一定是被用户
+        /// 点 X 关掉的"。但 <c>Dispose</c> 是 IDisposable 契约里的正规退出路径: 程序里任何一处
+        /// <c>using</c>/显式 Dispose、以及以后若加"切换主窗口"之类的逻辑, 都会绕过 FormClosing 直接
+        /// 走这里, 那时 <c>bindings</c> / <c>catalog</c> / <c>activateEvent</c> 一个都放不掉 ——
+        /// 分析器把这几项逐条报出来 (CA2213) 是有道理的, 只是它看不到 FormClosing 这条间接路径。</para>
+        ///
+        /// <para>幂等性由 <see cref="ReleaseRuntimeResources"/> 保证 (每项释放后置 null), 所以
+        /// "FormClosing 已调过、Dispose 再调一次"是安全的。顺序上必须先于 <c>base.Dispose</c>:
+        /// 那一步会销毁子控件, 而定时器 Tick / 消息过滤器可能还在碰它们。</para>
+        /// </summary>
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) ReleaseRuntimeResources();
+            base.Dispose(disposing);
+        }
+
+        /// <summary>Stop + Dispose + 置 null; 重复调用安全。</summary>
+        static void DisposeTimer(ref System.Windows.Forms.Timer t)
+        {
+            if (t == null) return;
+            try { t.Stop(); } catch { }
+            try { t.Dispose(); } catch { }
+            t = null;
         }
 
         delegate void LogDelegate(string msg);

@@ -27,7 +27,13 @@ namespace StereoSplitter
     /// </summary>
     class ClockGroup
     {
-        const int MaxMembers = 8;
+        /// <summary>
+        /// 单组最大成员数。R-03: 这个数被 err/holding/active/trimTargets 四个定长数组
+        /// 写死, 越界的成员会被静默丢弃 (不进平均、不联动、却被组级削峰漏掉) ——
+        /// 所以它是**硬约束**, 分组逻辑必须按它切分, 不能只在构造处夹一下。
+        /// 公开出来是为了让分组方 (LaneRouting) 与配置校验引用同一个常量, 而不是各写一个 8。
+        /// </summary>
+        public const int MaxMembers = 8;
         const double KpSteady = 0.02;
         const double KpFill = 0.004;
         const double GainEnterErr = 0.20;   // 误差降到 20% 以下 -> 切稳态增益
@@ -63,6 +69,7 @@ namespace StereoSplitter
         // 各成员执行组级削峰的 provider; 单路重建出全新 provider 后覆盖注册。
         readonly DriftCorrectingProvider[] trimTargets = new DriftCorrectingProvider[MaxMembers];
         int members = 1;
+        int overWarned;      // R-03: 成员越界告警只打一次
 
         bool fastGain;
         double kpNow = KpFill;
@@ -114,7 +121,23 @@ namespace StereoSplitter
         /// <summary>provider 构造/单路重建后登记自己。重建会用新 provider 覆盖旧引用。</summary>
         public void RegisterMember(int memberId, DriftCorrectingProvider provider)
         {
-            if (memberId < 0 || memberId >= MaxMembers || provider == null) return;
+            if (provider == null) return;
+            if (memberId < 0 || memberId >= MaxMembers)
+            {
+                // R-03: 越界以前是直接 return, 完全无声。后果并不对称:
+                //   - 自己的水位误差不进共享平均 (不会带偏别人, 属于"幸运的失败方向")
+                //   - 自己欠载时 NotifyHolding 被丢 → 组内健康成员不会被联动降 6dB (单向失效)
+                //   - OtherHolding 却按 0..7 的状态回答 → 别人 holding 时自己会被无理由压低 6dB
+                //   - TrimGroup 只削 0..7, 自己不跟着丢帧 → 与组内其它路的相对时间轴永久错位
+                // 分组修正 (LaneRouting) 之后正常路径不该再走到这里; 保留这条一次性告警,
+                // 是为了将来新增调用方时能立刻看见, 而不是靠听感猜。
+                if (Interlocked.Exchange(ref overWarned, 1) == 0 && log != null)
+                {
+                    try { log("[警告] 时钟组成员超过上限 " + MaxMembers + "，第 " + (memberId + 1) + " 路不参与共享校正"); }
+                    catch { }
+                }
+                return;
+            }
             lock (sync)
             {
                 trimTargets[memberId] = provider;

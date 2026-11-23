@@ -84,7 +84,8 @@ namespace StereoSplitter.Infrastructure
         static System.Collections.Generic.List<string> CandidateDirs()
         {
             var list = new System.Collections.Generic.List<string>();
-            try { list.Add(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log")); } catch { }
+            // R-04: 首选与配置/会话日志同一个目录 (便携时就是 exe\log, 否则 LOCALAPPDATA)
+            try { list.Add(AppPaths.LogDir); } catch { }
             try
             {
                 string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);

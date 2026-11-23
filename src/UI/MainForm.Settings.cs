@@ -15,11 +15,16 @@ namespace StereoSplitter
 {
     partial class MainForm
     {
-        // ==================== 设置持久化 (exe 同目录 SplitterGUI.ini) ====================
+        // ==================== 设置持久化 (AppPaths.IniPath: 便携优先, 不可写退 LOCALAPPDATA) ====================
 
+        /// <summary>
+        /// R-04: ini 的位置不再硬编码在 exe 目录。可写就用 exe 目录 (便携, 行为不变);
+        /// 装在 Program Files 这类不可写目录时退到 %LOCALAPPDATA%\AudioSplitter,
+        /// 否则每次启动都读不到配置、每次保存都失败 —— 表现为"设置每次重启归零"。
+        /// </summary>
         string IniPath
         {
-            get { return Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "SplitterGUI.ini"); }
+            get { return Infrastructure.AppPaths.IniPath; }
         }
         Infrastructure.SettingsStore settings;
         // F-34: 配置读取失败 → 进入只读恢复模式, 禁止把默认值/半成品写回原文件。

@@ -17,6 +17,13 @@ namespace StereoSplitter
     {
         // ==================== 规格与输出卡片 ====================
 
+        /// <summary>
+        /// R-02: 规格行角标字体。原先每次 RefreshSpecBadges 都 new Font, 一次重建 4~12 个。
+        /// Font 不是控件拥有的资源 (Control.Dispose 不会释放它), 所以必须有人管:
+        /// 这里是进程内唯一实例, 随类型一起活到进程结束 —— 一个 GDI 字体句柄, 可接受。
+        /// </summary>
+        static readonly Font SpecBadgeFont = new Font("Microsoft YaHei UI", 7F, FontStyle.Bold);
+
         /// <summary>当前规格的声道清单 (键, 显示名)。键与 Windows 扬声器位对应。
         /// 表在 LaneRouting 里 (内核翻译与界面共用同一张, 免得两边各写一套)。</summary>
         List<KeyValuePair<string, string>> CurrentSpecChannels()
@@ -895,6 +902,10 @@ namespace StereoSplitter
                 {
                     settingsForm = null;
                     loadingSettings = prevLoading;
+                    // R-02/R-10: 原来只把引用置 null, 窗体自己没人 Dispose —— 每开一次设置页
+                    // 就漏一个窗体 (含它 new 的三个 Font 与子控件 GDI 句柄)。必须放在
+                    // ReturnControls() 之后: 那一步才把借出去的控件搬回主窗体。
+                    try { if (!f.IsDisposed) f.Dispose(); } catch { }
                 }
                 RefreshSettingsTip();
             }
@@ -1177,7 +1188,14 @@ namespace StereoSplitter
             flwSpecChannels.SuspendLayout();
             try
             {
-                flwSpecChannels.Controls.Clear();
+                // R-02: Controls.Clear() 的语义是"摘下"而不是"销毁" —— 摘下的 Label 不再有
+                // 父容器, 也就不会随窗体一起释放, 只能等 GC。逐个摘 + Dispose 才是真的回收。
+                while (flwSpecChannels.Controls.Count > 0)
+                {
+                    Control old = flwSpecChannels.Controls[0];
+                    flwSpecChannels.Controls.RemoveAt(0);
+                    old.Dispose();
+                }
                 for (int i = 0; i < chans.Count; i++)
                 {
                     int n = counts[i];
@@ -1200,7 +1218,7 @@ namespace StereoSplitter
                             BackColor = Color.SteelBlue,
                             ForeColor = Color.White,
                             Margin = new Padding(1, 4, 3, 0),
-                            Font = new Font("Microsoft YaHei UI", 7F, FontStyle.Bold)
+                            Font = SpecBadgeFont
                         };
                         flwSpecChannels.Controls.Add(badge);
                     }

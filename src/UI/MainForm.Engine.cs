@@ -195,10 +195,51 @@ namespace StereoSplitter
             return !hasError;
         }
 
-        /// <summary>端点实际输出声道数 (0 = 拿不到, 交由内核与端点协商时报错)。</summary>
+        /// <summary>
+        /// 端点实际输出声道数 (0 = 拿不到, 交由内核与端点协商时报错)。
+        /// <para>R-05: 结果带 TTL 缓存。调用链是 卡片事件 → NormalizeModels → EnsureSlots →
+        /// DeviceChannelCount → 这里, 而 <c>catalog.Open(id)</c> 会真的激活一次音频客户端
+        /// (USB/蓝牙端点 10~100ms, 且是 COM 调用)。3 张多声道卡上每松一次音量滑条 = 3 次激活,
+        /// 全部压在 UI 线程上。缓存后这条链退化成纯算术。</para>
+        /// <para>失效时机: <see cref="RefreshDevices"/> (用户点刷新 / 设备列表重建)、
+        /// <see cref="HandleDeviceLost"/> (端点消失/停用)、设备属性变化回调
+        /// (<c>DefaultChangeWatcher.OnPropertyValueChanged</c>, 覆盖"在 Windows 里改了扬声器配置"),
+        /// 另有 <see cref="ChannelCacheMs"/> 的 TTL 兜底。</para>
+        /// <para>故意**不**在 <see cref="BindEndpointVolumeSync"/> 里失效: 它是"运行中每松一次
+        /// 音量滑条"都会走的方法, 在那儿清缓存等于把缓存关掉; 而声道数是端点自己的属性,
+        /// 与我们的音量绑定无关。</para>
+        /// </summary>
         int EndpointChannels(string id)
         {
             if (catalog == null || string.IsNullOrEmpty(id)) return 0;
+
+            lock (chanCache)
+            {
+                int hit, at;
+                // 两张表一起查: 只有 chanCache 有值而 tick 缺失时宁可按未命中处理, 不冒 KeyNotFound 的险
+                if (chanCache.TryGetValue(id, out hit) && chanCacheTick.TryGetValue(id, out at) &&
+                    unchecked(Environment.TickCount - at) < ChannelCacheMs)
+                    return hit;
+            }
+
+            int n = QueryEndpointChannels(id);
+
+            // 只缓存成功结果: 0 是"这次没读到"(端点正忙/刚插上), 缓存住会把一次瞬时失败
+            // 钉死 30 秒 —— 用户看到的正是"多声道卡片少了一行, 怎么点都不回来"。
+            if (n > 0)
+            {
+                lock (chanCache)
+                {
+                    chanCache[id] = n;
+                    chanCacheTick[id] = Environment.TickCount;
+                }
+            }
+            return n;
+        }
+
+        /// <summary>真正去打开端点读 MixFormat (唯一会做 COM 激活的地方)。</summary>
+        int QueryEndpointChannels(string id)
+        {
             MMDevice d = null;
             try
             {
@@ -207,6 +248,16 @@ namespace StereoSplitter
             }
             catch { return 0; }
             finally { if (d != null) { try { d.Dispose(); } catch { } } }
+        }
+
+        /// <summary>丢掉某端点的声道数缓存; id 为空 = 全清。</summary>
+        void InvalidateChannelCache(string id)
+        {
+            lock (chanCache)
+            {
+                if (string.IsNullOrEmpty(id)) { chanCache.Clear(); chanCacheTick.Clear(); }
+                else { chanCache.Remove(id); chanCacheTick.Remove(id); }
+            }
         }
 
         /// <summary>本次运行打开的全部输出端点 (= 启用卡片的设备)。</summary>

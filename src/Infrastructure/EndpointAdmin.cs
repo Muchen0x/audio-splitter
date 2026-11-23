@@ -231,7 +231,7 @@ namespace StereoSplitter.Infrastructure
         /// <summary>把系统默认输出切成名字匹配的设备。返回 0 = 成功。</summary>
         public static int SetDefault(string needle)
         {
-            string logDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log");
+            string logDir = AppPaths.LogDir;   // R-04: 与 GUI/自检共用落位规则
             DeviceCatalog catalog = null;
             try
             {

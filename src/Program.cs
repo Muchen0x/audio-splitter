@@ -71,6 +71,107 @@ namespace StereoSplitter
         }
 
         static int resolverInstalled;
+        static int audioDllChecked;
+        static string audioDllWarning;
+        static readonly object audioDllGate = new object();
+
+        /// <summary>
+        /// R-04(b): 同目录 NAudio dll 与内嵌副本是否一致的检查结果; null = 一致 / 同目录没有 dll。
+        ///
+        /// <para>为什么是"检查"而不是"改成内嵌优先": 本项目的设计就是**同目录 dll 优先、内嵌仅兜底**
+        /// (bin\Release\net48\ 里确实有 NAudio 的 dll, 只有单文件分发时才落到内嵌副本), build.cmd
+        /// 第 4 步的原话也是"CLR probing loads the root dll BEFORE the embedded fallback, so the
+        /// embedded copy is never exercised and the two can silently differ"。"同目录优先"因此是
+        /// 有意的选择, 强行反转会让 bin 里那份 dll 永远不被使用, 也没法靠换 dll 升级。
+        /// 真正的风险是**两者静默不一致**: 一份来历不明的同名 dll 会被无条件信任。
+        /// 所以这里只做字节比对, 不一致就把同目录那份的版本和文件名报出来, 把"静默"变成"可见"。</para>
+        /// </summary>
+        internal static string AudioDllWarning
+        {
+            get
+            {
+                lock (audioDllGate)
+                {
+                    if (Interlocked.Exchange(ref audioDllChecked, 1) != 0) return audioDllWarning;
+                    try { audioDllWarning = CheckAudioDllConsistency(); } catch { }
+                    return audioDllWarning;
+                }
+            }
+        }
+
+        /// <summary>逐个比对"同目录 dll"与"内嵌副本"的字节; 返回给用户看的说明, 无问题返回 null。</summary>
+        static string CheckAudioDllConsistency()
+        {
+            string exeDir = Infrastructure.AppPaths.ExeDir;
+            string[] names = { "NAudio.Core.dll", "NAudio.Wasapi.dll" };
+            System.Text.StringBuilder bad = null;
+            for (int i = 0; i < names.Length; i++)
+            {
+                string path;
+                try { path = Path.Combine(exeDir, names[i]); } catch { continue; }
+                if (!File.Exists(path)) continue;          // 单文件分发: 正常情况, 无需提示
+
+                byte[] disk;
+                try { disk = File.ReadAllBytes(path); } catch { continue; }
+
+                bool same;
+                try
+                {
+                    using (var s = Assembly.GetExecutingAssembly().GetManifestResourceStream(names[i]))
+                    {
+                        if (s == null) continue;           // 没嵌入 (实际会被 CheckEmbeddedAudioResources 拦在构建期)
+                        // 长度就不同的情况占多数, 先比长度可以省掉读取 ~350KB 资源
+                        same = s.Length == disk.Length && SameBytes(disk, ReadAll(s));
+                    }
+                }
+                catch { continue; }
+
+                if (same) continue;
+
+                if (bad == null) bad = new System.Text.StringBuilder();
+                if (bad.Length > 0) bad.Append("; ");
+                bad.Append(names[i]).Append("（同目录那份版本 ").Append(VersionOfFile(path)).Append('）');
+            }
+            if (bad == null) return null;
+            return "同目录的 NAudio dll 与内嵌副本不一致: " + bad +
+                   "。CLR 会优先加载同目录那份 —— 若不是你自己替换的，请删掉同目录的 dll 让程序用内嵌副本";
+        }
+
+        static bool SameBytes(byte[] a, byte[] b)
+        {
+            if (a == null || b == null) return false;
+            if (a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+            return true;
+        }
+
+        static byte[] ReadAll(Stream s)
+        {
+            var ms = new MemoryStream();
+            s.CopyTo(ms);
+            return ms.ToArray();
+        }
+
+        /// <summary>
+        /// 读磁盘上那个 dll 的版本 (只读 Win32 版本资源, 不把程序集装进 CLR)。
+        /// <para>内嵌副本的版本**故意不读**: 唯一能读到它的办法是
+        /// <c>Assembly.ReflectionOnlyLoad(byte[])</c>, 而它会把同名程序集装进 reflection-only
+        /// 上下文; 单文件模式下同一个程序集随后还要以正常上下文加载 (AssemblyResolve →
+        /// <c>Assembly.Load(byte[])</c>), 两个上下文互斥, 顺序一错就是"程序起不来"。
+        /// 为了告警文案里多一个版本号去冒这个险不值得 —— 报同目录那份的版本已足够定位。</para>
+        /// </summary>
+        static string VersionOfFile(string path)
+        {
+            try
+            {
+                var v = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+                if (v == null) return "?";
+                if (!string.IsNullOrEmpty(v.FileVersion)) return v.FileVersion;
+                if (!string.IsNullOrEmpty(v.ProductVersion)) return v.ProductVersion;
+                return "?";
+            }
+            catch { return "?"; }
+        }
 
         /// 静态构造里就装上解析器: 它早于 Main 执行, 覆盖"JIT 阶段就可能需要 NAudio"的情形。
         static Program()
@@ -138,7 +239,23 @@ namespace StereoSplitter
             // 非 GUI 命令: 附加父控制台以便输出可见
             try { AttachConsole(ATTACH_PARENT_PROCESS); } catch { }
 
-            string logDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log");
+            // R-04: 与 GUI 共用同一套落位规则 (便携优先, exe 目录不可写则退 LOCALAPPDATA),
+            // 否则 CLI 把报告写在一处、GUI 的日志在另一处, 排障时对不上。
+            string logDir = Infrastructure.AppPaths.LogDir;
+
+            // R-04: CLI 也把落位与 dll 一致性说清楚 —— 否则"报告写在哪"要靠猜,
+            // 而同目录 dll 与内嵌副本不一致时行为差异最难排查
+            try
+            {
+                string note = Infrastructure.AppPaths.ResolveNote;
+                if (!string.IsNullOrEmpty(note)) Console.WriteLine("[提示] " + note);
+                Console.WriteLine("[环境] 目录: " + Infrastructure.AppPaths.DataDir +
+                                  (Infrastructure.AppPaths.IsPortable ? " (便携)" : " (用户数据目录)"));
+                string dllNote = AudioDllWarning;
+                if (!string.IsNullOrEmpty(dllNote)) Console.WriteLine("[警告] " + dllNote);
+            }
+            catch { }
+
             switch (p.Cmd)
             {
                 case Command.SelfTest:

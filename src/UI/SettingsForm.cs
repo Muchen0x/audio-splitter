@@ -33,6 +33,8 @@ namespace StereoSplitter
 
         readonly Font titleFont = new Font("Microsoft YaHei UI", 10F);
         readonly Font hintFont = new Font("Microsoft YaHei UI", 8.25F);
+        // R-02: 窗体基准字体也收成字段, 才能在 Dispose 里释放 (原先直接 Font = new Font(...))
+        readonly Font formFont = new Font("Microsoft YaHei UI", 9F);
         static readonly Color HintColor = Color.FromArgb(120, 126, 136);
         static readonly Color TitleColor = Color.FromArgb(44, 44, 42);
 
@@ -43,7 +45,7 @@ namespace StereoSplitter
         public SettingsForm(Control[] controls)
         {
             Text = "设置 - Audio Splitter";
-            Font = new Font("Microsoft YaHei UI", 9F);
+            Font = formFont;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -239,11 +241,25 @@ namespace StereoSplitter
             base.OnFormClosing(e);
         }
 
+        /// <summary>
+        /// 两件事放进同一个 Dispose, 顺序不能调:
+        /// <list type="number">
+        /// <item>控件必须**先**return 回主界面再 base.Dispose —— 这些控件是本窗体临时收养的,
+        /// 跟着一起销毁就是把主界面拆了。即使调用方没来得及搬回也要兜底。</item>
+        /// <item>字体必须**后**放 —— base.Dispose 让子控件走完销毁流程, 它们还要用 Font 量文字。
+        /// 设置页每打开一次就是一个新实例 (见 MainForm.OpenSettings), 而 <c>Control.Dispose</c>
+        /// **不**释放 Font (只释放自己缓存的 HFONT), 不管就是每开一次漏三个 GDI 句柄。</item>
+        /// </list>
+        /// </summary>
         protected override void Dispose(bool disposing)
         {
             // 兜底: 即使调用方没来得及搬回, 也不能让主界面的控件跟着一起被销毁
             if (disposing) ReturnControls();
             base.Dispose(disposing);
+            if (!disposing) return;
+            try { formFont.Dispose(); } catch { }
+            try { titleFont.Dispose(); } catch { }
+            try { hintFont.Dispose(); } catch { }
         }
     }
 }

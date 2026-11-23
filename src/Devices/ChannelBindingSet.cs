@@ -142,6 +142,42 @@ namespace StereoSplitter.Devices
             sinkOrder.Clear();
         }
 
+        /// <summary>
+        /// 只解除**不在** <paramref name="wanted"/> 里的输出端点绑定 (restore=true 时还原音量/静音)。
+        ///
+        /// <para>用途: 运行中"某张卡片换了设备"只需要动离开集合的那一台。全量 <see cref="UnbindSinks"/>
+        /// 的做法是先把**所有**设备还原一遍 (每台 4 次 COM 调用: 读音量 → 写音量 → 写静音 → 回读),
+        /// 再把它们 Dispose 掉、随后又逐个 <c>catalog.Open</c> 重新激活端点并重新订阅通知 —— 实际变化的
+        /// 只有 1 台, 代价却是 O(N)。N 台输出设备时这一步能卡住 UI 线程几百毫秒。</para>
+        ///
+        /// <para>留下的绑定保持**原对象**: 通知订阅不断、<see cref="baselines"/> 一个字节都不动,
+        /// 因此"停止时还原到分流开始前的音量"这一语义不受影响 (基线本来就只在该设备真正离开时
+        /// 才由 <see cref="RestoreWithLog"/> 消费掉)。</para>
+        /// </summary>
+        public void RetainSinks(ICollection<string> wanted, bool restore)
+        {
+            if (wanted == null) { UnbindSinks(restore); return; }
+
+            // 先收集再删除: 不能在遍历 sinkOrder 的同时 Remove 它
+            List<string> drop = null;
+            for (int i = 0; i < sinkOrder.Count; i++)
+                if (!wanted.Contains(sinkOrder[i]))
+                {
+                    if (drop == null) drop = new List<string>();
+                    drop.Add(sinkOrder[i]);
+                }
+            if (drop == null) return;
+
+            for (int i = 0; i < drop.Count; i++)
+            {
+                string id = drop[i];
+                EndpointVolumeBinding b;
+                if (sinks.TryGetValue(id, out b)) UnbindOne(b, restore);
+                sinks.Remove(id);
+                sinkOrder.Remove(id);
+            }
+        }
+
         // ---------------- 写入 ----------------
 
         /// <summary>按 UI 权威值写入主端点 (主音量 + 捕获消音)。</summary>

@@ -39,6 +39,13 @@ namespace StereoSplitter
     sealed class LatencyCalibrationForm : Form
     {
         /// <summary>
+        /// 窗体基准字体。R-02 的同类问题: 原先每次校准都 <c>new Font(...)</c>, 而
+        /// <c>Control.Dispose</c> 不释放 Font (只释放它缓存的 HFONT), 于是每开一次校准窗
+        /// 就漏一个 GDI 字体句柄。改成进程内唯一实例 —— 校准窗可能开很多次, 字体只需一份。
+        /// </summary>
+        static readonly Font BaseFont = new Font("Microsoft YaHei UI", 9F);
+
+        /// <summary>
         /// 每一路测几段。这些段在**同一个播放流**里连着走 (前面另有 2 段预热不计),
         /// 取中位数。不再按"轮次 × 路"交替: 交替意味着每测一次就要重开一次流,
         /// 而蓝牙端点每次重开都要重新建链, 那是在测冷启动延迟。
@@ -85,7 +92,7 @@ namespace StereoSplitter
             MinimizeBox = false;
             ShowInTaskbar = false;
             ClientSize = new Size(580, 520);
-            Font = new Font("Microsoft YaHei UI", 9F);
+            Font = BaseFont;
 
             BuildUi();
             ReloadMics();

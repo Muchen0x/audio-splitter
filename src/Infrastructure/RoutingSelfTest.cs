@@ -38,6 +38,7 @@ namespace StereoSplitter
                 CaseTwoLanesTwoDevices,
                 CaseTwoLanesOneDevice,
                 CaseThreeDevicesShareClock,
+                CaseClockGroupSplit,
                 CaseSurroundThreeDevices,
                 CaseSurroundOneDevice,
                 CaseTwoPointOne,
@@ -491,6 +492,54 @@ namespace StereoSplitter
             Check("全部 g0",
                 m.SinkSpecs[0].ClockGroupId == "g0" && m.SinkSpecs[1].ClockGroupId == "g0" &&
                 m.SinkSpecs[2].ClockGroupId == "g0");
+        }
+
+        /// <summary>
+        /// R-03: 共享时钟组有硬上限 (<see cref="ClockGroup.MaxMembers"/>, 成员数组定长)。
+        /// 单/立体声规格下设备数超过上限时必须切成多个组 —— 全塞进 "g0" 会让第 9 台起的
+        /// memberId 被钳在 8: 不进共享平均、自己的欠载不联动别人、却仍被 OtherHolding
+        /// 无理由压低 6dB, 而且 TrimGroup 只削 0..7, 它的相对时间轴会与组内其它路永久错位
+        /// (共享 ratio 只能保证此后同速, 补不回已丢的那段) —— 正是 F-01 要防的故障。
+        /// </summary>
+        static void CaseClockGroupSplit()
+        {
+            int n = ClockGroup.MaxMembers + 2;                 // 10 台
+            Begin("立体声规格 / 设备数超时钟组上限 " + ClockGroup.MaxMembers + " → 分多组");
+            var lanes = new List<OutputLane>();
+            for (int i = 0; i < n; i++)
+            {
+                string dev = "dev" + i;
+                lanes.Add(Lane("FL", dev, 0, 100));
+                lanes.Add(Lane("FR", dev, 0, 100));
+            }
+            bool conflict;
+            var m = LaneRouting.Build(lanes, 1, 0, null, out conflict);
+
+            Check("设备全部保留 " + n + " 路", m.SinkSpecs.Count == n);
+
+            // 按引擎的真实编号规则 (AudioEngine.StartCoreInner: memberId = 组内已有成员数)
+            // 复演一遍, 断言没有任何一路会越界 —— 这才是"不再静默脱管"的直接判据。
+            var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+            bool anyEmpty = false, idInRange = true;
+            for (int i = 0; i < m.SinkSpecs.Count; i++)
+            {
+                string gid = m.SinkSpecs[i].ClockGroupId;
+                if (string.IsNullOrEmpty(gid)) { anyEmpty = true; continue; }
+                int id;
+                counts.TryGetValue(gid, out id);
+                if (id >= ClockGroup.MaxMembers) idInRange = false;
+                counts[gid] = id + 1;
+            }
+
+            Check("每路都有时钟组 ID", !anyEmpty);
+            Check("按引擎编号规则无一路越界", idInRange);
+            Check("切成 2 组", counts.Count == 2);
+            bool withinCap = true;
+            foreach (var kv in counts) if (kv.Value > ClockGroup.MaxMembers) withinCap = false;
+            Check("每组不超过 " + ClockGroup.MaxMembers + " 路", withinCap);
+            Check("第 1 台在 g0", m.SinkSpecs[0].ClockGroupId == "g0");
+            Check("第 " + (ClockGroup.MaxMembers + 1) + " 台已另起一组",
+                m.SinkSpecs[ClockGroup.MaxMembers].ClockGroupId != "g0");
         }
 
         /// <summary>同一设备上两张卡片延迟不同: 取最小并报冲突 (内核每路只有一条延迟线)。</summary>

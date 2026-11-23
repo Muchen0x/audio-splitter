@@ -73,6 +73,11 @@ namespace StereoSplitter
 
         readonly List<SlotRow> rows = new List<SlotRow>();
 
+        // R-02: ToolTip 是独立的 TOOLTIPS_CLASS 原生窗口, 不是本控件的子控件 ——
+        // 每张卡片一个, 而 RebuildCards 只 Dispose 卡片本身, 连带不到它。
+        // 收进字段, 由 Dispose(bool) 显式释放。
+        readonly ToolTip tip;
+
         bool syncing;
         /// <summary>运行中: 单/多声道形态不可切（会改设备的物理声道数 = 链路级）。</summary>
         bool shapeLocked;
@@ -245,12 +250,27 @@ namespace StereoSplitter
                 if (h != null) h(this);
             };
 
-            var tip = new ToolTip();
+            tip = new ToolTip();
             tip.SetToolTip(cmbDevice, "这张卡片输出到哪台设备。\n同一台设备只会有一张卡片: 两张卡片选到同一设备会自动合并成多声道卡片。\n运行中不可改（换设备要重建链路），需先停止分流。");
             tip.SetToolTip(cmbChannel, "这张卡片输出的声道。\n选「多声道」= 该设备的每个物理声道各占一行, 行内可分别选声道、分别调音量。\n角标: 规格行右侧的数字 = 有几个物理声道接到该声道。\n运行中可改（只换混音矩阵）；但「多声道…」形态要改设备物理声道数，运行中不可切。");
             tip.SetToolTip(nudDelay, "这张卡片的延迟补偿 (毫秒)。多台设备距离不同时, 给近的加延迟对齐声场。\n上下按钮 / ↑↓ 每次 ±10ms, 也可直接输入数字。\n滚轮在这里不生效(避免误滚把声场拖偏), 但会照常滚动输出卡片列表。\n延迟是设备级: 合并后取原卡片里的最小值。\n运行中可改: 加延迟本路会停顿一下(约等于增量), 减延迟会跳过一小段, 其余不受影响。");
             tip.SetToolTip(volTrack, "主音量。\n单声道卡片: 写该设备的端点音量(与系统音量条双向同步, 停止时还原)。\n多声道卡片: 同样是设备端点音量; 各声道的微调在下方各行。\n双击百分比可复位 100%。\n运行中可调。");
             tip.SetToolTip(btnRemove, "移除这张输出卡片 (整台设备)。\n运行中不可移除（会改变链路），需先停止分流。");
+        }
+
+        /// <summary>
+        /// R-02: 卡片被重建时 (RebuildCards / 切换规格 / 合并同设备) 释放 ToolTip。
+        /// 原生 TOOLTIPS_CLASS 窗口有 finalizer, 但 Gen0/Gen1 在低内存压力机器上很少触发,
+        /// 句柄会长期滞留; 反复增删卡片时累积最明显。
+        /// </summary>
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && tip != null)
+            {
+                try { tip.RemoveAll(); } catch { }
+                try { tip.Dispose(); } catch { }
+            }
+            base.Dispose(disposing);
         }
 
         /// <summary>行数 (多声道行; 单声道为 0)。</summary>

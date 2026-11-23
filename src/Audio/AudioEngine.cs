@@ -33,6 +33,15 @@ namespace StereoSplitter
         readonly List<SinkRuntime> sinks = new List<SinkRuntime>();
         RoutingModel routing;
 
+        // R-01: 已打开、但所有权还没移交给 SinkRuntime 的端点。
+        // 端点的所有权链是 "StartCore 局部 devs → SinkRuntime.Device → TeardownPipeline",
+        // 移交发生在 SinkRuntime 构造成功那一刻。在此之前抛异常 (Init 失败/端点被独占/
+        // 取消), 调用方只能 Dispose 引擎, 而 Dispose 只认 sinks 字段 —— 看不到这些局部变量,
+        // 端点就漏到 GC 收 RCW 为止 (期间设备可能"无法停用/无法移除/枚举变慢")。
+        // 这里把"建一台就登记一台"补上, 失败路径由 AbortStartup 统一回收。
+        readonly List<MMDevice> pendingDevs = new List<MMDevice>();
+        readonly object devGate = new object();   // start 线程与关窗线程都会碰 pendingDevs
+
         bool splitErrLogged = false;
         volatile bool silentStartup = false;
         int firstDataLogged = 0;
@@ -218,7 +227,70 @@ namespace StereoSplitter
             return StartCore(model, gain, master, prebufferMs, outLatencyMs, aborted, expectedCaptureId);
         }
 
+        /// <summary>
+        /// 启动的公共入口 —— 只负责"失败必回滚", 装配细节全在 StartCoreInner。
+        /// R-01: 原实现没有 try/catch, 回滚责任被推给调用方; 调用方 (MainForm.Engine.cs)
+        /// 只能 Dispose 引擎, 而引擎的 Dispose 只遍历 sinks 字段, 于是:
+        /// 第 i 路构造失败时 devs[0..i-1] 在 sinks 里能被回收, devs[i..] 无人释放;
+        /// 若失败点在 new WasapiLoopbackCapture 之前, devs 全部泄漏。
+        /// 设备被独占 / 蓝牙未就绪 / USB 刚插上 —— 正是 MaxAutoRestart=3 反复踩的路径。
+        /// </summary>
         StartOutcome StartCore(RoutingModel model, float gain, float master, int prebufferMs, int outLatencyMs,
+            Func<bool> aborted, string expectedCaptureId)
+        {
+            try
+            {
+                return StartCoreInner(model, gain, master, prebufferMs, outLatencyMs, aborted, expectedCaptureId);
+            }
+            catch
+            {
+                AbortStartup();
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 启动失败后的就地回滚: 先放"尚未移交给 SinkRuntime"的端点, 再走正常 Dispose 收掉
+        /// 已经装配起来的链路。Dispose 内部由 LifecycleGate 认领唯一一次释放, 重复调用安全
+        /// (调用方 catch 里还会再 Dispose 一次, 第二次直接返回), 所以这里不必关心谁先谁后。
+        /// </summary>
+        void AbortStartup()
+        {
+            ReleasePendingDevices();
+            try { Dispose(); } catch { }
+        }
+
+        /// <summary>
+        /// 回收全部未移交端点。start 线程与关窗线程都可能走到, 用锁保护。
+        /// 出锁前先拷一份再放, 不持锁调 COM —— 释放端点是同步调用, 没必要占着锁。
+        /// </summary>
+        void ReleasePendingDevices()
+        {
+            MMDevice[] left = null;
+            lock (devGate)
+            {
+                if (pendingDevs.Count > 0)
+                {
+                    left = pendingDevs.ToArray();
+                    pendingDevs.Clear();
+                }
+            }
+            if (left == null) return;
+            for (int i = 0; i < left.Length; i++)
+                if (left[i] != null) { try { left[i].Dispose(); } catch { } }
+        }
+
+        /// <summary>某端点已随 SinkRuntime 构造成功一起移交 (释放责任归它), 从待回收清单摘掉。</summary>
+        void HandOffDevice(MMDevice dev)
+        {
+            lock (devGate)
+            {
+                int at = pendingDevs.IndexOf(dev);
+                if (at >= 0) pendingDevs.RemoveAt(at);
+            }
+        }
+
+        StartOutcome StartCoreInner(RoutingModel model, float gain, float master, int prebufferMs, int outLatencyMs,
             Func<bool> aborted, string expectedCaptureId)
         {
             specs.Clear();
@@ -236,7 +308,14 @@ namespace StereoSplitter
                 if (missing != null)
                     throw new AudioDeviceException(missing + "不可用（可能已拔出或被禁用），请刷新设备后重试");
 
-                for (int i = 0; i < specs.Count; i++) devs.Add(enumerator.GetDevice(specs[i].DeviceId));
+                for (int i = 0; i < specs.Count; i++)
+                {
+                    var d = enumerator.GetDevice(specs[i].DeviceId);
+                    devs.Add(d);
+                    // R-01: 建一台就登记一台。GetDevice 本身也可能在第 k 台抛, 分两次记账
+                    // (先全建完再登记) 会让前 k-1 台漏在 pendingDevs 之外。
+                    lock (devGate) pendingDevs.Add(d);
+                }
                 captureDev = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
             }
             finally { try { enumerator.Dispose(); } catch { } }
@@ -310,12 +389,17 @@ namespace StereoSplitter
                 ClockGroup g = memberGroup[i];
                 var sink = new SinkRuntime(specs[i], devs[i], wf, driftTargetSamples, fillTargetSamples,
                     outLatencyMs, driftMode, fixedPpm, memberId[i], g, LogThrottled);
+                // R-01: 构造成功这一刻端点所有权已归 sink, 立刻"摘登记 + 入列"。
+                // 后面几行 (矩阵/增益/订阅) 万一抛出, AbortStartup→Dispose 才能顺着 sinks
+                // 找到这个半装配对象, 由它的 Dispose 连带释放端点 —— 若等赋完值再入列,
+                // 中间任何一步抛出都是"端点已移交、对象却没人引用", 两头都不释放。
+                HandOffDevice(devs[i]);
+                sinks.Add(sink);
                 sink.Matrix = compiled.SinkMatrix[i];
                 sink.SetGain(gain);
                 sink.SetMaster(master);
                 // 单路重建时管线会被整体换掉, 所以订阅挂在 SinkRuntime 上 (只订一次), 而不是挂在 WasapiOut 实例上
                 sink.OutputStopped += OnSinkOutputStopped;
-                sinks.Add(sink);
             }
             if (anyBt && outLatencyMs < 20)
                 log("[提示] 蓝牙端点使用 " + outLatencyMs + "ms 输出缓冲偏紧；若链路上偶发\"咔哒\"，把「延迟」档位调到 25ms/20ms 或更高");
@@ -404,8 +488,16 @@ namespace StereoSplitter
             }
 
             silentStartup = (outcome == StartOutcome.NoAudioYet);
+            // R-03: maxGroupSize 是"单组成员数", 分组后它恒 ≤8 —— 只报它会在 9 台设备时
+            // 写成"8 路共享", 与实际 9 路不符, 排障时误导。组数 >1 时把组数一并报出来。
+            string clockText = groups.Count > 1
+                ? groups.Count + " 组共享 (最大 " + maxGroupSize + " 路/组, 每组上限 " + ClockGroup.MaxMembers + ")"
+                : (maxGroupSize > 1 ? maxGroupSize + " 路共享" : "每路独立");
             log("[启动] 时钟漂移补偿: " + (driftMode == 0 ? "关闭" : driftMode == 2 ? "固定 " + fixedPpm + "ppm" : "自适应") +
-                ", 比例上限 ±1% / 时钟组 " + (maxGroupSize > 1 ? maxGroupSize + " 路共享" : "每路独立"));
+                ", 比例上限 ±1% / 时钟组 " + clockText);
+            if (groups.Count > 1)
+                log("[提示] 输出设备超过 " + ClockGroup.MaxMembers + " 台, 已按上限分成 " + groups.Count +
+                    " 个时钟组；跨组之间不共享校正比例（单声道/立体声规格接这么多设备通常意味着该改用多声道规格）");
             if (maxDelay > 0)
                 log("[启动] 延迟补偿: " + JoinPairs(specs, i => specs[i].DelayMs + "ms"));
 
@@ -813,6 +905,9 @@ namespace StereoSplitter
                 }
                 for (int i = 0; i < sinks.Count; i++) sinks[i].Dispose();
                 sinks.Clear();
+                // R-01 兜底: 正常路径下 AbortStartup 已经把这里清空 (空表直接返回, 零开销);
+                // 但将来若新增"先开设备后装配"的路径, 忘了 try/catch 也不会再漏端点。
+                ReleasePendingDevices();
                 if (captureDev != null)
                 {
                     try { captureDev.Dispose(); } catch { }
