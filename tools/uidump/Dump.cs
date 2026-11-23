@@ -609,6 +609,22 @@ namespace StereoSplitter
             RoundedCombo combo = Field(host, field) as RoundedCombo;
             if (combo == null) { Console.Out.WriteLine("COMBO[" + label + "] not found"); return; }
 
+            MeasureComboPopup(combo, label);
+
+            // 再把可见行压到 3 行量一次 —— 这是"必须有滚动条"的分支。
+            // 滚动条现在画在右侧留白里, 弹层宽度不能因此变宽 (以前这里加的是 VerticalScrollBarWidth,
+            // 于是需要滚动时弹层比下拉框本体宽出 17px, 行高亮也铺不满)。
+            int old = combo.MaxDropDownItems;
+            if (combo.Items.Count > 3 && old > 3)
+            {
+                combo.MaxDropDownItems = 3;
+                MeasureComboPopup(combo, label + "-scroll");
+                combo.MaxDropDownItems = old;
+            }
+        }
+
+        static void MeasureComboPopup(RoundedCombo combo, string label)
+        {
             MethodInfo openM = typeof(RoundedCombo).GetMethod("OpenDropDown", BindingFlags.Instance | BindingFlags.NonPublic);
             if (openM == null) { Console.Out.WriteLine("COMBO[" + label + "] OpenDropDown missing"); return; }
             openM.Invoke(combo, null);
@@ -630,14 +646,20 @@ namespace StereoSplitter
 
             int rows = Math.Min(combo.Items.Count, combo.MaxDropDownItems);
             bool fit = list != null && list.Height >= rows * combo.ItemHeight;
-            int listItems = list is ListBox ? ((ListBox)list).Items.Count : -1;
+            // 自绘列表不另存条目副本 → 行数直接来自数据源
+            int listItems = list == null ? -1 : combo.Items.Count;
+            // 弹层必须与本体等宽 (滚动条画在右侧留白里, 不再把窗口撑宽)
+            bool sameW = ts.Width == Math.Max(combo.Width, combo.DropDownWidth);
             Console.Out.WriteLine("COMBO[" + label + "] items=" + combo.Items.Count
                 + " rows=" + rows + " rowH=" + combo.ItemHeight
+                + " scroll=" + (combo.Items.Count > rows ? "yes" : "no")
                 + " popup=" + ts.Size
+                + " comboW=" + combo.Width
                 + " pad=" + ts.Padding.Horizontal + "/" + ts.Padding.Vertical
                 + " list=" + (list == null ? "null" : list.Size.ToString())
                 + " listItems=" + listItems
                 + " region=" + (ts.Region == null ? "NONE" : "rounded")
+                + " sameWidth=" + (sameW ? "ok" : "BAD")
                 + " fit=" + (fit && listItems == combo.Items.Count ? "ok" : "BAD"));
 
             MethodInfo closeM = typeof(RoundedCombo).GetMethod("CloseDropDown", BindingFlags.Instance | BindingFlags.NonPublic);

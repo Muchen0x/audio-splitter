@@ -56,6 +56,14 @@ namespace StereoSplitter
         bool open;
         bool hot;
         int selected = -1;
+
+        /// <summary>
+        /// 当前是否该画焦点描边。
+        /// <para>只在"键盘操作"时画: 鼠标点一下就把蓝框挂在那儿, 用户会当成没擦掉的残留。
+        /// 判据取 <see cref="Control.MouseButtons"/> 而不是自己维护标志位 —— 进入焦点那一刻鼠标键是否按下,
+        /// 正好区分了"点进来"和"Tab 进来"两种来源, 不必在两条路径上各记一笔。</para>
+        /// </summary>
+        bool keyboardFocusCues = true;
         /// <summary>
         /// 单调毫秒时钟。
         /// <para>不用 DateTime: 它会被系统校时改动; 也不用 Environment.TickCount64 —— net48 上没这个成员
@@ -112,7 +120,13 @@ namespace StereoSplitter
 
         public event EventHandler SelectedIndexChanged;
 
-        /// <summary>弹层最小宽度。0 表示与本体同宽 (原生 ComboBox 的默认行为)。</summary>
+        /// <summary>
+        /// 弹层最小宽度。0 (默认) = 与本控件同宽。
+        /// <para>界面里所有下拉都不设这个值: 弹层比本体宽多少, 视觉上就是"两个错开的框",
+        /// 而滚动条也不再撑宽弹层 (改成右侧悬浮细条), 所以宽度天然一致。</para>
+        /// <para>留着这个开关只为将来真有"必须显示超长名字"的场合: 那时加宽是刻意的选择,
+        /// 代价是弹层会突出本体右缘。</para>
+        /// </summary>
         public int DropDownWidth { get; set; }
 
         /// <summary>弹层最多显示多少行, 超过就用滚动条。</summary>
@@ -191,9 +205,11 @@ namespace StereoSplitter
                     g.FillRectangle(b, ClientRectangle);
             }
 
+            // 展开/hover 用"加深的灰", 蓝色只留给键盘焦点。
+            // 鼠标点一下就变蓝、收起后蓝还挂在那儿, 看起来就是"焦点框残留在框上" (见 keyboardFocusCues)。
             Color border = !Enabled ? BorderNormal
-                         : (open || Focused) ? BorderActive
-                         : hot ? BorderHot
+                         : (Focused && keyboardFocusCues) ? BorderActive
+                         : (open || hot) ? BorderHot
                          : BorderNormal;
 
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
@@ -217,7 +233,9 @@ namespace StereoSplitter
                     | TextFormatFlags.SingleLine);
             }
 
-            DrawChevron(g, !Enabled ? DisabledText : (hot || open || Focused) ? ArrowHot : ArrowNormal);
+            DrawChevron(g, !Enabled ? DisabledText
+                             : (hot || open || (Focused && keyboardFocusCues)) ? ArrowHot
+                             : ArrowNormal);
         }
 
         /// <summary>
@@ -265,7 +283,14 @@ namespace StereoSplitter
             ToggleDropDown();
         }
 
-        protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+        protected override void OnGotFocus(EventArgs e)
+        {
+            // 到这一刻左键还按着 → 是"点进来"的; 键已松开 → 是 Tab / 程序化进来的, 该给焦点提示
+            keyboardFocusCues = Control.MouseButtons == MouseButtons.None;
+            Invalidate();
+            base.OnGotFocus(e);
+        }
+
         protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
         protected override void OnEnabledChanged(EventArgs e)
         {
@@ -354,6 +379,10 @@ namespace StereoSplitter
         internal bool HandleKey(Keys keyData)
         {
             if (!Enabled) return false;
+
+            // 鼠标点开之后接着用键盘 → 把焦点提示补回来 (否则键盘用户看不到焦点落在哪)
+            if (!keyboardFocusCues) { keyboardFocusCues = true; Invalidate(); }
+
             Keys k = keyData & Keys.KeyCode;
             bool alt = (keyData & Keys.Alt) != 0;
 
@@ -462,6 +491,8 @@ namespace StereoSplitter
                 popup = null;
                 open = false;
                 Invalidate();
+                // 立刻重画: 边框要从"展开色"退回常态, 拖到下一拍才画的话, 收起瞬间会看到旧描边一闪
+                Update();
                 // 这次是"外部原因"收起的 (点别处 / 点本体 / Esc): 记下时刻, 让紧随其后的点击别再打开
                 lastAutoClose = NowMs();
             }
@@ -484,6 +515,7 @@ namespace StereoSplitter
             popup = null;
             open = false;
             Invalidate();
+            Update();          // 同 OnPopupClosed: 描边当场退回常态, 不留一帧旧色
             try { p.Close(); } catch { }
         }
 
@@ -503,14 +535,15 @@ namespace StereoSplitter
             }
         }
 
-        /// <summary>弹层尺寸: 高 = 行数×行高 + 上下留白, 宽取本体与 DropDownWidth 的较大者。</summary>
+        /// <summary>
+        /// 弹层尺寸: 高 = 行数×行高 + 上下留白, 宽 = 本体宽度 (或显式指定的 <see cref="DropDownWidth"/>)。
+        /// <para>这里不再为滚动条加宽: 滚动条画在列表右侧的留白里 (见 <see cref="ComboRowList"/>),
+        /// 所以需要滚动时弹层也不会比本体宽出一截。</para>
+        /// </summary>
         Size PopupSize()
         {
             int rows = Math.Max(1, Math.Min(Items.Count, MaxDropDownItems));
-            bool scrolled = Items.Count > rows;
-
             int w = Math.Max(Width, DropDownWidth);
-            if (scrolled) w += SystemInformation.VerticalScrollBarWidth;  // 别让滚动条盖住文字
 
             int h = rows * ItemHeight + PopupPadY * 2 + 2;                 // +2 = 左右各 1px 边框
             return new Size(w, h);
@@ -601,18 +634,12 @@ namespace StereoSplitter
             Size = size;
             Renderer = new PopupRenderer();
 
+            // 列表直接回查 owner.Items, 不再保存一份文字副本: 自绘列表用 "行号 = (y / 行高) + 首行"
+            // 定位, 不依赖 ListBox 的 IndexFromPoint (那份副本一旦忘填, 表现就是"能展开但点哪行都没反应")。
             List = new ComboRowList(owner)
             {
                 Size = new Size(size.Width - 2, size.Height - 8 - 2)
             };
-            // 列表里的"条目"只用来撑出行数与做命中计算, 真正的文字由 ComboRowList.OnDrawItem
-            // 回查 owner 拿 —— 但必须真的放进等量条目, 否则 IndexFromPoint 永远返回 -1 (点不动)。
-            if (owner.Items.Count > 0)
-            {
-                var texts = new object[owner.Items.Count];
-                for (int i = 0; i < texts.Length; i++) texts[i] = owner.ItemTextAt(i);
-                List.Items.AddRange(texts);
-            }
             var host = new ToolStripControlHost(List)
             {
                 Margin = Padding.Empty,
@@ -629,14 +656,7 @@ namespace StereoSplitter
 
         internal void Highlight(int index)
         {
-            if (List.Items.Count == 0) return;
-            int i = Math.Max(0, Math.Min(List.Items.Count - 1, index));
-            List.SelectedIndex = i;
-
-            int rowH = Math.Max(1, List.ItemHeight);
-            int visible = Math.Max(1, List.ClientSize.Height / rowH);
-            if (i < List.TopIndex) List.TopIndex = i;
-            else if (i >= List.TopIndex + visible) List.TopIndex = i - visible + 1;
+            List.Highlight(index);
         }
 
         /// <summary>把滚轮消息转给列表 (下拉展开时滚的是选项, 不是卡片区)。</summary>
@@ -721,61 +741,189 @@ namespace StereoSplitter
 
     /// <summary>
     /// 弹层里的自绘列表。
-    /// <para>用 ListBox 是为了白拿滚动条与"点哪行选哪行"的命中计算; 但它的背景/文字全部自己画,
-    /// 因为系统那套蓝底高亮与界面配色对不上。</para>
+    ///
+    /// <para><b>为什么不是 ListBox</b>: ListBox 是原生控件, WinForms 的
+    /// <c>SetStyle(OptimizedDoubleBuffer)</c> 管不到它的重绘路径 —— 鼠标每换一行都要"擦背景再逐行画",
+    /// 双缓冲完全失效, 于是悬停时整块列表肉眼可见地闪。自己画十行以内的文字, 代码更短、完全可控,
+    /// 顺带能把滚动条换成右侧悬浮细条 (不再撑宽弹层)。</para>
+    ///
+    /// <para><b>数据源只有一个</b>: 行数与文字都直接读 <see cref="RoundedCombo.Items"/>, 命中按
+    /// "行号 = y / 行高 + 首行"算, 不另存副本 —— ListBox 那套 IndexFromPoint 依赖列表里真有等量条目,
+    /// 忘填时表现为"能展开但点哪行都没反应", 查起来很费劲。</para>
     /// </summary>
-    sealed class ComboRowList : ListBox
+    sealed class ComboRowList : Control
     {
         internal readonly RoundedCombo Owner;
+
+        /// <summary>鼠标下的行 (-1 = 不在任何行上)。</summary>
         int hot = -1;
+        /// <summary>高亮行: 展开期间 ↑↓ 移动的是它, 回车/点击才落地。</summary>
+        int sel = -1;
+        /// <summary>首行对应的条目索引, 也就是滚动位置。</summary>
+        int top;
+
+        /// <summary>右侧留给滚动条的宽度。文字区固定让出这么多, 免得滚动条一出现文字就重排跳动。</summary>
+        const int ScrollZone = 8;
+        const int ScrollBarW = 4;
+        const int ScrollBarMinH = 18;
+        static readonly Color ScrollBarColor = Color.FromArgb(198, 203, 211);
 
         public ComboRowList(RoundedCombo owner)
         {
             Owner = owner;
-            BorderStyle = BorderStyle.None;
-            DrawMode = DrawMode.OwnerDrawFixed;
-            ItemHeight = Math.Max(12, owner.ItemHeight);
-            IntegralHeight = false;
             BackColor = Color.White;
-            ForeColor = RoundedCombo.RowSelected;
             TabStop = false;
-            // 不参与焦点: 焦点留在下拉框本体上, 键盘才有一条统一的处理链 (见 ComboPopup.ProcessCmdKey)
+            // UserPaint 必须开: 只有它能让 WinForms 走自己的双缓冲绘制路径。
+            // 少了这一位, 后面两个 SetStyle 对原生控件等于没写 (见类注释)。
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            // 不参与焦点: 焦点留在下拉框本体上, 键盘只有一条处理链 (见 ComboPopup.ProcessCmdKey)
             SetStyle(ControlStyles.Selectable, false);
-            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
         }
 
-        protected override void OnDrawItem(DrawItemEventArgs e)
+        int RowH { get { return Math.Max(12, Owner.ItemHeight); } }
+        int Count { get { return Owner.Items.Count; } }
+        int VisibleRows { get { return Math.Max(1, Height / RowH); } }
+        bool NeedsScroll { get { return Count > VisibleRows; } }
+
+        /// <summary>当前高亮行 (提交选中项时读它)。</summary>
+        internal int SelectedIndex { get { return sel; } }
+
+        // ================= 滚动 / 高亮 =================
+
+        internal void Highlight(int index)
+        {
+            if (Count == 0) return;
+            sel = Math.Max(0, Math.Min(Count - 1, index));
+            EnsureVisible(sel);
+            Invalidate();
+        }
+
+        void EnsureVisible(int i)
+        {
+            if (i < 0) return;
+            if (i < top) top = i;
+            else if (i >= top + VisibleRows) top = i - VisibleRows + 1;
+            ClampTop();
+        }
+
+        void ClampTop()
+        {
+            int max = Math.Max(0, Count - VisibleRows);
+            if (top > max) top = max;
+            if (top < 0) top = 0;
+        }
+
+        void ScrollBy(int rows)
+        {
+            if (!NeedsScroll || rows == 0) return;
+            int before = top;
+            top += rows;
+            ClampTop();
+            if (top != before) Invalidate();
+        }
+
+        /// <summary>鼠标位置对应的条目索引; 不在行上、或压在滚动条上都返回 -1。</summary>
+        int HitTest(Point p)
+        {
+            if (p.Y < 0 || p.Y >= Height) return -1;
+            if (NeedsScroll && p.X >= Width - ScrollZone) return -1;   // 滚动条区不当作选行
+            int i = top + p.Y / RowH;
+            return (i >= 0 && i < Count) ? i : -1;
+        }
+
+        // ================= 绘制 =================
+
+        protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
-            bool sel = e.Index == SelectedIndex;
-            Color back = sel ? RoundedCombo.RowSelected : (e.Index == hot ? RoundedCombo.RowHover : Color.White);
-            using (var b = new SolidBrush(back))
-                g.FillRectangle(b, e.Bounds);
+            int rowH = RowH;
+            int count = Count;
+            int visible = VisibleRows;
 
-            bool gray = !Owner.Enabled
-                || (Owner.ItemGrayedFilter != null && Owner.ItemGrayedFilter(e.Index));
+            using (var b = new SolidBrush(Color.White))
+                g.FillRectangle(b, ClientRectangle);
 
-            // 选中项用灰底 + 正常深色文字: 灰底上放白字看不清, 而加粗会让行高显得不匀
-            var r = new Rectangle(e.Bounds.X + RoundedCombo.TextPadX, e.Bounds.Y,
-                Math.Max(0, e.Bounds.Width - RoundedCombo.TextPadX - 6), e.Bounds.Height);
-            TextRenderer.DrawText(g, Owner.ItemTextAt(e.Index), Font, r,
-                gray ? RoundedCombo.DisabledText : Color.FromArgb(32, 32, 32),
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter
-                | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix
-                | TextFormatFlags.SingleLine);
+            // 文字右界固定在滚动条左边: 有滚动条时也不跟着缩, 行宽不会有"多出/少掉一截"的观感
+            int textW = Math.Max(0, Width - RoundedCombo.TextPadX - ScrollZone);
+            for (int r = 0; r < visible; r++)
+            {
+                int i = top + r;
+                if (i >= count) break;
+
+                var row = new Rectangle(0, r * rowH, Width, rowH);
+                Color back = i == sel ? RoundedCombo.RowSelected
+                            : i == hot ? RoundedCombo.RowHover
+                            : Color.White;
+                if (back != Color.White)
+                    using (var b2 = new SolidBrush(back))
+                        g.FillRectangle(b2, row);
+
+                bool gray = !Owner.Enabled
+                    || (Owner.ItemGrayedFilter != null && Owner.ItemGrayedFilter(i));
+                // 选中项用灰底 + 正常深色文字: 灰底上放白字看不清, 而加粗会让行高显得不匀
+                TextRenderer.DrawText(g, Owner.ItemTextAt(i), Font,
+                    new Rectangle(RoundedCombo.TextPadX, row.Y, textW, rowH),
+                    gray ? RoundedCombo.DisabledText : Color.FromArgb(32, 32, 32),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter
+                    | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix
+                    | TextFormatFlags.SingleLine);
+            }
+
+            DrawScrollBar(g, count, visible);
         }
+
+        /// <summary>
+        /// 右侧滚动条: 4px 圆角细条, 悬浮在留白里。
+        /// <para>不占布局宽度, 所以弹层宽度永远等于下拉框本体宽度 (原生滚动条会把弹层撑宽 17px)。</para>
+        /// </summary>
+        void DrawScrollBar(Graphics g, int count, int visible)
+        {
+            if (count <= visible) return;
+            int h = Height;
+            int thumbH = Math.Max(ScrollBarMinH, (int)((long)h * visible / count));
+            if (thumbH > h) thumbH = h;
+            int maxTop = Math.Max(1, count - visible);
+            int y = (int)((long)(h - thumbH) * top / maxTop);
+
+            var r = new Rectangle(Width - ScrollBarW - 2, y, ScrollBarW, thumbH);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var path = UiDraw.RoundRect(r, ScrollBarW / 2))
+            using (var b = new SolidBrush(ScrollBarColor))
+                g.FillPath(b, path);
+        }
+
+        // ================= 鼠标 =================
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
-            int i = IndexFromPoint(e.Location);
-            if (i != hot) { hot = i; Invalidate(); }
+            int i = HitTest(e.Location);
+            if (i != hot) SetHot(i);
             base.OnMouseMove(e);
         }
 
         protected override void OnMouseLeave(EventArgs e)
         {
-            if (hot != -1) { hot = -1; Invalidate(); }
+            if (hot != -1) SetHot(-1);
             base.OnMouseLeave(e);
+        }
+
+        /// <summary>只失效变化的那两行 —— 整块重绘虽然不闪, 但没必要。</summary>
+        void SetHot(int i)
+        {
+            int rowH = RowH;
+            int old = hot;
+            hot = i;
+            InvalidateRow(old, rowH);
+            InvalidateRow(i, rowH);
+        }
+
+        void InvalidateRow(int i, int rowH)
+        {
+            if (i < 0 || i < top) return;
+            int y = (i - top) * rowH;
+            if (y >= Height) return;
+            Invalidate(new Rectangle(0, y, Width, rowH));
         }
 
         /// <summary>
@@ -787,8 +935,24 @@ namespace StereoSplitter
         {
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left) return;
-            int i = IndexFromPoint(e.Location);
-            if (i >= 0 && i < Items.Count) Owner.CommitSelection(i);
+            int i = HitTest(e.Location);
+            if (i >= 0) Owner.CommitSelection(i);
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            int lines = SystemInformation.MouseWheelScrollLines;
+            if (lines <= 0) lines = 1;
+            ScrollBy(e.Delta > 0 ? -lines : lines);
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            // 尺寸定下来之后可见行数才准, 重新夹一次滚动位置并让高亮行留在视野里
+            ClampTop();
+            EnsureVisible(sel);
         }
     }
 }

@@ -110,7 +110,8 @@ namespace StereoSplitter
 
             cmbMic.Location = new Point(72, 12);
             cmbMic.Width = 400;
-            cmbMic.DropDownWidth = 460;
+            // 弹层宽度跟着本体走 (RoundedCombo.DropDownWidth 默认 0 = 同宽): 比本体宽出来的那一截,
+            // 视觉上就是两个错开的框。名字太长时靠行内省略号收尾。
 
             btnRescan.Location = new Point(480, 11);
             btnRescan.Width = 88;

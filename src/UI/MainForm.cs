@@ -327,7 +327,7 @@ namespace StereoSplitter
                 Location = new Point(110, 10),
                 Width = 250,
                 Height = 28,
-                DropDownWidth = 375,
+                // 不设 DropDownWidth: 弹层宽度与本体一致 (设备名过长靠行内省略号收尾)
                 ItemHeight = 24,
                 MaxDropDownItems = 12
             };

@@ -87,8 +87,8 @@ namespace StereoSplitter
             {
                 Height = 24,
                 ItemHeight = 24,
-                MaxDropDownItems = 12,
-                DropDownWidth = 375
+                MaxDropDownItems = 12
+                // 不设 DropDownWidth: 弹层与本体等宽, 设备名过长时行内省略
             };
             cmbChannel = new RoundedCombo
             {
