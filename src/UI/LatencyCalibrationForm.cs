@@ -28,8 +28,13 @@ namespace StereoSplitter
     /// 唯一可靠的办法是放一段声音、用麦克风录下来量。麦克风要摆在**实际听音位置**,
     /// 这样量到的差值天然包含两只音箱的距离差, 补出来的声场才是对齐的。</para>
     ///
-    /// <para><b>测量期间要求分流已停止</b>: 否则分流器自己的音频会和测试音混在一起,
-    /// 相关系数被拉低, 结果不可信。这一点由调用方在打开窗口前校验。</para>
+    /// <para><b>测量期间分流必须不出声</b>: 否则分流器自己的音频会和测试音混在一起,
+    /// 相关系数被拉低, 结果不可信。由调用方保证, 两种方式:</para>
+    /// <list type="bullet">
+    ///   <item>未运行: 直接测。</item>
+    ///   <item>运行中 (<c>hostMuted=true</c>): 上层把分流的**采样层**临时静音 ——
+    ///         链路照跑、端点不动, 只是贡献 0, 麦克风只收得到扫频。</item>
+    /// </list>
     /// </summary>
     sealed class LatencyCalibrationForm : Form
     {
@@ -44,6 +49,8 @@ namespace StereoSplitter
         readonly Action<string, int> applyDelay;   // (deviceId, delayMs) → 写回卡片并保存
         /// <summary>实际分流用的输出缓冲档位 (毫秒)。测量必须用同一个值, 否则两路的缓冲差测不准。</summary>
         readonly int outLatencyMs;
+        /// <summary>分流是否正在运行、且已被上层临时静音 (只影响提示文案与失败时的建议)。</summary>
+        readonly bool hostMuted;
 
         readonly NoWheelComboBox cmbMic = new NoWheelComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         readonly Button btnRescan = new NoCueButton { Text = "刷新" };
@@ -61,12 +68,13 @@ namespace StereoSplitter
         bool measuring;
         bool applied;
 
-        public LatencyCalibrationForm(IList<CalibLane> lanes, int outLatencyMs, Action<string, int> applyDelay)
+        public LatencyCalibrationForm(IList<CalibLane> lanes, int outLatencyMs, Action<string, int> applyDelay, bool hostMuted = false)
         {
             if (lanes == null) throw new ArgumentNullException("lanes");
             this.lanes = lanes;
             this.applyDelay = applyDelay;
             this.outLatencyMs = Math.Max(5, Math.Min(500, outLatencyMs));
+            this.hostMuted = hostMuted;
 
             Text = "延迟校准 · 麦克风互相关";
             StartPosition = FormStartPosition.CenterParent;
@@ -102,7 +110,10 @@ namespace StereoSplitter
             lblTip.Size = new Size(556, 48);
             lblTip.Text = "把麦克风放在你实际听音的位置（两只音箱中间），校准期间请保持安静。\n" +
                 "程序会逐路播放 60ms 扫频（每路先预热 2 秒再测 3 次），测出每一路「声音到达耳朵」的时间差，\n" +
-                "再把差值补到较快的那一路。缓冲按当前「延迟」档位测量，分流器需处于「已停止」状态。";
+                "再把差值补到较快的那一路。缓冲按当前「延迟」档位测量；" +
+                (hostMuted
+                    ? "分流已临时静音（关闭本窗口后自动恢复）。"
+                    : "分流器需处于「已停止」状态。");
             lblTip.ForeColor = Color.FromArgb(90, 96, 106);
 
             lv.Location = new Point(12, 96);
@@ -226,9 +237,13 @@ namespace StereoSplitter
                 for (int i = 0; i < lanes.Count; i++)
                     if (lanes[i].HasSuggestion && lanes[i].SuggestedMs != lanes[i].CurrentDelayMs) changes++;
                 lblState.Text = applied
-                    ? "已写入卡片。点「关闭」后即可开始分流。"
+                    ? (hostMuted
+                        ? "已写入卡片，新的延迟已生效（分流无需重启）。"
+                        : "已写入卡片。点「关闭」后即可开始分流。")
                     : (changes == 0 ? "各路的到达时间已经一致，无需改动。" :
-                       "已算出建议值，点「应用建议值」写入卡片（改的是卡片上的延迟，停止状态下才会生效）。");
+                       (hostMuted
+                        ? "已算出建议值，点「应用建议值」写入卡片（分流运行中，立即生效）。"
+                        : "已算出建议值，点「应用建议值」写入卡片（改的是卡片上的延迟，停止状态下才会生效）。"));
                 btnApply.Enabled = !applied && changes > 0;
             }
             else
@@ -352,7 +367,11 @@ namespace StereoSplitter
             catch (Exception ex)
             {
                 string msg = ex == null ? "(未知错误)" : ex.Message;
-                Post(delegate { Append("[失败] " + msg); lblState.Text = "校准失败: " + msg; });
+                // 运行中校准最常见的失败原因: 该系统的驱动不允许同一端点被两个共享流同时打开
+                string hint = hostMuted
+                    ? " — 若提示「打不开输出设备/被占用」，说明该设备不允许与分流同时打开，请停止分流后重测"
+                    : "";
+                Post(delegate { Append("[失败] " + msg + hint); lblState.Text = "校准失败: " + msg; });
             }
             finally
             {

@@ -908,11 +908,11 @@ namespace StereoSplitter
         /// </summary>
         void OpenLatencyCalibration()
         {
-            if (state == AppState.Starting || state == AppState.Running)
+            if (state == AppState.Starting)
             {
                 MessageBox.Show(this,
-                    "请先「停止分流」再校准。\n\n校准会直接向每台设备播放测试音。" +
-                    "分流同时运行时，测试音会和正常音频混在一起，测出来的延迟不可信。",
+                    "分流正在启动，请等启动完成后再校准（或先停止）。\n\n" +
+                    "启动过程中链路还在建立、端点尚未稳定，这时放扫频测不出可信结果。",
                     "延迟校准", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
@@ -947,9 +947,50 @@ namespace StereoSplitter
             prof = Math.Max(0, Math.Min(LatencyProfiles.Length - 1, prof));
             int outMs = LatencyProfiles[prof][1];
 
+            // 运行中校准: 临时把分流的**采样层**静音, 但不拆链路。
+            // 分流的 WasapiOut 与校准的 WasapiOut 在共享模式下可以并存, 分流贡献 0 之后,
+            // 麦克风只收得到扫频, 测量的可信度与"先停止"相同。延迟线仍按原档位在跑。
+            bool hostMuted = (state == AppState.Running) && engine != null;
+            if (hostMuted)
+            {
+                calibMute = true;
+                try
+                {
+                    ApplyVolumes();
+                }
+                catch (Exception ex)
+                {
+                    calibMute = false;
+                    MessageBox.Show(this,
+                        "无法临时静音分流: " + ex.Message + "\n\n请先「停止分流」再校准。",
+                        "延迟校准", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                Log("[校准] 分流已临时静音（不拆链路，校准结束自动恢复）");
+            }
+
             Log("[校准] 打开延迟校准: " + list.Count + " 路 (麦克风互相关, 输出缓冲 " + outMs + "ms)");
-            using (var f = new LatencyCalibrationForm(list, outMs, ApplyCalibratedDelay))
-                f.ShowDialog(this);
+            try
+            {
+                using (var f = new LatencyCalibrationForm(list, outMs, ApplyCalibratedDelay, hostMuted))
+                    f.ShowDialog(this);
+            }
+            finally
+            {
+                if (hostMuted)
+                {
+                    calibMute = false;
+                    try
+                    {
+                        ApplyVolumes();
+                        Log("[校准] 分流音量已恢复");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log("[警告] 校准后恢复分流音量失败: " + ex.Message + "（可在主界面拖动主音量重新下发）");
+                    }
+                }
+            }
         }
 
         /// <summary>
