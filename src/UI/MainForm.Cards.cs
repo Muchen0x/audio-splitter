@@ -1114,18 +1114,32 @@ namespace StereoSplitter
         void RefreshSpecBadges()
         {
             if (flwSpecChannels == null) return;
+            var chans = CurrentSpecChannels();
+
+            // 先算"徽标应该长什么样"的签名。改延迟 / 音量 / 静音时它完全不变,
+            // 就不该销毁重建控件 —— 重建十几个 Label + new Font 约 15ms, 连点
+            // 延迟箭头时每一击都卡一帧, 而那些改动跟声道徽标毫无关系。
+            var counts = new int[chans.Count];
+            var sig = new System.Text.StringBuilder();
+            for (int i = 0; i < chans.Count; i++)
+            {
+                // 角标 = 有几个物理声道接到该声道 (多声道卡片的每一行各算一个)
+                for (int k = 0; k < models.Count; k++)
+                    for (int s = 0; s < models[k].Slots.Count; s++)
+                        if (models[k].Slots[s].ChannelKey == chans[i].Key) counts[i]++;
+                sig.Append(chans[i].Value).Append('/').Append(counts[i]).Append(';');
+            }
+            string want = sig.ToString();
+            if (string.Equals(flwSpecChannels.Tag as string, want, StringComparison.Ordinal)) return;
+            flwSpecChannels.Tag = want;
+
             flwSpecChannels.SuspendLayout();
             try
             {
                 flwSpecChannels.Controls.Clear();
-                var chans = CurrentSpecChannels();
                 for (int i = 0; i < chans.Count; i++)
                 {
-                    // 角标 = 有几个物理声道接到该声道 (多声道卡片的每一行各算一个)
-                    int n = 0;
-                    for (int k = 0; k < models.Count; k++)
-                        for (int s = 0; s < models[k].Slots.Count; s++)
-                            if (models[k].Slots[s].ChannelKey == chans[i].Key) n++;
+                    int n = counts[i];
                     var name = new Label
                     {
                         Text = chans[i].Value,
