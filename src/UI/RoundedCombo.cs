@@ -279,6 +279,9 @@ namespace StereoSplitter
         {
             base.OnMouseDown(e);
             if (e.Button != MouseButtons.Left || !Enabled) return;
+            // 这里不能只靠 OnGotFocus: 焦点已经在本控件上时 (先 Tab 进来再点鼠标) Focus() 是空操作,
+            // 蓝框会一直挂着。鼠标路径一律把焦点提示关掉。
+            if (keyboardFocusCues) { keyboardFocusCues = false; Invalidate(); }
             if (!Focused) Focus();
             ToggleDropDown();
         }
