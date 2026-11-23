@@ -4,6 +4,7 @@ using System.Threading;
 using NAudio.Wave;
 using NAudio.CoreAudioApi;
 using StereoSplitter.Devices;
+using StereoSplitter.Infrastructure;
 
 namespace StereoSplitter
 {
@@ -42,7 +43,7 @@ namespace StereoSplitter
         readonly List<MMDevice> pendingDevs = new List<MMDevice>();
         readonly object devGate = new object();   // start 线程与关窗线程都会碰 pendingDevs
 
-        bool splitErrLogged = false;
+        int splitErrCount;                        // 采样处理异常累计次数 (只记首条与每 100 条)
         volatile bool silentStartup = false;
         int firstDataLogged = 0;
         AutoResetEvent dataReady;
@@ -304,8 +305,13 @@ namespace StereoSplitter
             try
             {
                 // 启动前校验: 设备可能在这几秒内被拔出, 用陈旧 ID 建 WasapiOut 只会抛 "尚未实现" 这类鬼话
-                string missing = FindMissingSink(enumerator, specs);
-                if (missing != null)
+                // R-13: 枚举本身失败 (COM 不可用) 与"设备确实不在"必须分开 —— 旧实现把前者也算成缺失,
+                // 一次瞬时 COM 故障就会让启动停在"设备不可用"; 现在跳过预检, 让随后的 GetDevice 报真实原因。
+                bool probeFailed;
+                string missing = FindMissingSink(enumerator, specs, out probeFailed);
+                if (probeFailed)
+                    log("[警告] 无法枚举活动输出端点，跳过启动前的设备在位校验（接下来打开设备时会给出真实原因）");
+                else if (missing != null)
                     throw new AudioDeviceException(missing + "不可用（可能已拔出或被禁用），请刷新设备后重试");
 
                 for (int i = 0; i < specs.Count; i++)
@@ -422,19 +428,19 @@ namespace StereoSplitter
                 }
                 catch (Exception ex)
                 {
-                    if (!splitErrLogged)
-                    {
-                        splitErrLogged = true;
-                        log("[错误] 采样数据处理异常: " + ex.Message);
-                    }
+                    // R-09: 只在首条记日志会让"持续失败"在日志里只剩一行 —— 之后几百次异常完全不可见。
+                    // 回调线程上不能每次都写日志 (写盘比混音贵), 折中: 首条全量, 之后每 100 条报一次计数。
+                    int n = Interlocked.Increment(ref splitErrCount);
+                    if (n == 1) log("[错误] 采样数据处理异常: " + ex.Message);
+                    else if (n % 100 == 0) log("[错误] 采样数据处理异常已累计 " + n + " 次 (最近: " + ex.Message + ")");
                 }
                 try
                 {
                     var ev = dataReady;
                     if (ev != null) ev.Set();
                 }
-                catch (ObjectDisposedException) { }
-                catch { }
+                catch (ObjectDisposedException) { }          // 关窗竞态, 预期内
+                catch (Exception ex) { Swallow.Note("dataReady.Set", ex); }
             };
 
             loopback.StartRecording();
@@ -547,8 +553,11 @@ namespace StereoSplitter
         }
 
         /// <summary>一次枚举同时校验全部输出设备是否仍在活动输出列表中; 返回缺失路名, 都正常返回 null</summary>
-        static string FindMissingSink(MMDeviceEnumerator enumerator, IList<SinkSpec> list)
+        /// <param name="probeFailed">true = 枚举活动端点这一步本身就失败了 (COM 不可用 / 设备服务未起)。
+        /// 此时返回值无意义: 既不能说"都在", 也不能说"缺失", 调用方必须按"本轮无法判断"处理。</param>
+        static string FindMissingSink(MMDeviceEnumerator enumerator, IList<SinkSpec> list, out bool probeFailed)
         {
+            probeFailed = false;
             if (list.Count == 0) return "输出设备";
             for (int i = 0; i < list.Count; i++)
                 if (string.IsNullOrEmpty(list[i].DeviceId)) return list[i].Label + "声道设备";
@@ -565,7 +574,13 @@ namespace StereoSplitter
                         if (!seen[s] && list[s].DeviceId == id) seen[s] = true;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // R-09/R-13: 这里的吞会让"枚举失败"退化成"全部设备都缺失", 必须记下来并如实上报
+                Swallow.Note("FindMissingSink 枚举活动端点", ex);
+                probeFailed = true;
+                return null;
+            }
             for (int i = 0; i < list.Count; i++)
                 if (!seen[i]) return list[i].Label + "声道设备";
             return null;
@@ -706,7 +721,7 @@ namespace StereoSplitter
                 }
                 return sb.ToString();
             }
-            catch { return "-"; }
+            catch (Exception ex) { Swallow.Note("BufferStatus 组装", ex); return "-"; }
         }
 
         static string Ppm(double v)
@@ -806,7 +821,11 @@ namespace StereoSplitter
                     // 端点不在活动列表里 (拔了/被禁用) 就别白折腾, 由调用方决定是等还是拆
                     var one = new List<SinkSpec>();
                     one.Add(rt.Spec);
-                    if (FindMissingSink(enumerator, one) != null)
+                    bool probeFailed;
+                    string gone = FindMissingSink(enumerator, one, out probeFailed);
+                    if (probeFailed)
+                        log("[警告] 无法枚举活动端点，本轮跳过" + rt.Spec.Label + "的在位校验，直接尝试重开设备");
+                    else if (gone != null)
                     {
                         endpointGone = true;
                         error = "端点已不在活动设备列表中（可能已拔出或被禁用）";

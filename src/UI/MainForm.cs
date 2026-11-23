@@ -250,6 +250,7 @@ namespace StereoSplitter
             return burst >= TrimBurstLimit;
         }
         int lastSinkProbeTick;                  // 输出端点存活探测 (30 秒一次)
+        bool sinkProbeWarned;                   // 探测本身失败只提示一次 (R-13)
         bool captureIdleLogged;      // "捕获源无数据"只提示一次
         int captureIdleSince;
         int lastCaptureCheckTick;    // 空闲期确认捕获设备是否还在 (1 分钟一次)

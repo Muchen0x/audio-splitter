@@ -10,6 +10,7 @@ using NAudio.Wave;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using StereoSplitter.Devices;
+using StereoSplitter.Infrastructure;
 
 namespace StereoSplitter
 {
@@ -466,6 +467,10 @@ namespace StereoSplitter
                 SetAppState(AppState.Stopped);
                 Log("[停止] 分流已停止。");
             }
+            // R-09: 非拆除类"吞异常"的汇总。每次停止打一条 (0 次不打), 平时不出声 ——
+            // 它的价值在于: 用户报"偶尔卡一下/偶尔没声"时, 日志里能查到"有几处代码在掩盖异常"。
+            string swallowed = Swallow.Summary();
+            if (swallowed != null) Log("[诊断] " + swallowed);
             UnbindAllVolumeSync();
             ClearRunState();
             expectCaptureId = null;
@@ -536,7 +541,9 @@ namespace StereoSplitter
             var ids = new string[returnSinkIds.Count + 1];
             ids[0] = returnCaptureId;
             returnSinkIds.CopyTo(ids, 1);
-            if (FindMissingEndpoint(ids) != null) return;   // 还有缺失, 继续等
+            string stillMissing;
+            // R-13: Unknown (枚举失败) 与 Missing 一样按"继续等"处理 —— 绝不能在判断不了的时候自动开流
+            if (ProbeEndpoints(out stillMissing, ids) != EndpointProbe.Present) return;
 
             Log("[恢复] 端点已全部回归 (捕获 + " + returnSinkIds.Count + " 路输出) → 自动续播");
             DisarmDeviceReturnWatch();
@@ -727,8 +734,22 @@ namespace StereoSplitter
             {
                 lastSinkProbeTick = now;
                 var sinkIds = eng.SinkEndpointIds();
-                string missingSink = FindMissingEndpoint(sinkIds);
-                if (missingSink != null)
+                string missingSink;
+                EndpointProbe sinkProbe = ProbeEndpoints(out missingSink, sinkIds);
+                if (sinkProbe == EndpointProbe.Unknown)
+                {
+                    // 30 秒一次的探测, 失败时只提示一次, 免得 COM 长时间不可用时刷屏
+                    if (!sinkProbeWarned)
+                    {
+                        sinkProbeWarned = true;
+                        Log("[警告] 输出端点存活探测失败（无法枚举活动设备），本轮跳过；设备状态暂按正常处理");
+                    }
+                }
+                else if (sinkProbe == EndpointProbe.Present)
+                {
+                    sinkProbeWarned = false;
+                }
+                if (sinkProbe == EndpointProbe.Missing)
                 {
                     int mi = -1;
                     for (int i = 0; i < sinkIds.Length; i++)
@@ -765,7 +786,9 @@ namespace StereoSplitter
             if (captureIdleLogged && (lastCaptureCheckTick == 0 || unchecked(now - lastCaptureCheckTick) >= 60000))
             {
                 lastCaptureCheckTick = now;
-                if (runCaptureId != null && FindMissingEndpoint(runCaptureId) != null)
+                string capMissing;
+                if (runCaptureId != null &&
+                    ProbeEndpoints(out capMissing, runCaptureId) == EndpointProbe.Missing)
                     OnEngineStalled("捕获设备已不可用");
             }
         }
@@ -1034,8 +1057,11 @@ namespace StereoSplitter
                 runCaptureId = capId;
                 Log("[恢复] 已恢复运行期设备信息: 捕获 1 台 + 输出 " + runSinkIds.Count + " 台");
             }
-            string missing = FindMissingEndpoint(runSinkIds.ToArray());
-            if (missing != null)
+            string missing;
+            EndpointProbe rebuildProbe = ProbeEndpoints(out missing, runSinkIds.ToArray());
+            if (rebuildProbe == EndpointProbe.Unknown)
+                Log("[警告] 无法枚举输出端点，跳过重建前的在位校验（若端点真的不在，重建会自行失败并上报）");
+            if (rebuildProbe == EndpointProbe.Missing)
             {
                 Log("[错误] 输出设备已不可用 (" + FindNameById(missing) + ")，放弃自动重建；等待设备回归后自动续播");
                 ArmDeviceReturnWatch(capId, runSinkIds);
@@ -1060,13 +1086,27 @@ namespace StereoSplitter
             LaunchEngine(capId, p, true);
         }
 
-        // 一次枚举校验多个端点是否仍活动; 返回第一个缺失的 ID, 全部在位返回 null。
-        // 原实现每次只查一个 ID, 重建路径要枚举两遍; 枚举失败一律按"都在"处理, 避免误判触发重建。
-        static string FindMissingEndpoint(params string[] ids)
+        // 端点存活探测的三种结果。
+        // R-13: 旧实现"枚举失败一律按都在处理"会拖着死设备; 反过来当"缺失"又会误拆健康链路。
+        // 加 Unknown 让调用方把这一轮判断作废, 而不是被迫在两个错误结论里选一个。
+        enum EndpointProbe { Present, Missing, Unknown }
+
+        /// <summary>
+        /// 一次枚举校验多个端点是否仍活动 (原实现每次只查一个 ID, 重建路径要枚举两遍)。
+        /// Missing → <paramref name="firstMissing"/> 为第一个缺失的 ID; Unknown → 枚举本身失败, 返回值无意义。
+        /// </summary>
+        static EndpointProbe ProbeEndpoints(out string firstMissing, params string[] ids)
         {
-            if (ids == null || ids.Length == 0) return null;
+            firstMissing = null;
+            if (ids == null || ids.Length == 0) return EndpointProbe.Present;
             for (int i = 0; i < ids.Length; i++)
-                if (string.IsNullOrEmpty(ids[i])) return ids[i] ?? "";   // 空 ID 与旧 IsEndpointActive 语义一致: 视为缺失
+            {
+                if (string.IsNullOrEmpty(ids[i]))   // 空 ID 与旧 IsEndpointActive 语义一致: 视为缺失
+                {
+                    firstMissing = ids[i] ?? "";
+                    return EndpointProbe.Missing;
+                }
+            }
 
             var missing = new List<string>(ids);
             try
@@ -1087,8 +1127,13 @@ namespace StereoSplitter
                     }
                 }
             }
-            catch { return null; }
-            return missing.Count > 0 ? missing[0] : null;
+            catch (Exception ex)
+            {
+                Swallow.Note("ProbeEndpoints 枚举活动端点", ex);
+                return EndpointProbe.Unknown;
+            }
+            if (missing.Count > 0) { firstMissing = missing[0]; return EndpointProbe.Missing; }
+            return EndpointProbe.Present;
         }
 
         void OnPowerModeChanged(object sender, Microsoft.Win32.PowerModeChangedEventArgs e)
