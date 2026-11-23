@@ -23,6 +23,8 @@ namespace StereoSplitter
         public double Confidence;
         /// <summary>多次测量之间的极差 (毫秒)。大 = 环境不稳或回声重, 建议重测。</summary>
         public double SpreadMs;
+        /// <summary>各段峰显著度里最差的一个 (仅不静音模式)。它决定"音乐有没有盖过扫频"。</summary>
+        public double Psr;
         public int Takes;
         /// <summary>本次每一段的实测值 (毫秒), 供界面逐条打印, 便于判断是整体偏还是单段离群。</summary>
         public readonly List<double> Samples = new List<double>();
@@ -54,6 +56,25 @@ namespace StereoSplitter
         public const double ChirpEndHz = 4000;
         /// <summary>扫频时长。太短能量不足 (信噪比差), 太长会被回声重叠、峰变宽。</summary>
         public const double ChirpSeconds = 0.060;
+
+        // ---------- 「分流继续出声」时的参数 ----------
+        // 安静环境下 60ms 就够; 但音乐正在放的时候, 扫频要和音乐抢信噪比。匹配滤波的处理增益
+        // = 10·log10(时间带宽积) = 10·log10(T × 3600Hz), 60→120ms 直接多 3dB, 而且主瓣更窄、
+        // 旁瓣更低。代价是听得更明显一点 (120ms 的"啾"), 这是用户明确接受过的取舍。
+        /// <summary>不静音模式下的扫频时长。</summary>
+        public const double CoexistChirpSeconds = 0.120;
+        /// <summary>
+        /// 不静音模式下的播放增益。0.35 ≈ -9dBFS。
+        /// <para>比静音模式高, 是因为要往音乐里"扎"进去; 不敢再高 —— 扫频叠在满幅音乐上会让
+        /// 端点输出越过 0dBFS, 削顶产生的谐波会摊宽相关峰, 反而更不准。</para>
+        /// </summary>
+        const float CoexistPlayGain = 0.35f;
+        /// <summary>
+        /// 不静音模式下的前导静音。比静音模式的 150ms 短: 前面已有 2 段预热, 端点早就是稳态了,
+        /// 前导在这里只剩"给扫频让出一点位置"的作用。缩短它换来 50ms 的可测延迟量程。
+        /// </summary>
+        const double CoexistLeadInSeconds = 0.100;
+
         /// <summary>播放增益。0.25 ≈ -12dBFS, 足够响但不会削顶。</summary>
         const float PlayGain = 0.25f;
         /// <summary>扫频之前的静音: 让 WASAPI 缓冲先排满, 保证 Play() 到出声的路径是稳态。</summary>
@@ -72,8 +93,42 @@ namespace StereoSplitter
         /// <summary>相关系数下限。低于它多半是没收到声/环境太吵, 结果不可信。</summary>
         public const double MinConfidence = 0.35;
 
+        /// <summary>
+        /// 不静音模式的峰显著度下限 (主峰 / 相关序列均方根)。
+        /// <para>相关系数只回答"这段波形像不像扫频", 不回答"它是不是这一段里最突出的东西"。
+        /// 音乐很长、扫频很短, 相关系数可能被一两处巧合推到 0.4 以上; 而 PSR 要求峰比整段的
+        /// 平均起伏高出一个数量级, 巧合做不到。两者是互补的: 前者防"没收到声", 后者防"被音乐骗"。</para>
+        /// <para>这个数是自检里量出来的 (见 CaseMicChirpCoexist): 类音乐噪声下真实扫频的 PSR
+        /// 与纯噪声的最大 PSR 之间取对数中点, 并留一倍余量。</para>
+        /// </summary>
+        public const double MinPsr = 9.0;
+
+        /// <summary>
+        /// 不静音模式的相关系数下限 —— 比静音模式的 <see cref="MinConfidence"/> 低得多, 这是有原因的。
+        /// <para>归一化相关系数的分母是"窗内总能量", 音乐一直在响, 分母里绝大部分是音乐,
+        /// 相关系数于是被系统性压低: 实测音乐 −10dB 时真扫频只到 0.31, −2dB 时只有 0.21,
+        /// 而定位误差仍不到半个采样。拿 0.35 去卡它, 等于把能用的结果全判死。</para>
+        /// <para>所以这道闸在这里只用来排除"完全不像扫频"的东西 (纯音乐实测 0.06~0.07),
+        /// 真正的判断交给 <see cref="MinPsr"/> —— 它是尺度无关的, 与音乐多响无关。</para>
+        /// </summary>
+        public const double MinCoexistScore = 0.12;
+
         /// <summary>可测延迟上限 (毫秒)。超过它扫频会落进下一段, 无法与本段区分。</summary>
         public static double MaxMeasurableMs { get { return MaxMeasurableSeconds * 1000.0; } }
+
+        /// <summary>
+        /// 指定模式下的可测延迟上限 (毫秒)。不静音模式的前导与扫频都更长, 量程随之下移。
+        /// <para>算法: 扫频尾部要落在"段末前 50ms"以内, 即 LeadIn + L + Chirp ≤ 段长 − 0.05,
+        /// 再加 50ms 容差让扫频被截掉一小截时仍能给出结果 (峰值位置还在窗内)。</para>
+        /// </summary>
+        public static double MaxMeasurableMsFor(bool coexist)
+        {
+            if (!coexist) return MaxMeasurableMs;
+            return (SegmentSeconds - 0.05 - CoexistLeadInSeconds - CoexistChirpSeconds + 0.05) * 1000.0;
+        }
+
+        /// <summary>当前模式下的可测延迟上限 (毫秒)。</summary>
+        public double MaxMeasurableMsNow { get { return MaxMeasurableMsFor(CoexistMode); } }
 
         enum SampleKind { Unsupported, Float32, Pcm16, Pcm24, Pcm32 }
 
@@ -96,6 +151,20 @@ namespace StereoSplitter
         volatile bool captureFailed;
         Exception captureError;
         string captureDeviceId = "";
+
+        /// <summary>
+        /// 「分流继续出声」模式: 扫频与音乐共存, 分析改走全段匹配滤波 (<see cref="ChirpMatch"/>)。
+        /// <para>必须在 <see cref="Start"/> 之前设定 —— 它同时决定播放缓冲里的扫频时长/增益/前导,
+        /// 与分析用的模板必须是同一套参数, 中途改会让模板与录音对不上。</para>
+        /// </summary>
+        public bool CoexistMode { get; set; }
+
+        /// <summary>当前模式的扫频时长 (秒)。</summary>
+        double ChirpSecs { get { return CoexistMode ? CoexistChirpSeconds : ChirpSeconds; } }
+        /// <summary>当前模式的前导静音 (秒)。</summary>
+        double LeadInSecs { get { return CoexistMode ? CoexistLeadInSeconds : LeadInSeconds; } }
+        /// <summary>当前模式的播放增益。</summary>
+        float PlayGainNow { get { return CoexistMode ? CoexistPlayGain : PlayGain; } }
 
         int outLatencyMs = 60;
         /// <summary>
@@ -125,6 +194,8 @@ namespace StereoSplitter
         public int CaptureRate { get { return rate; } }
         /// <summary>最近一次分析窗内的峰值电平 (dBFS)。用来在失败时告诉用户"麦克风到底听见了多响"，比笼统的"没收到声"好定位。</summary>
         public double LastPeakDb { get; private set; }
+        /// <summary>最近一次分析的主峰显著度 (仅不静音模式计算; 静音模式为 0)。</summary>
+        public double LastPsr { get; private set; }
 
         // ==================== 设备枚举 ====================
 
@@ -257,15 +328,19 @@ namespace StereoSplitter
                 var result = new LaneMeasurement { Takes = takes, LatencyMs = double.NaN, Confidence = 0 };
                 Exception lastError = null;
 
-                List<double> latencies, confidences;
+                List<double> latencies, confidences, psrs;
                 List<string> errors;
-                PlayRun(dev, takes, out latencies, out confidences, out errors);
+                PlayRun(dev, takes, out latencies, out confidences, out psrs, out errors);
 
                 for (int i = 0; i < latencies.Count; i++)
                 {
                     result.Samples.Add(latencies[i]);
                     if (confidences[i] > result.Confidence) result.Confidence = confidences[i];
                 }
+                // 取最差的一段: 三千里有一段被音乐盖住, 这一路就该被质疑, 不能拿最好的那段交差。
+                result.Psr = double.MaxValue;
+                for (int i = 0; i < psrs.Count; i++) if (psrs[i] < result.Psr) result.Psr = psrs[i];
+                if (result.Psr == double.MaxValue) result.Psr = 0;
                 for (int i = 0; i < errors.Count && lastError == null; i++)
                     lastError = new InvalidOperationException(errors[i]);
 
@@ -298,10 +373,12 @@ namespace StereoSplitter
         /// 还有一段固定延迟 (预填充 + 端点缓冲), 这段被算进结果里 —— 这正是运行时分流也要付的成本,
         /// 而且两路同源可比。</para>
         /// </summary>
-        void PlayRun(MMDevice dev, int takes, out List<double> latencies, out List<double> confidences, out List<string> errors)
+        void PlayRun(MMDevice dev, int takes, out List<double> latencies, out List<double> confidences,
+            out List<double> psrs, out List<string> errors)
         {
             latencies = new List<double>();
             confidences = new List<double>();
+            psrs = new List<double>();
             errors = new List<string>();
 
             WaveFormat fmt = dev.AudioClient.MixFormat;
@@ -350,10 +427,11 @@ namespace StereoSplitter
                 double segT0 = t0 + (WarmupSegments + k) * SegmentSeconds;
                 try
                 {
-                    double ms, conf;
-                    Analyze(segT0, out ms, out conf);
+                    double ms, conf, psr;
+                    Analyze(segT0, out ms, out conf, out psr);
                     latencies.Add(ms);
                     confidences.Add(conf);
+                    psrs.Add(psr);
                 }
                 catch (Exception ex)
                 {
@@ -364,8 +442,10 @@ namespace StereoSplitter
         }
 
         /// <summary>在已录到的样本里定位本段扫频的起点。<paramref name="segT0"/> = 该段在时间轴上的起点。</summary>
-        void Analyze(double segT0, out double latencyMs, out double confidence)
+        void Analyze(double segT0, out double latencyMs, out double confidence, out double psr)
         {
+            psr = 0;
+            LastPsr = 0;
             // 分析窗卡死在本段内: 往前留 50ms 兜住时基误差, 往后留到段末前 50ms —— 再往后就可能
             // 抓到**下一段**的扫频 (流内分段是首尾相接的), 那会把结果算成"延迟 = 段长"。
             const double preRoll = 0.05;
@@ -388,7 +468,7 @@ namespace StereoSplitter
             float[][] datas = null;
             lock (gate)
             {
-                if (blocks.Count == 0) { latencyMs = double.NaN; confidence = 0; return; }
+                if (blocks.Count == 0) { latencyMs = double.NaN; confidence = 0; psr = 0; return; }
                 double lo = segStart - 0.25, hi = segEnd + 0.25;
                 var near = new List<double>();
                 for (int b = 0; b < blocks.Count; b++)
@@ -423,42 +503,85 @@ namespace StereoSplitter
                 for (int i = from; i < to; i++) seg[dst + (i - from)] = datas[b][i];
             }
 
-            float[] tmpl = BuildChirp(rate);
-            ChirpHit hit = LocateChirp(seg, tmpl);
-            confidence = hit.Score;
+            float[] tmpl = BuildChirp(rate, ChirpSecs);
 
             float peak = 0;
             for (int i = 0; i < n; i++) { float a = Math.Abs(seg[i]); if (a > peak) peak = a; }
             LastPeakDb = peak <= 0 ? -120.0 : 20.0 * Math.Log10(peak);
 
-            if (!hit.Found)
+            // 两条定位路径, 差别只在"怎么找峰":
+            //   静音模式 → LocateChirp: 包络粗定位 + 窄窗互相关, 快, 前提是段里只有扫频;
+            //   不静音   → ChirpMatch.Locate: 整段 FFT 匹配滤波, 慢十几毫秒, 能在音乐里找。
+            // 汇合之后的一切 (时基换算、量程判断) 两条路径完全相同。
+            double offset;
+            string fail = null;
+
+            if (CoexistMode)
             {
-                latencyMs = double.NaN;
-                throw new InvalidOperationException(
-                    "麦克风完全没有收到声音 (峰值 " + LastPeakDb.ToString("0") + " dBFS)。请确认: 麦克风没被静音/禁用、" +
-                    "选的是正确的录音设备、音箱音量不是 0、并且麦克风确实能听到这两只音箱。");
+                FullChirpHit full = ChirpMatch.Locate(seg, tmpl);
+                confidence = full.Score;
+                psr = full.Psr;
+                LastPsr = full.Psr;
+                offset = full.Offset;
+
+                if (!full.Found)
+                {
+                    fail = "麦克风没有收到测试音 (峰值 " + LastPeakDb.ToString("0") + " dBFS)。" +
+                        "请确认麦克风没被静音/禁用、选的是正确的录音设备、该路音量不是 0。";
+                }
+                else if (full.Score < MinCoexistScore)
+                {
+                    fail = "测试音被环境声盖住了 (波形相似度 " + full.Score.ToString("0.00") + " < " +
+                        MinCoexistScore.ToString("0.00") + "，峰值 " + LastPeakDb.ToString("0") + " dBFS)。" +
+                        "请调高该路音量、把麦克风挪近一些, 或改用静音校准 (取消勾选「分流继续播放」)。";
+                }
+                else if (full.Psr < MinPsr)
+                {
+                    // 这一条是不静音模式最关键的保护: 音乐响到一定程度, 相关序列的底噪被抬高,
+                    // 真峰与假峰的差距缩小, 此时**给一个数不如不给** —— 一个偏了几十毫秒的延迟
+                    // 会让声场比不校准更歪, 而用户没法从界面上看出它是错的。
+                    fail = "测试音被音乐盖住了 (峰显著度 " + full.Psr.ToString("0.0") + " < " +
+                        MinPsr.ToString("0.0") + "，峰值 " + LastPeakDb.ToString("0") + " dBFS)。" +
+                        "请调高该路音量或暂时把音乐音量调小; 若仍失败, 请取消勾选「分流继续播放」改用静音校准。";
+                }
             }
-            if (hit.Score < MinConfidence)
+            else
             {
-                latencyMs = double.NaN;
-                throw new InvalidOperationException(
-                    "测试音太弱或环境太吵 (相关系数 " + hit.Score.ToString("0.00") + " < " +
-                    MinConfidence.ToString("0.00") + "，峰值 " + LastPeakDb.ToString("0") + " dBFS)。" +
-                    "请调高该路音量、关掉音乐/风扇, 或把麦克风挪近一些后重试。");
+                ChirpHit hit = LocateChirp(seg, tmpl);
+                confidence = hit.Score;
+                offset = hit.Offset;
+
+                if (!hit.Found)
+                {
+                    fail = "麦克风完全没有收到声音 (峰值 " + LastPeakDb.ToString("0") + " dBFS)。请确认: 麦克风没被静音/禁用、" +
+                        "选的是正确的录音设备、音箱音量不是 0、并且麦克风确实能听到这两只音箱。";
+                }
+                else if (hit.Score < MinConfidence)
+                {
+                    fail = "测试音太弱或环境太吵 (相关系数 " + hit.Score.ToString("0.00") + " < " +
+                        MinConfidence.ToString("0.00") + "，峰值 " + LastPeakDb.ToString("0") + " dBFS)。" +
+                        "请调高该路音量、关掉音乐/风扇, 或把麦克风挪近一些后重试。";
+                }
             }
 
-            double arrival = origin + (s0 + hit.Offset) / rate;
-            latencyMs = (arrival - segT0 - LeadInSeconds) * 1000.0;
+            if (fail != null)
+            {
+                latencyMs = double.NaN;
+                throw new InvalidOperationException(fail);
+            }
+
+            double arrival = origin + (s0 + offset) / rate;
+            latencyMs = (arrival - segT0 - LeadInSecs) * 1000.0;
 
             // 超量程: 说明"扫频"其实是被本段窗口边缘截到的下一段 (或者端点延迟异常大)。
             // 报错而不是给一个假值 —— 一个偏了整整一段的数字会让补偿方向都错。
-            if (latencyMs < -20 || latencyMs > MaxMeasurableSeconds * 1000.0)
+            if (latencyMs < -20 || latencyMs > MaxMeasurableMsNow)
             {
                 double bad = latencyMs;
                 latencyMs = double.NaN;
                 throw new InvalidOperationException(
                     "测得的延迟 " + bad.ToString("0") + " ms 超出量程 (0~" +
-                    (MaxMeasurableSeconds * 1000).ToString("0") + " ms)。" +
+                    MaxMeasurableMsNow.ToString("0") + " ms)。" +
                     "多半是该端点延迟异常大, 或麦克风先听到了别的声源 (另一只音箱/回声)。");
             }
         }
@@ -497,7 +620,15 @@ namespace StereoSplitter
         /// </summary>
         public static float[] BuildChirp(int sampleRate)
         {
-            int n = (int)Math.Round(ChirpSeconds * sampleRate);
+            return BuildChirp(sampleRate, ChirpSeconds);
+        }
+
+        /// <summary>
+        /// 指定时长的扫频模板。播放侧与相关侧必须用**同一个时长**, 否则模板和录音对不上, 峰会糊掉。
+        /// </summary>
+        public static float[] BuildChirp(int sampleRate, double seconds)
+        {
+            int n = (int)Math.Round(seconds * sampleRate);
             if (n < 32) n = 32;
             var s = new float[n];
             double dt = 1.0 / sampleRate;
@@ -699,15 +830,15 @@ namespace StereoSplitter
         /// 按目标格式生成整段播放缓冲: <paramref name="segments"/> 个首尾相接的等长段,
         /// 每段 = 前导静音 + 扫频 + 余量 (所有声道同相)。
         /// </summary>
-        static byte[] BuildPayload(WaveFormat fmt, SampleKind kind, int segments)
+        byte[] BuildPayload(WaveFormat fmt, SampleKind kind, int segments)
         {
             if (segments < 1) segments = 1;
             int r = fmt.SampleRate;
             int ch = fmt.Channels;
             int bytesPer = fmt.BitsPerSample / 8;
             int segLen = (int)Math.Round(SegmentSeconds * r);
-            int lead = (int)Math.Round(LeadInSeconds * r);
-            float[] chirp = BuildChirp(r);
+            int lead = (int)Math.Round(LeadInSecs * r);
+            float[] chirp = BuildChirp(r, ChirpSecs);
             long total = (long)segLen * segments;
             var buf = new byte[total * ch * bytesPer];
             for (int s = 0; s < segments; s++)
@@ -717,7 +848,7 @@ namespace StereoSplitter
                 {
                     int frame = lead + i;
                     if (frame >= segLen) break;          // 段长被削到放不下扫频时截断 (正常人不会)
-                    float v = chirp[i] * PlayGain;
+                    float v = chirp[i] * PlayGainNow;
                     int at = (segStartFrame + frame) * ch;
                     for (int c = 0; c < ch; c++)
                         WriteSample(buf, (at + c) * bytesPer, kind, v);

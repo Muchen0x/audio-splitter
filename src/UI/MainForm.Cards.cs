@@ -910,37 +910,51 @@ namespace StereoSplitter
             prof = Math.Max(0, Math.Min(LatencyProfiles.Length - 1, prof));
             int outMs = LatencyProfiles[prof][1];
 
-            // 运行中校准: 临时把分流的**采样层**静音, 但不拆链路。
-            // 分流的 WasapiOut 与校准的 WasapiOut 在共享模式下可以并存, 分流贡献 0 之后,
-            // 麦克风只收得到扫频, 测量的可信度与"先停止"相同。延迟线仍按原档位在跑。
-            bool hostMuted = (state == AppState.Running) && engine != null;
-            if (hostMuted)
+            // 运行中校准: 默认仍把分流的**采样层**静音, 但不拆链路 —— 这与旧版行为完全一致。
+            // 静音改由校准窗通过回调切换: 用户可以勾「音乐继续播放」让音乐不停, 那一条走的是
+            // 全段匹配滤波 (MicLatencyProbe.CoexistMode), 关窗后统一恢复音量。
+            bool hostRunning = (state == AppState.Running) && engine != null;
+            Func<bool, string> setHostMute = null;
+            if (hostRunning)
             {
-                calibMute = true;
-                try
+                setHostMute = delegate (bool mute)
                 {
-                    ApplyVolumes();
-                }
-                catch (Exception ex)
+                    bool prev = calibMute;
+                    calibMute = mute;
+                    try
+                    {
+                        ApplyVolumes();
+                        return null;
+                    }
+                    catch (Exception ex)
+                    {
+                        // 切换失败要把标记退回去: 否则分流会停在静音态, 而界面显示"未静音"。
+                        calibMute = prev;
+                        try { ApplyVolumes(); } catch { }
+                        return ex.Message;
+                    }
+                };
+
+                string muteErr = setHostMute(true);
+                if (muteErr != null)
                 {
-                    calibMute = false;
                     MessageBox.Show(this,
-                        "无法临时静音分流: " + ex.Message + "\n\n请先「停止分流」再校准。",
+                        "无法临时静音分流: " + muteErr + "\n\n请先「停止分流」再校准。",
                         "延迟校准", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
-                Log("[校准] 分流已临时静音（不拆链路，校准结束自动恢复）");
+                Log("[校准] 分流已临时静音（不拆链路，校准结束自动恢复；窗口内可切换为「音乐继续播放」）");
             }
 
             Log("[校准] 打开延迟校准: " + list.Count + " 路 (麦克风互相关, 输出缓冲 " + outMs + "ms)");
             try
             {
-                using (var f = new LatencyCalibrationForm(list, outMs, ApplyCalibratedDelay, hostMuted))
+                using (var f = new LatencyCalibrationForm(list, outMs, ApplyCalibratedDelay, hostRunning, setHostMute))
                     f.ShowDialog(this);
             }
             finally
             {
-                if (hostMuted)
+                if (hostRunning)
                 {
                     calibMute = false;
                     try

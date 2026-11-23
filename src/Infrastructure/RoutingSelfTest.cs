@@ -68,6 +68,7 @@ namespace StereoSplitter
                 CaseSessionLogClear,
                 CaseEmbeddedAudioResources,
                 CaseMicChirpLocate,
+                CaseMicChirpCoexist,
                 CaseAppStateMachine,
                 CaseCardGrid
             };
@@ -1468,6 +1469,148 @@ namespace StereoSplitter
             // 量程: 分段测量的窗口必须容得下蓝牙 (A2DP 常见 150~300ms), 否则会被判成"超量程"
             Check("可测延迟量程 ≥ 700ms (" + MicLatencyProbe.MaxMeasurableMs.ToString("0") + "ms)",
                 MicLatencyProbe.MaxMeasurableMs >= 700);
+        }
+
+        // ==================== 不静音校准 (全段匹配滤波) ====================
+
+        /// <summary>
+        /// 合成一段"像音乐"的干扰: 500Hz 以下为主的有色噪声 + 三个持续长音 + 两记低频鼓点。
+        /// <para>为什么不用白噪声: 白噪声频谱是平的, 而真实音乐的能量几乎压在 200~800Hz,
+        /// 正好压住 400Hz 起步的扫频。用白噪声测信噪比会得出偏乐观的结论,
+        /// 而且白噪声不会产生"看起来像某个事件起点"的强瞬态 —— 鼓点会。</para>
+        /// </summary>
+        static float[] MusicLikeNoise(int rate, double targetRms, int seed)
+        {
+            var rnd = new Random(seed);
+            var x = new double[rate];
+            double a = Math.Exp(-2 * Math.PI * 500.0 / rate);
+            double y = 0;
+            double[] f = { 220.0, 277.2, 329.6 };      // 一个持续的和弦垫
+            var ph = new double[f.Length];
+            for (int i = 0; i < rate; i++)
+            {
+                y = a * y + (1 - a) * (rnd.NextDouble() * 2 - 1);
+                double s = y * 6.0;                     // 补偿低通吃掉的能量
+                for (int k = 0; k < f.Length; k++)
+                {
+                    ph[k] += 2 * Math.PI * f[k] / rate;
+                    s += 0.35 * Math.Sin(ph[k]);
+                }
+                x[i] = s;
+            }
+            // 鼓点: 每 500ms 一记 70Hz 的衰减冲击 —— 这是最容易被误当成"扫频起点"的那种能量
+            for (int beat = 0; beat < 2; beat++)
+            {
+                int at = beat * (rate / 2) + rate / 8;
+                for (int i = 0; i < rate / 20 && at + i < rate; i++)
+                {
+                    double t = (double)i / rate;
+                    x[at + i] += 1.2 * Math.Exp(-t * 40) * Math.Sin(2 * Math.PI * 70 * t);
+                }
+            }
+            double sum = 0;
+            for (int i = 0; i < rate; i++) sum += x[i] * x[i];
+            double rms = Math.Sqrt(sum / rate);
+            double scale = rms > 1e-9 ? targetRms / rms : 0;
+            var r = new float[rate];
+            for (int i = 0; i < rate; i++) r[i] = (float)(x[i] * scale);
+            return r;
+        }
+
+        static float[] MixChirp(int rate, float[] bed, float[] tmpl, int offset, float gain)
+        {
+            var sig = bed == null ? new float[rate] : (float[])bed.Clone();
+            for (int i = 0; i < tmpl.Length && offset + i < sig.Length; i++)
+                sig[offset + i] += tmpl[i] * gain;
+            return sig;
+        }
+
+        /// <summary>
+        /// 不静音校准的核心: 音乐正在响的时候, 还能不能把扫频找准; 找不准的时候会不会**假装**找准。
+        ///
+        /// <para>静音模式的前提是"段里只有扫频", 所以 §CaseMicChirpLocate 那套包络粗定位是成立的。
+        /// 音乐一进来这个前提就没了: 包络峰值是音乐, 30% 阈值锁在最响的地方, 窄窗可能根本不含扫频。
+        /// 所以这里另起一条路径, 并用三组断言分别管住三件事:</para>
+        /// <list type="number">
+        ///   <item><b>不退化</b>: 干净信号下, 全段路径必须和窄窗路径给出同一个答案 (同一个物理量,
+        ///         两条算法不该有系统性差异)。</item>
+        ///   <item><b>能用</b>: 负信噪比下仍能定位 —— 这是"不静音"能不能成立的全部。</item>
+        ///   <item><b>不撒谎</b>: 只有音乐、没有扫频时, 绝对不能给出"可信"的结论。
+        ///         偏几十毫秒的延迟会让声场比不校准更歪, 而用户从界面上看不出它是错的。</item>
+        /// </list>
+        /// </summary>
+        static void CaseMicChirpCoexist()
+        {
+            Begin("不静音校准: 全段匹配滤波");
+            const int rate = 48000;
+            const int off = 20000;
+            float[] tmpl = MicLatencyProbe.BuildChirp(rate, MicLatencyProbe.CoexistChirpSeconds);
+            Check("共存模式扫频 120ms (" + tmpl.Length + " 采样)",
+                tmpl.Length >= rate * 0.11 && tmpl.Length <= rate * 0.13);
+
+            // —— 1) 干净信号: 与静音路径一致 ——
+            float[] clean = MixChirp(rate, null, tmpl, off, 0.35f);
+            FullChirpHit full = ChirpMatch.Locate(clean, tmpl);
+            var narrow = MicLatencyProbe.LocateChirp(clean, tmpl);
+            Check("干净信号: 找到扫频", full.Found);
+            Check("干净信号: 偏移误差 ≤ 3 采样 (实为 " + (full.Offset - off).ToString("0.0") + ")",
+                full.Found && Math.Abs(full.Offset - off) <= 3);
+            Check("两条路径一致 (Δ ≤ 3 采样, 实为 " + (full.Offset - narrow.Offset).ToString("0.0") + ")",
+                narrow.Found && Math.Abs(full.Offset - narrow.Offset) <= 3);
+            Check("干净信号: 相关系数 > 0.85 (" + full.Score.ToString("0.00") + ")", full.Score > 0.85);
+
+            // —— 2) 音乐里找扫频 ——
+            // 真实情形: 分流的音乐是满幅的, 测试音只有 -9dBFS, 所以信噪比是负的。
+            // 音乐 rms 0.5 ≈ -6dBFS, 扫频 rms ≈ 0.15 → 约 -10dB。
+            // 前两档是音乐真能到的响度, 必须定位准; 第三档 rms 1.2 已经超过满幅正弦的 0.707,
+            // 属于"故意让端点削顶"的极端 —— 对它只要求一件事: 不准就必须拒绝, 不许蒙一个数出来。
+            double[] levels = { 0.5, 0.8, 1.2 };
+            for (int q = 0; q < levels.Length; q++)
+            {
+                float[] bed = MusicLikeNoise(rate, levels[q], 21 + q);
+                float[] sig = MixChirp(rate, bed, tmpl, off, 0.35f);
+                FullChirpHit h = ChirpMatch.Locate(sig, tmpl);
+                double err = h.Found ? h.Offset - off : double.NaN;
+                bool trusted = h.Found && h.Score >= MicLatencyProbe.MinCoexistScore
+                    && h.Psr >= MicLatencyProbe.MinPsr;
+                bool precise = trusted && Math.Abs(err) <= 6;
+                string tag = "音乐 rms " + levels[q].ToString("0.0");
+                string detail = "误差 " + err.ToString("0.0") + ", r=" + h.Score.ToString("0.00") +
+                    ", PSR " + h.Psr.ToString("0.0");
+                if (q < 2) Check(tag + ": 定位准 (" + detail + ")", precise);
+                else Check(tag + ": 削顶极端下要么准要么拒绝 (" + detail + ")", precise || !trusted);
+            }
+
+            // —— 3) 只有音乐: 不许撒谎 ——
+            // 判"可信"用的是产品里那三个条件的**与**: 找到了 + 相关系数够 + 显著度够。
+            // 只要这三条同时成立就会被写进卡片, 所以这里断言的正是这个与。
+            double worstPsr = 0;
+            for (int s = 0; s < 4; s++)
+            {
+                float[] bed = MusicLikeNoise(rate, 0.8, 101 + s);
+                FullChirpHit h = ChirpMatch.Locate(bed, tmpl);
+                if (h.Psr > worstPsr) worstPsr = h.Psr;
+                bool trusted = h.Found && h.Score >= MicLatencyProbe.MinCoexistScore && h.Psr >= MicLatencyProbe.MinPsr;
+                Check("纯音乐 #" + s + ": 不被采信 (r=" + h.Score.ToString("0.00") +
+                    ", PSR " + h.Psr.ToString("0.0") + ")", !trusted);
+            }
+            // 门槛要落在"真扫频"与"纯噪声"之间, 否则要么漏检要么误报。
+            Check("噪声最坏显著度 (" + worstPsr.ToString("0.0") + ") 明显低于门槛 (" +
+                MicLatencyProbe.MinPsr.ToString("0.0") + ")", worstPsr < MicLatencyProbe.MinPsr * 0.7);
+
+            // —— 4) 直达声优先: 反射比直达更响时仍要锁直达 ——
+            float[] refl = MixChirp(rate, null, tmpl, off, 0.16f);
+            int d = (int)Math.Round(0.020 * rate);
+            for (int i = 0; i < tmpl.Length && off + d + i < refl.Length; i++)
+                refl[off + d + i] += tmpl[i] * 0.30f;
+            FullChirpHit h4 = ChirpMatch.Locate(refl, tmpl);
+            double err4 = h4.Found ? h4.Offset - off : double.NaN;
+            Check("直达+更强反射: 锁直达 (误差 " + err4.ToString("0.0") + " 采样)",
+                h4.Found && Math.Abs(err4) <= 4);
+
+            // —— 5) 量程: 扫频变长会吃掉一部分量程, 但必须仍能覆盖蓝牙 ——
+            Check("不静音量程 ≥ 700ms (" + MicLatencyProbe.MaxMeasurableMsFor(true).ToString("0") + "ms)",
+                MicLatencyProbe.MaxMeasurableMsFor(true) >= 700);
         }
 
         static OutputLane Lane(string key, string dev, int delay, int vol)

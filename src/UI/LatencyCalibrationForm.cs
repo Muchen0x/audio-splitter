@@ -28,12 +28,13 @@ namespace StereoSplitter
     /// 唯一可靠的办法是放一段声音、用麦克风录下来量。麦克风要摆在**实际听音位置**,
     /// 这样量到的差值天然包含两只音箱的距离差, 补出来的声场才是对齐的。</para>
     ///
-    /// <para><b>测量期间分流必须不出声</b>: 否则分流器自己的音频会和测试音混在一起,
-    /// 相关系数被拉低, 结果不可信。由调用方保证, 两种方式:</para>
+    /// <para><b>两种测量条件, 默认还是老的那一种</b>:</para>
     /// <list type="bullet">
-    ///   <item>未运行: 直接测。</item>
-    ///   <item>运行中 (<c>hostMuted=true</c>): 上层把分流的**采样层**临时静音 ——
-    ///         链路照跑、端点不动, 只是贡献 0, 麦克风只收得到扫频。</item>
+    ///   <item><b>静音</b> (默认, 与旧版完全一致): 上层把分流的**采样层**临时静音 ——
+    ///         链路照跑、端点不动, 只是贡献 0, 麦克风只收得到扫频。信噪比最好。</item>
+    ///   <item><b>不静音</b> (可选): 音乐继续放, 扫频叠在音乐上。测得更省事 (不用停音乐),
+    ///         但信噪比是负的, 要靠全段匹配滤波 + 峰显著度把扫频从音乐里挑出来。
+    ///         挑不出来时**报错而不是给一个数** —— 一个偏掉的延迟会让声场比不校准更歪。</item>
     /// </list>
     /// </summary>
     sealed class LatencyCalibrationForm : Form
@@ -58,6 +59,17 @@ namespace StereoSplitter
         readonly int outLatencyMs;
         /// <summary>分流是否正在运行、且已被上层临时静音 (只影响提示文案与失败时的建议)。</summary>
         readonly bool hostMuted;
+        /// <summary>
+        /// 切换上层静音的钩子: <c>true</c> = 静音, <c>false</c> = 恢复放音。
+        /// 返回 null 表示成功, 否则返回给用户看的原因 (调用方负责回滚自己的状态)。
+        /// </summary>
+        readonly Func<bool, string> setHostMute;
+
+        readonly CheckBox chkCoexist = new CheckBox { Text = "分流继续播放（测试音叠在音乐上）" };
+        /// <summary>当前测量是否在"音乐继续放"的条件下进行。</summary>
+        bool coexist;
+        /// <summary>程序化改勾选状态时抑制事件, 免得与用户操作互相触发。</summary>
+        bool suppressCoexist;
 
         readonly NoWheelComboBox cmbMic = new NoWheelComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         readonly Button btnRescan = new NoCueButton { Text = "刷新" };
@@ -77,13 +89,15 @@ namespace StereoSplitter
         /// <summary>测量中点了关闭: 先停止, 等线程收尾后再真正关窗 (不让声音留在半空)。</summary>
         bool closeAfterStop;
 
-        public LatencyCalibrationForm(IList<CalibLane> lanes, int outLatencyMs, Action<string, int> applyDelay, bool hostMuted = false)
+        public LatencyCalibrationForm(IList<CalibLane> lanes, int outLatencyMs, Action<string, int> applyDelay,
+            bool hostMuted = false, Func<bool, string> setHostMute = null)
         {
             if (lanes == null) throw new ArgumentNullException("lanes");
             this.lanes = lanes;
             this.applyDelay = applyDelay;
             this.outLatencyMs = Math.Max(5, Math.Min(500, outLatencyMs));
             this.hostMuted = hostMuted;
+            this.setHostMute = setHostMute;
 
             Text = "延迟校准 · 麦克风互相关";
             StartPosition = FormStartPosition.CenterParent;
@@ -97,6 +111,7 @@ namespace StereoSplitter
             BuildUi();
             ReloadMics();
             FillLanes();
+            UpdateTip();
             RefreshState();
         }
 
@@ -116,13 +131,8 @@ namespace StereoSplitter
             btnRescan.Click += (s, e) => ReloadMics();
 
             lblTip.Location = new Point(12, 44);
-            lblTip.Size = new Size(556, 48);
-            lblTip.Text = "把麦克风放在你实际听音的位置（两只音箱中间），校准期间请保持安静。\n" +
-                "程序会逐路播放 60ms 扫频（每路先预热 2 秒再测 3 次），测出每一路「声音到达耳朵」的时间差，\n" +
-                "再把差值补到较快的那一路。缓冲按当前「延迟」档位测量；" +
-                (hostMuted
-                    ? "分流已临时静音（关闭本窗口后自动恢复）。"
-                    : "分流器需处于「已停止」状态。");
+            lblTip.Size = new Size(556, 50);
+            lblTip.AutoSize = false;
             lblTip.ForeColor = Color.FromArgb(90, 96, 106);
 
             lv.Location = new Point(12, 96);
@@ -155,6 +165,13 @@ namespace StereoSplitter
             btnClose.Size = new Size(90, 28);
             btnClose.Click += (s, e) => Close();
 
+            // 只有在"分流正在跑"的时候才有意义: 没跑就没有音乐要绕过, 静音路径又快又准。
+            chkCoexist.Location = new Point(252, 272);
+            chkCoexist.Size = new Size(214, 22);
+            chkCoexist.Enabled = hostMuted && setHostMute != null;
+            chkCoexist.CheckedChanged += (s, e) => OnCoexistChanged();
+            if (!chkCoexist.Enabled) chkCoexist.Visible = false;
+
             txtLog.Location = new Point(12, 306);
             txtLog.Size = new Size(556, 202);
             txtLog.Multiline = true;
@@ -166,8 +183,62 @@ namespace StereoSplitter
             Controls.AddRange(new Control[]
             {
                 lblMic, cmbMic, btnRescan, lblTip, lv, lblState,
-                btnStart, btnApply, btnClose, txtLog
+                btnStart, btnApply, btnClose, chkCoexist, txtLog
             });
+        }
+
+        /// <summary>提示文案随模式变化: 同一句话在"已静音"和"音乐继续放"下该说的不一样。</summary>
+        void UpdateTip()
+        {
+            string tail;
+            if (!hostMuted) tail = "分流器需处于「已停止」状态。";
+            else if (coexist) tail = "音乐继续播放，测试音会叠在音乐上；若提示被盖住，请调高该路音量或取消勾选后重测。";
+            else tail = "分流已临时静音（关闭本窗口后自动恢复）；勾选「音乐继续播放」可以在放着音乐时测。";
+
+            lblTip.Text = "把麦克风放在你实际听音的位置（两只音箱中间）。程序会逐路播放测试音" +
+                "（每路预热 2 秒后测 3 次），测出每一路「声音到达耳朵」的时间差，再把差值补到较快的那一路。" +
+                "缓冲按当前「延迟」档位测量；" + tail;
+        }
+
+        /// <summary>
+        /// 在"静音 / 音乐继续播放"之间切换。
+        /// <para>切换失败必须把勾选状态**退回去** —— 否则界面显示的测量条件与真实条件不一致,
+        /// 用户会以为自己测的是不静音模式, 实际却在静音下测, 结果对不上还得重来一遍。</para>
+        /// </summary>
+        void OnCoexistChanged()
+        {
+            if (suppressCoexist) return;
+            if (measuring)
+            {
+                // 中途改条件会让同一路的几段数据来自两个不同环境, 中位数就失去意义
+                suppressCoexist = true;
+                chkCoexist.Checked = coexist;
+                suppressCoexist = false;
+                return;
+            }
+
+            bool want = chkCoexist.Checked;
+            if (setHostMute != null)
+            {
+                string err = setHostMute(!want);
+                if (err != null)
+                {
+                    suppressCoexist = true;
+                    chkCoexist.Checked = !want;
+                    suppressCoexist = false;
+                    MessageBox.Show(this,
+                        "无法切换测量条件: " + err + "\n\n请先「停止分流」再校准。",
+                        "延迟校准", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
+
+            coexist = want;
+            UpdateTip();
+            Append(want
+                ? "[模式] 音乐继续播放: 测试音与音乐共存, 分析走全段匹配滤波 (扫频 120ms)。"
+                : "[模式] 分流已静音: 麦克风只收得到测试音 (扫频 60ms)。");
+            RefreshState();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -239,7 +310,9 @@ namespace StereoSplitter
 
             if (applied && l.HasSuggestion) it.SubItems[4].Text = "已应用";
             else if (double.IsNaN(l.MeasuredMs)) it.SubItems[4].Text = "待测";
-            else if (l.SpreadMs > 18) it.SubItems[4].Text = "不稳 (极差 " + l.SpreadMs.ToString("0") + "ms)";
+            // 不静音条件下极差门槛收紧: 音乐环境本来就比静音环境抖, 若还按 18ms 放行,
+            // "三段各偏一点、中位数看着正常"的情况会被当成好数据收下。
+            else if (l.SpreadMs > (coexist ? 10.0 : 18.0)) it.SubItems[4].Text = "不稳 (极差 " + l.SpreadMs.ToString("0") + "ms)";
             else it.SubItems[4].Text = "r=" + l.Confidence.ToString("0.00");
         }
 
@@ -322,6 +395,7 @@ namespace StereoSplitter
             btnClose.Enabled = !on;
             cmbMic.Enabled = !on;
             btnRescan.Enabled = !on;
+            chkCoexist.Enabled = !on && hostMuted && setHostMute != null;
             if (on) btnApply.Enabled = false;
         }
 
@@ -352,13 +426,16 @@ namespace StereoSplitter
 
             string micId = mics[idx].Id;
             string micName = mics[idx].Name;
-            worker = new Thread(delegate () { Worker(micId, micName); });
+            // 在 UI 线程上快照条件: 测量期间勾选框是禁用的, 但把条件当成参数传下去比让工作线程
+            // 读共享字段更不容易在未来被改坏。
+            bool coexistNow = coexist;
+            worker = new Thread(delegate () { Worker(micId, micName, coexistNow); });
             worker.IsBackground = true;
             worker.Name = "LatencyCalibration";
             worker.Start();
         }
 
-        void Worker(string micId, string micName)
+        void Worker(string micId, string micName, bool coexistNow)
         {
             MicLatencyProbe probe = null;
             // 已有结果的路数: 中途停止时用它告诉用户"停在哪", 也是"这半套数据不能用"的依据。
@@ -368,9 +445,18 @@ namespace StereoSplitter
                 Post(delegate { lblState.Text = "正在打开麦克风…"; Append("麦克风: " + micName); });
                 probe = new MicLatencyProbe();
                 probe.OutLatencyMs = outLatencyMs;
+                probe.CoexistMode = coexistNow;
                 probe.ShouldCancel = delegate { return cancel; };
                 probe.Start(micId);
-                Post(delegate { Append("采集采样率 " + probe.CaptureRate + " Hz；按 " + outLatencyMs + "ms 缓冲测量 (" + Takes + " 段/路, 预热 2 段)。"); });
+                Post(delegate
+                {
+                    Append("采集采样率 " + probe.CaptureRate + " Hz；按 " + outLatencyMs + "ms 缓冲测量 (" +
+                        Takes + " 段/路, 预热 2 段)。");
+                    if (coexistNow)
+                        Append("  条件: 音乐继续播放；扫频 " +
+                            (MicLatencyProbe.CoexistChirpSeconds * 1000).ToString("0") +
+                            "ms, 可测上限 " + probe.MaxMeasurableMsNow.ToString("0") + "ms。");
+                });
                 if (cancel) return;
 
                 for (int i = 0; i < lanes.Count; i++)
@@ -399,8 +485,10 @@ namespace StereoSplitter
                         Post(delegate
                         {
                             UpdateRow(row);
-                            Append(string.Format("  {0}: {1:0.0} ms  (r={2:0.00}, 极差 {3:0.0}ms, {4} 段)",
-                                lane.Display, m.LatencyMs, m.Confidence, m.SpreadMs, m.Takes));
+                            Append(string.Format("  {0}: {1:0.0} ms  (r={2:0.00}{3}, 极差 {4:0.0}ms, {5} 段)",
+                                lane.Display, m.LatencyMs, m.Confidence,
+                                coexistNow ? ", PSR " + m.Psr.ToString("0.0") : "",
+                                m.SpreadMs, m.Takes));
                             Append("    各段: " + JoinMs(m.Samples));
                         });
                     }
@@ -525,6 +613,8 @@ namespace StereoSplitter
             }
             if (changes == 0) Append("各路到达时间本来就一致，不需要补延迟。");
             else Append("提示: 最慢的一路保持在 0ms (基准), 其余按实测差值补齐; 数字来自实测, 建议应用后再试听; 若仍有声像偏移, 可在卡片上微调。");
+            if (coexist) Append("注意: 本次是在「音乐继续播放」条件下测的, 信噪比低于静音模式。" +
+                "若应用后声像仍有偏移, 取消勾选「音乐继续播放」再测一次做对照。");
         }
 
         void ApplySuggestions()
