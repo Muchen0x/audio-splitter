@@ -24,6 +24,12 @@
 - 点延迟框箭头出现插入符：拦截 `WM_LBUTTONDBLCLK` 并收走编辑焦点（双击序列是 DOWN,UP,DBLCLK,UP）
 - 连点箭头卡顿：徽标只在内容真变时重建（19.40 → 3.04 ms/击）；连点数字只走一半的问题同步修掉
 
+### 移除
+
+- 两路时代的死 API 一并清掉：`AudioEngine.Start(float,…)`、`LeftRenderedSamples` / `RightBufferMs` 等六个属性、
+  `SharedRatioPpm`、`RoutingModel.ApplyTwoSinkLegacy` / `EnsureLegacySinks`，以及只服务这条路径的左右设备 ID 字段。
+  `Start(RoutingModel,…)` 成为唯一启动入口（`BufferStatus()` 的两路分支保留，日志仍用它）
+
 ### 变更
 
 - 自检 29 → **32** 项（新增扫频定位、延迟线重定向 11 条、接缝交叉 7 条）

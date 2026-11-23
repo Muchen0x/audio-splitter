@@ -20,7 +20,6 @@ namespace StereoSplitter
         WasapiLoopbackCapture loopback;
         MMDevice captureDev;
         // 设备 ID: MMDevice 在 Start 所在线程(后台)自建, 不跨线程传递 (NAudio #214)
-        readonly string leftDevId, rightDevId;
         readonly int driftMode, fixedPpm;
         Action<string> log;
         volatile int sampleRate;
@@ -133,19 +132,12 @@ namespace StereoSplitter
         // 头几秒的剩余抖动由 holding 闸门 + 3ms 淡入淡出兜底。
         const int PrePullGuardMs = 40;
 
-        public AudioEngine(string leftDevId, string rightDevId, Action<string> log, int driftMode, int fixedPpm)
+        /// <summary>设备全部写在 <see cref="RoutingModel"/> 里, 引擎本身不需要知道左右 ID。</summary>
+        public AudioEngine(Action<string> log, int driftMode, int fixedPpm)
         {
-            this.leftDevId = leftDevId;
-            this.rightDevId = rightDevId;
             this.log = log;
             this.driftMode = driftMode;
             this.fixedPpm = fixedPpm;
-        }
-
-        /// <summary>N 路入口: 设备全部写在 RoutingModel 里, 不再需要左右 ID (两路兼容入口仍可传)。</summary>
-        public AudioEngine(Action<string> log, int driftMode, int fixedPpm)
-            : this(null, null, log, driftMode, fixedPpm)
-        {
         }
 
         public string CaptureId
@@ -185,24 +177,6 @@ namespace StereoSplitter
             return i >= 0 && i < sinks.Count ? sinks[i].Provider : null;
         }
 
-        public long LeftRenderedSamples { get { var p = ProviderAt(0); return p == null ? 0 : p.RenderedSamples; } }
-        public long RightRenderedSamples { get { var p = ProviderAt(1); return p == null ? 0 : p.RenderedSamples; } }
-        public int LeftBufferMs { get { var p = ProviderAt(0); return p == null ? 0 : p.BufferedMs; } }
-        public int RightBufferMs { get { var p = ProviderAt(1); return p == null ? 0 : p.BufferedMs; } }
-        public int LeftRegulatedMs { get { var p = ProviderAt(0); return p == null ? 0 : p.RegulatedMs; } }
-        public int RightRegulatedMs { get { var p = ProviderAt(1); return p == null ? 0 : p.RegulatedMs; } }
-
-        /// <summary>共享校正比例 (ppm)。独立组时返回第一路的独立 ratio。</summary>
-        public int SharedRatioPpm
-        {
-            get
-            {
-                var p = ProviderAt(0);
-                if (p != null) return (int)p.RatioPpm;
-                return 0;
-            }
-        }
-
         /// <summary>启动结果: 预缓冲是否真的拿到了数据 (旧实现超时也当成功, 导致空缓冲起播)。</summary>
         public enum StartOutcome
         {
@@ -211,16 +185,7 @@ namespace StereoSplitter
             NoAudioYet
         }
 
-        /// <summary>两路兼容入口 (UI 现有调用): 等价于 split-lr 模式 + 两路同组。</summary>
-        public StartOutcome Start(float gain, float master, int prebufferMs, int outLatencyMs, int leftDelayMs, int rightDelayMs,
-            Func<bool> aborted, string expectedCaptureId)
-        {
-            routing = RoutingModel.SplitLr("s0", leftDevId, "左", leftDelayMs,
-                                           "s1", rightDevId, "右", rightDelayMs);
-            return StartCore(routing, gain, master, prebufferMs, outLatencyMs, aborted, expectedCaptureId);
-        }
-
-        /// <summary>N 路入口 (P3 起由 UI 列表驱动)。</summary>
+        /// <summary>唯一启动入口: 设备/声道/延迟全部由路由模型描述 (UI 卡片翻译产物)。</summary>
         public StartOutcome Start(RoutingModel model, float gain, float master, int prebufferMs, int outLatencyMs,
             Func<bool> aborted, string expectedCaptureId)
         {

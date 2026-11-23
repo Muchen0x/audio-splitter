@@ -177,32 +177,6 @@ namespace StereoSplitter
             return list;
         }
 
-        /// <summary>
-        /// 两路时代的下拉框仍影响 s0/s1 —— P2 阶段 UI 只有这两个控件,
-        /// 因此把它们视为 s0/s1 的设备/延迟权威源 (P3 换成设备列表后删除此桥接)。
-        /// </summary>
-        public void ApplyTwoSinkLegacy(string leftId, int leftDelay, string rightId, int rightDelay)
-        {
-            EnsureLegacySinks();
-            var l = SinkSpecs[0];
-            var r = SinkSpecs[1];
-            l.DeviceId = leftId ?? ""; l.Label = "左"; l.DelayMs = leftDelay;
-            r.DeviceId = rightId ?? ""; r.Label = "右"; r.DelayMs = rightDelay;
-        }
-
-        void EnsureLegacySinks()
-        {
-            while (SinkSpecs.Count < 2)
-            {
-                int n = SinkSpecs.Count;
-                var s = new SinkSpec("s" + n, n == 0 ? "左" : "右", "", n == 0 ? 1 : 1, 0);
-                s.ClockGroupId = "g0";
-                SinkSpecs.Add(s);
-            }
-            // 旧配置回退到左右分离时, 逻辑声道可能还没建 (ini 里只有设备名)
-            if (Channels.Count == 0) ApplyModeTemplate(WorkMode.SplitLr, SinkSpecs);
-        }
-
         public LogicalChannel FindChannel(string key)
         {
             for (int i = 0; i < Channels.Count; i++)
