@@ -67,7 +67,8 @@ namespace StereoSplitter
                 CaseLogClassify,
                 CaseSessionLogClear,
                 CaseEmbeddedAudioResources,
-                CaseMicChirpLocate
+                CaseMicChirpLocate,
+                CaseAppStateMachine
             };
 
             int aborted = 0;
@@ -1491,6 +1492,49 @@ namespace StereoSplitter
         {
             if (!ok) failed++;
             sb.AppendLine((ok ? "   ok   " : "   FAIL ") + what);
+        }
+
+        /// <summary>
+        /// R-07: 状态迁移表。穷举 5×5 全部组合，不只测白名单 —— 漏掉的边只有穷举才会暴露，
+        /// 而漏边的表现是正常路径在日志里刷"迁移越界"；那种噪声会让人很快学会忽略这条警告，
+        /// 等于把刚建立的观测通道又关掉。
+        /// </summary>
+        static void CaseAppStateMachine()
+        {
+            Begin("状态迁移表 (5×5 穷举)");
+
+            var legal = new HashSet<string>
+            {
+                "Ready->Ready", "Ready->Starting", "Ready->Failed",
+                "Starting->Starting", "Starting->Running", "Starting->Stopped", "Starting->Failed",
+                "Running->Running", "Running->Starting", "Running->Stopped", "Running->Failed",
+                "Stopped->Stopped", "Stopped->Starting",
+                "Failed->Failed", "Failed->Starting",
+            };
+
+            int pass = 0, deny = 0;
+            foreach (AppState f in AppStateMachine.All)
+                foreach (AppState t in AppStateMachine.All)
+                {
+                    string key = AppStateMachine.Text(f) + "->" + AppStateMachine.Text(t);
+                    bool expect = legal.Contains(key);
+                    bool got = AppStateMachine.CanTransition(f, t);
+                    if (got == expect) { if (expect) pass++; else deny++; }
+                    else Check("迁移表: " + key + " 期望 " + expect + " 实际 " + got, false);
+                }
+
+            Check("白名单 15 条全部放行 (" + pass + ")", pass == legal.Count && legal.Count == 15);
+            Check("其余 10 条全部拒绝 (" + deny + ")", deny == 25 - legal.Count && deny == 10);
+
+            // 单独点出四条最危险的误放行: 它们会让两条恢复路径互相踩
+            Check("Ready→Running 拒绝 (没经过 Starting 不可能在跑)",
+                !AppStateMachine.CanTransition(AppState.Ready, AppState.Running));
+            Check("Stopped→Running 拒绝",
+                !AppStateMachine.CanTransition(AppState.Stopped, AppState.Running));
+            Check("Running→Ready 拒绝 (Ready 只表示还没开始过)",
+                !AppStateMachine.CanTransition(AppState.Running, AppState.Ready));
+            Check("Stopped→Failed 拒绝 (停止与放弃各有专属入口)",
+                !AppStateMachine.CanTransition(AppState.Stopped, AppState.Failed));
         }
 
         /// <summary>

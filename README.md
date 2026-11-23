@@ -106,7 +106,7 @@
 ## 命令行工具
 
 ```bat
-SplitterGUI.cmd --selftest        :: 路由自检 (32 项断言, 不发声, 退出码 0 = 全过)
+SplitterGUI.cmd --selftest        :: 路由自检 (33 项断言, 不发声, 退出码 0 = 全过)
 SplitterGUI.cmd --volprobe        :: 打印各端点真值 (音量/静音/默认) 与 ini 保存值, 只读
 SplitterGUI.cmd --list ["片段"]   :: 列出渲染端点 (可按名字过滤), 改之前先确认目标, 只读
 SplitterGUI.cmd --setvol "设备名片段:百分比"     :: 直接写端点音量 (可重复)

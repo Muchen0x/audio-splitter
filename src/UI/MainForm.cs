@@ -141,7 +141,8 @@ namespace StereoSplitter
 
         const int SW_RESTORE = 9;
 
-        enum AppState { Ready, Starting, Running, Stopped, Failed }
+        // R-07: 状态与迁移表移到 src/Model/AppState.cs (StereoSplitter.Model) —— 状态机是纯逻辑,
+        // 必须能被 --selftest 穷举; 放在 MainForm 的嵌套类型里, Infrastructure 层的自检够不到。
         AppState state = AppState.Ready;
 
         volatile bool volSyncing = false;
@@ -645,6 +646,13 @@ namespace StereoSplitter
 
         void SetAppState(AppState s)
         {
+            // R-07: 四条恢复路径 (整链路重建 / 单路重建 / 端点回归轮询 / 看门狗) 都从这里改状态,
+            // 但"哪些迁移允许"从来没有集中表达过。这里只判不拦 —— 越界说明两套恢复逻辑同时对同一条
+            // 链路动手, 记下来供排查; 真去拦的代价 (恢复路径被冻住、界面卡在"启动中") 比记错大得多。
+            AppState prev = state;
+            if (!AppStateMachine.CanTransition(prev, s))
+                Log("[警告] 状态迁移越界: " + AppStateMachine.Text(prev) + " → " + AppStateMachine.Text(s) +
+                    "（不在允许集合内；通常意味着两条恢复路径同时对同一条链路动手）");
             state = s;
 
             // 分流运行期间阻止系统空闲待机 (Modern Standby / S0 低功耗):

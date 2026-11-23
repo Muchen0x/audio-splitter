@@ -11,6 +11,7 @@ using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using StereoSplitter.Devices;
 using StereoSplitter.Infrastructure;
+using StereoSplitter.Model;
 
 namespace StereoSplitter
 {
