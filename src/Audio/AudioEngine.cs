@@ -472,6 +472,22 @@ namespace StereoSplitter
             if (maxDelay > 0)
                 log("[启动] 延迟补偿: " + JoinPairs(specs, i => specs[i].DelayMs + "ms"));
 
+            // R-16: 每路环形缓冲固定 1000ms, 8ch/48k 浮点约 1.5MB/路。路数与声道数上去之后
+            // 这是本进程最大的一笔常驻内存, 但以前只体现在任务管理器里 —— 打出来, 用户报
+            // "内存占用高"时第一眼就能对上账。
+            long bufBytes = 0, maxLane = 0;
+            for (int i = 0; i < sinks.Count; i++)
+            {
+                if (sinks[i].Buffer == null) continue;
+                long len = sinks[i].Buffer.BufferLength;
+                bufBytes += len;
+                if (len > maxLane) maxLane = len;
+            }
+            if (bufBytes > 0)
+                log("[启动] 环形缓冲: " + sinks.Count + " 路 × 1000ms 共 " +
+                    (bufBytes / (1024.0 * 1024.0)).ToString("0.0") + " MB (最大单路 " +
+                    (maxLane / 1024) + " KB)");
+
             if (aborted != null && aborted()) throw new OperationCanceledException("启动已取消");
 
             for (int i = 0; i < sinks.Count; i++) sinks[i].Start();

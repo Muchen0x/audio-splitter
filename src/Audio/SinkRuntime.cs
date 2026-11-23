@@ -72,10 +72,33 @@ namespace StereoSplitter
         // 运行中热更新: 引擎 Compile 出新矩阵后整体替换引用, 混音线程每块取一次本地副本。
         // volatile 保证替换立刻对音频线程可见 (矩阵本身不可变, 换引用即"原子提交")。
         volatile float[,] matrix;
+        // R-16: 热路径另存一份"行数组"表示。`float[,]` 的每次访问都要算 p*cols+s 再做一次
+        // 二维边界检查, 内层循环 (每帧 × 每输出声道 × 每源声道) 上这点开销会累积; 拆成
+        // `float[][]` 后每行是连续数组, 内层只做一维索引。矩阵不可变, 换引用即原子提交,
+        // 所以这两份引用总是一起换, 音频线程读到的不会新旧混搭。
+        volatile float[][] matrixRows;
         public float[,] Matrix
         {
             get { return matrix; }
-            set { matrix = value; }
+            set
+            {
+                matrix = value;
+                matrixRows = ToRows(value);
+            }
+        }
+
+        static float[][] ToRows(float[,] m)
+        {
+            if (m == null) return null;
+            int rows = m.GetLength(0), cols = m.GetLength(1);
+            var r = new float[rows][];
+            for (int p = 0; p < rows; p++)
+            {
+                var row = new float[cols];
+                for (int s = 0; s < cols; s++) row[s] = m[p, s];
+                r[p] = row;
+            }
+            return r;
         }
         public int OutCh { get; private set; }
         public int FillBytes { get; private set; }
@@ -386,10 +409,10 @@ namespace StereoSplitter
             if (mixed == null || mixed.Length < need) mixed = new float[need];
             if (outBytes == null || outBytes.Length < need * 4) outBytes = new byte[need * 4];
 
-            var m = Matrix;
+            var rows = matrixRows;
             // 声道数变了但还没重建 (热替换挡不住的边界): 宁可直通也不要越界
-            if (m != null && m.GetLength(0) != oc) m = null;
-            if (m == null)
+            if (rows != null && rows.Length != oc) rows = null;
+            if (rows == null)
             {
                 // 未装配矩阵 (理论上不会发生): 直通前 N 个源声道, 保证不静音
                 for (int f = 0; f < frames; f++)
@@ -398,7 +421,7 @@ namespace StereoSplitter
             }
             else
             {
-                int sc = m.GetLength(1);
+                int sc = rows[0].Length;
                 int useCh = sc < srcCh ? sc : srcCh;
                 int clipped = 0;
                 for (int f = 0; f < frames; f++)
@@ -407,10 +430,11 @@ namespace StereoSplitter
                     int db = f * oc;
                     for (int p = 0; p < oc; p++)
                     {
+                        float[] row = rows[p];
                         float acc = 0f;
                         for (int s = 0; s < useCh; s++)
                         {
-                            float k = m[p, s];
+                            float k = row[s];
                             if (k != 0f) acc += k * srcF[sb + s];
                         }
                         if (acc > 1f) { acc = 1f; clipped++; }
