@@ -27,7 +27,7 @@ namespace StereoSplitter
                 Control drift = Field(mf, "chkDrift") as Control;
                 Control tray = Field(mf, "chkMinimizeToTray") as Control;
                 Control muteCap = Field(mf, "chkMuteCapture") as Control;
-                int idx0 = cmb is ComboBox ? ((ComboBox)cmb).SelectedIndex : -1;
+                int idx0 = SelOf(cmb);
                 bool d0 = drift is CheckBox && ((CheckBox)drift).Checked;
                 bool t0 = tray is CheckBox && ((CheckBox)tray).Checked;
                 bool m0 = muteCap is CheckBox && ((CheckBox)muteCap).Checked;
@@ -61,7 +61,7 @@ namespace StereoSplitter
                 }
                 for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
 
-                int idx1 = cmb is ComboBox ? ((ComboBox)cmb).SelectedIndex : -1;
+                int idx1 = SelOf(cmb);
                 bool d1 = drift is CheckBox && ((CheckBox)drift).Checked;
                 bool t1 = tray is CheckBox && ((CheckBox)tray).Checked;
                 bool m1 = muteCap is CheckBox && ((CheckBox)muteCap).Checked;
@@ -235,19 +235,24 @@ namespace StereoSplitter
                 }
                 // 签名缓存不能把徽标"冻住": 改规格后必须真的重建
                 var specPanel = Field(mf, "flwSpecChannels") as FlowLayoutPanel;
-                var cmbSpecTest = Field(mf, "cmbSpec") as ComboBox;
-                if (specPanel != null && cmbSpecTest != null && cmbSpecTest.Items.Count > 1)
+                var cmbSpecTest = Field(mf, "cmbSpec") as Control;
+                if (specPanel != null && cmbSpecTest != null && ItemCountOf(cmbSpecTest) > 1)
                 {
                     string sigBefore = specPanel.Tag as string;
                     int nBefore = specPanel.Controls.Count;
-                    int oldIdx = cmbSpecTest.SelectedIndex;
-                    cmbSpecTest.SelectedIndex = (oldIdx + 1) % cmbSpecTest.Items.Count;
+                    int oldIdx = SelOf(cmbSpecTest);
+                    SetSel(cmbSpecTest, (oldIdx + 1) % ItemCountOf(cmbSpecTest));
                     for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
                     Console.Out.WriteLine("SPEC-CHANGE badges " + nBefore + " -> " + specPanel.Controls.Count
                         + " sigChanged=" + (sigBefore != (specPanel.Tag as string)));
-                    cmbSpecTest.SelectedIndex = oldIdx;
+                    SetSel(cmbSpecTest, oldIdx);
                     Application.DoEvents();
                 }
+
+                // 自绘下拉: 展开后的弹层几何。行高/圆角是运行时行为, 这里量尺寸与裁剪是否生效。
+                DumpComboPopup(mf, "cmbSpec", "规格");
+                DumpComboPopup(mf, "cmbDefault", "捕获");
+
                 mf.Close();
                 return;
             }
@@ -461,6 +466,10 @@ namespace StereoSplitter
                     + " visible=" + f.Visible + " state=" + f.WindowState + "\n");
             }
 
+            // 自绘下拉: 展开后的弹层几何 (行高/圆角裁剪是运行时行为, 这里量尺寸)
+            DumpComboPopup(f, "cmbSpec", "规格");
+            DumpComboPopup(f, "cmbDefault", "捕获");
+
             // 极值测试: 把日志区一路压到 0, 再看控件是否溢出
             if (split != null && args.Length >= 3 && (args[2] == "log0" || args[2] == "top0"))
             {
@@ -560,6 +569,73 @@ namespace StereoSplitter
             if (string.IsNullOrEmpty(s)) return "";
             s = s.Replace("\r", " ").Replace("\n", " ");
             return s.Length > 22 ? s.Substring(0, 22) : s;
+        }
+
+        /// <summary>下拉框的选中索引 / 条目数 / 设置选中项 —— 自绘的 RoundedCombo 与原生 ComboBox 都覆盖。</summary>
+        static int SelOf(Control c)
+        {
+            if (c is RoundedCombo) return ((RoundedCombo)c).SelectedIndex;
+            if (c is ComboBox) return ((ComboBox)c).SelectedIndex;
+            return -1;
+        }
+
+        static void SetSel(Control c, int idx)
+        {
+            if (c is RoundedCombo) { ((RoundedCombo)c).SelectedIndex = idx; return; }
+            if (c is ComboBox) { ((ComboBox)c).SelectedIndex = idx; }
+        }
+
+        static int ItemCountOf(Control c)
+        {
+            if (c is RoundedCombo) return ((RoundedCombo)c).Items.Count;
+            if (c is ComboBox) return ((ComboBox)c).Items.Count;
+            return 0;
+        }
+
+        /// <summary>
+        /// 展开一个自绘下拉, 打印弹层与其中列表的实际尺寸, 再收起。
+        /// <para>弹层的尺寸是 ToolStrip 的布局引擎摆的, 算错只会表现为"列表被裁掉一截",
+        /// 光读代码看不出来 —— 这里量一遍: 列表高度必须 ≥ 行数×行高, 且窗口要带圆角 Region。</para>
+        /// </summary>
+        static void DumpComboPopup(Control host, string field, string label)
+        {
+            RoundedCombo combo = Field(host, field) as RoundedCombo;
+            if (combo == null) { Console.Out.WriteLine("COMBO[" + label + "] not found"); return; }
+
+            MethodInfo openM = typeof(RoundedCombo).GetMethod("OpenDropDown", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (openM == null) { Console.Out.WriteLine("COMBO[" + label + "] OpenDropDown missing"); return; }
+            openM.Invoke(combo, null);
+            for (int i = 0; i < 5; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+
+            ToolStrip ts = Field(combo, "popup") as ToolStrip;
+            if (ts == null || !ts.Visible)
+            {
+                Console.Out.WriteLine("COMBO[" + label + "] popup=closed items=" + combo.Items.Count);
+                return;
+            }
+
+            Control list = null;
+            if (ts.Items.Count > 0)
+            {
+                var h = ts.Items[0] as ToolStripControlHost;
+                if (h != null) list = h.Control;
+            }
+
+            int rows = Math.Min(combo.Items.Count, combo.MaxDropDownItems);
+            bool fit = list != null && list.Height >= rows * combo.ItemHeight;
+            int listItems = list is ListBox ? ((ListBox)list).Items.Count : -1;
+            Console.Out.WriteLine("COMBO[" + label + "] items=" + combo.Items.Count
+                + " rows=" + rows + " rowH=" + combo.ItemHeight
+                + " popup=" + ts.Size
+                + " pad=" + ts.Padding.Horizontal + "/" + ts.Padding.Vertical
+                + " list=" + (list == null ? "null" : list.Size.ToString())
+                + " listItems=" + listItems
+                + " region=" + (ts.Region == null ? "NONE" : "rounded")
+                + " fit=" + (fit && listItems == combo.Items.Count ? "ok" : "BAD"));
+
+            MethodInfo closeM = typeof(RoundedCombo).GetMethod("CloseDropDown", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (closeM != null) closeM.Invoke(combo, null);
+            for (int i = 0; i < 3; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
         }
 
         static object Field(object o, string name)

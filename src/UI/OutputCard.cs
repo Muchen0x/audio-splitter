@@ -16,8 +16,8 @@ namespace StereoSplitter
     class OutputCardControl : UserControl
     {
         public readonly OutputCardModel Model;
-        public readonly FlatCombo cmbDevice;
-        public readonly NoWheelComboBox cmbChannel;
+        public readonly RoundedCombo cmbDevice;
+        public readonly RoundedCombo cmbChannel;
         public readonly NumericUpDown nudDelay;
         public readonly VolumeSlider volTrack;
         public readonly Label lblVol;
@@ -30,7 +30,7 @@ namespace StereoSplitter
         sealed class SlotRow
         {
             public Label Tag;
-            public FlatCombo Cmb;
+            public RoundedCombo Cmb;
             public VolumeSlider Vol;
             public Label Lbl;
         }
@@ -83,16 +83,24 @@ namespace StereoSplitter
             // 先定尺寸再摆子控件; 位置统一由 LayoutControls() 按实际宽度摆放, 不用 Anchor
             Size = new Size(CardWidth, CardHeight);
 
-            cmbDevice = new FlatCombo { DropDownWidth = 375 };
-            cmbChannel = new NoWheelComboBox
+            cmbDevice = new RoundedCombo
+            {
+                Height = 24,
+                ItemHeight = 24,
+                MaxDropDownItems = 12,
+                DropDownWidth = 375
+            };
+            cmbChannel = new RoundedCombo
             {
                 Width = 92,
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                // 自绘: 运行中要把「多声道…」这一项画成灰色（列表项没法单独禁用）
-                DrawMode = DrawMode.OwnerDrawFixed,
-                ItemHeight = 18
+                Height = 24,
+                ItemHeight = 24,
+                MaxDropDownItems = 10,
+                // 运行中把「多声道…」显示成灰色 (列表项本身没法单独禁用, 只能告诉绘制这行是灰的)。
+                // 传闭包而不是快照: shapeLocked 随时在变, 读字段天然跟着变, 配合 SetShapeLock 里的
+                // Invalidate 就能立刻反映。
+                ItemGrayedFilter = idx => shapeLocked && idx >= MultiItemIndex
             };
-            cmbChannel.DrawItem += DrawChannelItem;
             lblDelay = new Label { Text = "延迟", AutoSize = true };
             // NoWheelNumeric: 光标停在上面滚轮不会改延迟 (误滚一下就把声场拖偏, 很难发现),
             // 但滚轮会转给外层列表照常滚动; 上下按钮 / ↑↓ 每次 ±10ms
@@ -275,9 +283,12 @@ namespace StereoSplitter
             };
             // 与第一行的设备/声道下拉同一档 (ItemHeight 18 → 高 24): 卡片里混用 24/25 两种高度
             // 会让同一列控件的底边对不齐, 差 1px 也看得出来
-            r.Cmb = new FlatCombo
+            r.Cmb = new RoundedCombo
             {
                 Width = 92,
+                Height = 24,
+                ItemHeight = 24,
+                MaxDropDownItems = 10,
                 Enabled = !channelLocked        // 启动中新建的行也要是禁用状态
             };
             r.Vol = new VolumeSlider
@@ -628,29 +639,5 @@ namespace StereoSplitter
 
         /// <summary>「多声道…」项的下标 (= 规格声道数, 它总在最后)。</summary>
         int MultiItemIndex { get { return channelsRef == null ? -1 : channelsRef.Count; } }
-
-        /// <summary>
-        /// 声道下拉自绘: 运行中把「多声道…」画成灰色。ComboBox 没有"禁用单个列表项"的能力，
-        /// 只能自绘 + 在选择事件里回滚。
-        /// </summary>
-        void DrawChannelItem(object sender, DrawItemEventArgs e)
-        {
-            e.DrawBackground();
-            int idx = e.Index >= 0 ? e.Index : cmbChannel.SelectedIndex;
-            if (idx < 0 || idx >= cmbChannel.Items.Count) return;
-
-            bool dim = !cmbChannel.Enabled || (shapeLocked && idx >= MultiItemIndex);
-            Color fg;
-            if (dim) fg = SystemColors.GrayText;
-            else if ((e.State & DrawItemState.Selected) != 0) fg = SystemColors.HighlightText;
-            else fg = cmbChannel.ForeColor;
-
-            // 外框那条 (e.Index < 0) 的 Bounds 含边框, 留 3px 内缩, 与默认绘制的文字位置对齐
-            Rectangle r = e.Bounds;
-            if (e.Index < 0) r = new Rectangle(r.X + 3, r.Y, r.Width - 6, r.Height);
-            TextRenderer.DrawText(e.Graphics, cmbChannel.Items[idx].ToString(), cmbChannel.Font, r, fg,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-            // 不再 DrawFocusRectangle: 下拉项上的虚线焦点框也是"点一下留一圈虚线"的来源
-        }
     }
 }

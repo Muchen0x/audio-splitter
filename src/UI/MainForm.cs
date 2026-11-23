@@ -16,7 +16,7 @@ namespace StereoSplitter
 {
     partial class MainForm : Form
     {
-        FlatCombo cmbDefault, cmbSpec;
+        RoundedCombo cmbDefault, cmbSpec;
         NumericUpDown nudWaterInterval;
         // 输出卡片: 每张卡片 = 一台设备 (声道 + 延迟 + 主音量 + 静音; 多声道时另有每行声道与音量)
         readonly List<OutputCardModel> models = new List<OutputCardModel>();   // UI/持久化的权威模型
@@ -62,7 +62,7 @@ namespace StereoSplitter
         // 声明成 internal 是为了让设置页能直接拿到它们, 不必再维护一份"控件清单"。
         internal Button btnCalibrate;      // 运行中可用: 校准期间临时静音分流, 不拆链路
         internal Label lblLatency;
-        internal FlatCombo cmbLatency;
+        internal RoundedCombo cmbLatency;
         internal CheckBox chkMinimizeToTray;
         internal CheckBox chkDrift;
         internal CheckBox chkMuteCapture;
@@ -322,15 +322,14 @@ namespace StereoSplitter
             Controls.Add(splitContainer);
 
             lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
-            cmbDefault = new FlatCombo
+            cmbDefault = new RoundedCombo
             {
                 Location = new Point(110, 10),
                 Width = 250,
+                Height = 28,
                 DropDownWidth = 375,
-                // 高 28 (ItemHeight 22): 比原生高 3px, 条目更好点。y 从 12 提到 10,
-                // 让中心仍与左侧标签(23.5)/刷新按钮(22.5)/齿轮(22)在同一水平线上
-                ItemHeight = 22,
-                FlatStyle = FlatStyle.Flat
+                ItemHeight = 24,
+                MaxDropDownItems = 12
             };
             btnRefresh = new NoCueButton { Text = "刷新设备", Location = new Point(417, 11), Width = 72, Height = 23 };
             // 设置入口: 右上角齿轮 (位置由 LayoutTopRows 按面板宽度贴右)
@@ -342,7 +341,7 @@ namespace StereoSplitter
             // 由 SettingsForm 打开时搬入、关闭时搬回。位置只是占位, 搬入时会被重设。
             chkMuteCapture = new NoCueCheckBox { Text = "消音", AutoSize = true };
             lblLatency = new Label { Text = "延迟档位:", AutoSize = true };
-            cmbLatency = new FlatCombo { Width = 200 };
+            cmbLatency = new RoundedCombo { Width = 200, Height = 24, ItemHeight = 24, MaxDropDownItems = 8 };
             chkMinimizeToTray = new NoCueCheckBox { Text = "关闭时最小化到托盘", AutoSize = true };
             chkDrift = new NoCueCheckBox { Text = "校正", AutoSize = true, Checked = true };
             btnCalibrate = new NoCueButton { Text = "延迟校准", Width = 76, Height = 26 };
@@ -364,13 +363,13 @@ namespace StereoSplitter
             // 行高按「开始分流」按钮的 35px 算: 下拉/标签/添加输出都与按钮中心对齐, 见下方 y 值。
             // 水平位置里只有「添加输出」贴右、其它随面板宽度走 → 交给 LayoutTopRows 重算 Left/Width。
             lblSpec = new Label { Text = "规格:", Location = new Point(15, 129), AutoSize = true };
-            cmbSpec = new FlatCombo
+            cmbSpec = new RoundedCombo
             {
                 Location = new Point(62, 125),
                 Width = 100,
-                // 与捕获下拉同档 (高 28)。y 从 127 提到 125, 中心 139 与按钮中心 137.5 只差 1.5px
-                ItemHeight = 22,
-                FlatStyle = FlatStyle.Flat
+                Height = 28,
+                ItemHeight = 24,
+                MaxDropDownItems = 6
             };
             cmbSpec.Items.AddRange(new object[] { "单声道", "立体声", "2.1", "四声道", "5.1" });
             cmbSpec.SelectedIndex = 1;

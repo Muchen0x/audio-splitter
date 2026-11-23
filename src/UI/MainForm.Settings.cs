@@ -165,7 +165,7 @@ namespace StereoSplitter
             }
         }
 
-        void RestoreDeviceSelection(string key, NoWheelComboBox combo, string label)
+        void RestoreDeviceSelection(string key, RoundedCombo combo, string label)
         {
             string id = GetStr(key);
             if (string.IsNullOrEmpty(id)) return;

@@ -59,7 +59,7 @@ namespace StereoSplitter
         /// </summary>
         readonly bool hostRunning;
 
-        readonly FlatCombo cmbMic = new FlatCombo();
+        readonly RoundedCombo cmbMic = new RoundedCombo { Height = 24, ItemHeight = 24, MaxDropDownItems = 10 };
         readonly Button btnRescan = new NoCueButton { Text = "刷新" };
         readonly ListView lv = new ListView();
         readonly Label lblTip = new Label();
