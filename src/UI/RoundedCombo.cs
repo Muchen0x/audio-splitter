@@ -45,10 +45,18 @@ namespace StereoSplitter
         internal const int PopupRadius = 8;
         /// <summary>文字左内缩。与卡片里其它控件的 8px 对齐。</summary>
         internal const int TextPadX = 8;
-        /// <summary>右侧给箭头留的宽度。</summary>
-        const int ArrowZone = 22;
+        /// <summary>右侧给箭头留的宽度 (internal: 量测工具要靠它算文字可用宽度)。</summary>
+        internal const int ArrowZone = 22;
         /// <summary>弹层上下留白 (视觉上让第一行不贴边)。</summary>
         const int PopupPadY = 4;
+        /// <summary>
+        /// 弹层四周留给自绘阴影的像素。
+        /// <para><b>为什么要自己画</b>: 系统的 <c>DropShadowEnabled</c> 是按窗口**矩形**投的,
+        /// 与弹层的圆角 Region 不匹配 —— 四个圆角外侧会露出方角灰影, 看起来比没有阴影更脏。
+        /// 关掉系统阴影、把窗口外扩这么多、在自己的绘制里画圆角投影, 形状才与控件圆角一致。</para>
+        /// <para>代价是弹层窗口比内容宽 2×该值: 落点与量测都要按"内容区"算, 不能再用窗口尺寸直接比。</para>
+        /// </summary>
+        internal const int ShadowPad = 4;
         /// <summary>自动收起后多久内不允许再展开 (毫秒)。见 <see cref="OpenDropDown"/> 的说明。</summary>
         const int AutoCloseGuardMs = 300;
 
@@ -539,9 +547,9 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 弹层尺寸: 高 = 行数×行高 + 上下留白, 宽 = 本体宽度 (或显式指定的 <see cref="DropDownWidth"/>)。
-        /// <para>这里不再为滚动条加宽: 滚动条画在列表右侧的留白里 (见 <see cref="ComboRowList"/>),
-        /// 所以需要滚动时弹层也不会比本体宽出一截。</para>
+        /// 弹层窗口尺寸 = 内容尺寸 + 四周阴影边距。
+        /// <para>内容宽 = 本体宽度 (或显式指定的 <see cref="DropDownWidth"/>), 内容高 = 行数×行高 +
+        /// 上下留白 + 2px 边框。滚动条画在列表右侧的留白里, 不额外加宽。</para>
         /// </summary>
         Size PopupSize()
         {
@@ -549,12 +557,14 @@ namespace StereoSplitter
             int w = Math.Max(Width, DropDownWidth);
 
             int h = rows * ItemHeight + PopupPadY * 2 + 2;                 // +2 = 左右各 1px 边框
-            return new Size(w, h);
+            return new Size(w + ShadowPad * 2, h + ShadowPad * 2);
         }
 
         /// <summary>
         /// 弹层的落点 (相对本控件客户区)。下方放不下且上方更宽敞时向上翻。
         /// <para>横向也要夹: 卡片贴右缘时 375px 宽的弹层会伸出屏幕。</para>
+        /// <para><b>坐标按内容区算, 不按窗口</b>: 窗口四周多出 <see cref="ShadowPad"/> 的阴影边距,
+        /// 直接拿窗口尺寸去夹会把阴影算进"可见宽度", 弹层会整体偏左一个边距。</para>
         /// </summary>
         Point DropLocation(Size size)
         {
@@ -562,13 +572,20 @@ namespace StereoSplitter
             Rectangle wa = scr.WorkingArea;
             Rectangle here = new Rectangle(PointToScreen(Point.Empty), Size);
 
+            int pad = ShadowPad;
+            int cw = size.Width - pad * 2;      // 内容宽
+            int ch = size.Height - pad * 2;     // 内容高
+
             int below = wa.Bottom - here.Bottom - 2;
             int above = here.Top - wa.Top - 2;
-            int y = (below >= size.Height || below >= above) ? Height + 2 : -size.Height - 1;
+            // 内容上缘 = 窗口 y + pad, 所以窗口 y 要反向让掉一个 pad, 才能让内容仍贴本体下缘 2px。
+            // 向上翻同理: 内容下缘贴本体上缘 1px, 阴影那 3px 会压在本体上, 但 alpha 很低看不出来。
+            int y = (below >= ch || below >= above) ? Height + 2 - pad : pad - 1 - size.Height;
 
-            int x = 0;
-            if (here.Left + size.Width > wa.Right) x = wa.Right - size.Width - here.Left;
-            if (here.Left + x < wa.Left) x = wa.Left - here.Left;
+            // 内容左缘 = here.Left + x + pad; 夹取也按内容宽
+            int x = -pad;
+            if (here.Left + x + cw + pad > wa.Right) x = wa.Right - cw - pad - here.Left;
+            if (here.Left + x + pad < wa.Left) x = wa.Left - pad - here.Left;
             return new Point(x, y);
         }
 
@@ -629,11 +646,14 @@ namespace StereoSplitter
         {
             AutoSize = false;
             AutoClose = true;
-            DropShadowEnabled = true;
+            // 系统投影按窗口**矩形**投, 与弹层的圆角 Region 对不上: 四个角外侧会露出方角灰影。
+            // 关掉它, 改成窗口外扩 ShadowPad + 下面 PopupRenderer 自绘圆角投影。
+            DropShadowEnabled = false;
             BackColor = Color.White;
             GripStyle = ToolStripGripStyle.Hidden;
-            // 左右各 1px 给边框, 上下再留 4px 让首末行不贴边
-            Padding = new Padding(1, 4, 1, 4);
+            // 左右各 1px 边框 + 上下各 4px 留白, 再各加一圈阴影边距
+            int pad = RoundedCombo.ShadowPad;
+            Padding = new Padding(1 + pad, 4 + pad, 1 + pad, 4 + pad);
             Size = size;
             Renderer = new PopupRenderer();
 
@@ -641,7 +661,7 @@ namespace StereoSplitter
             // 定位, 不依赖 ListBox 的 IndexFromPoint (那份副本一旦忘填, 表现就是"能展开但点哪行都没反应")。
             List = new ComboRowList(owner)
             {
-                Size = new Size(size.Width - 2, size.Height - 8 - 2)
+                Size = new Size(size.Width - 2 - pad * 2, size.Height - 8 - 2 - pad * 2)
             };
             var host = new ToolStripControlHost(List)
             {
@@ -687,11 +707,16 @@ namespace StereoSplitter
             ShapeRound();
         }
 
-        /// <summary>把窗口本身裁成圆角: 不这么做的话浮层的四个角会露出方角。</summary>
+        /// <summary>
+        /// 把窗口本身裁成圆角: 不这么做的话浮层的四个角会露出方角。
+        /// <para>半径要加上阴影边距 —— 窗口比内容大一圈, 用内容半径会让角上的阴影被切掉一截,
+        /// 表现是圆角处出现一道直边。</para>
+        /// </summary>
         void ShapeRound()
         {
             if (Width <= 0 || Height <= 0) return;
-            using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width, Height), RoundedCombo.PopupRadius))
+            using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width, Height),
+                RoundedCombo.PopupRadius + RoundedCombo.ShadowPad))
             {
                 Region old = Region;
                 Region = new Region(path);
@@ -721,13 +746,34 @@ namespace StereoSplitter
             base.Dispose(disposing);
         }
 
-        /// <summary>白底 + 圆角描边, 顶掉 ToolStripProfessionalRenderer 的渐变与方框边框。</summary>
+        /// <summary>白底 + 圆角投影 + 圆角描边, 顶掉 ToolStripProfessionalRenderer 的渐变与方框边框。</summary>
         sealed class PopupRenderer : ToolStripProfessionalRenderer
         {
             protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
             {
+                ToolStrip ts = e.ToolStrip;
+                Graphics g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                int pad = RoundedCombo.ShadowPad;
+                int w = ts.Width, h = ts.Height;
+
+                // 圆角投影: 从外到内逐层加深 (越贴近内容越深)。
+                // 最外层的圆角半径 = 窗口 Region 的半径, 所以阴影边缘正好落在裁剪边界上,
+                // 不会露出一圈方角白边 —— 这也是"系统阴影换成自绘"要换的全部原因。
+                for (int i = 0; i < pad; i++)
+                {
+                    var sr = new Rectangle(i, i, w - i * 2, h - i * 2);
+                    if (sr.Width <= 0 || sr.Height <= 0) break;
+                    using (var path = UiDraw.RoundRect(sr, RoundedCombo.PopupRadius + pad - i))
+                    using (var b = new SolidBrush(Color.FromArgb(8 + i * 8, 0, 0, 0)))
+                        g.FillPath(b, path);
+                }
+
+                // 内容白底 (内缩掉阴影边距)
+                using (var path = UiDraw.RoundRect(
+                    new Rectangle(pad, pad, w - pad * 2, h - pad * 2), RoundedCombo.PopupRadius))
                 using (var b = new SolidBrush(Color.White))
-                    e.Graphics.FillRectangle(b, e.ToolStrip.ClientRectangle);
+                    g.FillPath(b, path);
             }
 
             protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
@@ -735,7 +781,10 @@ namespace StereoSplitter
                 ToolStrip ts = e.ToolStrip;
                 Graphics g = e.Graphics;
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                using (var path = UiDraw.RoundRect(new Rectangle(0, 0, ts.Width - 1, ts.Height - 1), RoundedCombo.PopupRadius))
+                int pad = RoundedCombo.ShadowPad;
+                using (var path = UiDraw.RoundRect(
+                    new Rectangle(pad, pad, ts.Width - pad * 2 - 1, ts.Height - pad * 2 - 1),
+                    RoundedCombo.PopupRadius))
                 using (var pen = new Pen(BorderColor))
                     g.DrawPath(pen, path);
             }

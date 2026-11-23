@@ -485,12 +485,12 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 顶部两行 (捕获 / 规格) 的自适应布局。
+        /// 顶部四行 (捕获 / 开始分流 / 规格 / 声道标注) 的自适应布局。
         /// <para>原本是按 600 宽硬编码的固定坐标 (刷新设备右缘 489、添加输出 574),
         /// 窗口缩到 500 宽 (客户区约 484) 时右侧控件会被挤出客户区截断。
         /// 这里改为「右侧控件贴面板右缘、中间下拉吃掉剩余宽度」, 任意宽度都不越界。</para>
         /// <para>缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准 已迁入设置页,
-        /// 不再参与这里的布局 —— 主面板顶部只剩两行, 右端由齿轮按钮收口。</para>
+        /// 不再参与这里的布局 —— 主面板顶部由齿轮按钮收口。</para>
         /// </summary>
         void LayoutTopRows()
         {
@@ -504,6 +504,7 @@ namespace StereoSplitter
             lastTopPanelSize = panelSize;
             int panelW = panelSize.Width;
             const int rightEdge = 10;               // 与卡片区/日志框右缘一致的留白
+            const int leftEdge = 15;                // 与其它行左缘一致
             const int gap = 8;
 
             // —— 第 1 行: [捕获(虚拟):] [下拉] [刷新设备] [设置(齿轮, 贴右)] ——
@@ -511,17 +512,18 @@ namespace StereoSplitter
             btnRefresh.Left = btnSettings.Left - gap - btnRefresh.Width;
             cmbDefault.Width = Math.Max(60, btnRefresh.Left - gap - cmbDefault.Left);
 
-            // —— 第 2 行 (规格): [规格:] [下拉] [开始分流] [添加输出(贴右)] ——
-            // 开始分流紧贴下拉右侧 (它是主操作, 位置固定比贴右更稳); 窗口窄到放不下时先压它的
-            // 宽度, 到 70px 为止 —— 宁可挤一点, 也不能让它压住「添加输出」。
-            btnAddOutput.Left = panelW - rightEdge - btnAddOutput.Width;
-            const int startBaseW = 130;
-            int startLeft = cmbSpec.Right + gap;
-            int startRoom = btnAddOutput.Left - gap - startLeft;
-            btnStart.Width = Math.Max(70, Math.Min(startBaseW, startRoom));
-            btnStart.Left = startLeft;
+            // —— 第 2 行: [开始分流] 独占一行, 水平居中 ——
+            // 它是这一屏唯一的主操作, 居中比贴左更稳: 窗口拉宽时不会飘到角落里去。
+            // 宽度固定 130, 窄窗口也放得下 (panelW 最小约 340 → 居中后两侧各留 105)。
+            btnStart.Left = Math.Max(leftEdge, (panelW - btnStart.Width) / 2);
 
-            // —— 第 3 行 (声道名 + 角标): 单独一行水平居中 ——
+            // —— 第 3 行: [＋] 贴左, [规格下拉] 贴右 ——
+            // 规格标签已删, 下拉自己说明是什么; 右缘与卡片区/日志框一致 (rightEdge)。
+            // 显式 Max: 万一面板窄到 60+8+60 都放不下, 至少不让两者压在一起。
+            btnAddOutput.Left = leftEdge;
+            cmbSpec.Left = Math.Max(btnAddOutput.Right + gap, panelW - rightEdge - cmbSpec.Width);
+
+            // —— 第 4 行 (声道名 + 角标): 单独一行水平居中 ——
             CenterSpecBadges();
 
             // —— 卡片区: 宽高都跟面板走 ——
@@ -1159,10 +1161,12 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 把「声道名 + 输出路数角标」那一行水平居中。
+        /// 把「声道名 + 输出路数角标」在「＋」与「规格下拉」之间水平居中。
         /// <para>FlowLayoutPanel 没有 TextAlign, 铺满宽度只会把内容钉在左边, 所以先按子控件的
         /// Width+Margin 求和得到内容实际宽度, 再把**面板本身**居中 —— 面板宽度 = 内容宽度,
         /// 内容自然就居中了。</para>
+        /// <para><b>居中范围是中间那块空地, 不是整个面板</b>: 同一行左右还有「＋」和「规格」,
+        /// 按整面板居中会让标注压在它们身上 (8 路声道名能有 3500px, 光靠裁是不够的)。</para>
         /// </summary>
         void CenterSpecBadges()
         {
@@ -1177,11 +1181,21 @@ namespace StereoSplitter
 
             int panelW = flwSpecChannels.Parent.ClientSize.Width;
             const int sideMargin = 15;   // 与其它行左缘一致; 居中后左右各留这么多
-            int usable = Math.Max(0, panelW - sideMargin * 2);
+            int leftBound = sideMargin;
+            int rightBound = Math.Max(sideMargin, panelW - sideMargin);
+
+            // 两侧控件还没加进父容器 (构造期早于 AddRange) 时按整面板算, 之后 LayoutTopRows 会再调一次
+            const int gap = 8;
+            if (btnAddOutput != null && btnAddOutput.Parent == flwSpecChannels.Parent)
+                leftBound = Math.Max(leftBound, btnAddOutput.Right + gap);
+            if (cmbSpec != null && cmbSpec.Parent == flwSpecChannels.Parent)
+                rightBound = Math.Min(rightBound, cmbSpec.Left - gap);
+
+            int usable = Math.Max(0, rightBound - leftBound);
             int w = Math.Min(content, usable);
 
             if (flwSpecChannels.Width != w) flwSpecChannels.Width = w;
-            int left = Math.Max(sideMargin, (panelW - w) / 2);
+            int left = leftBound + Math.Max(0, (usable - w) / 2);
             if (flwSpecChannels.Left != left) flwSpecChannels.Left = left;
         }
 

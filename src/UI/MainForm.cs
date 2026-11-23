@@ -50,10 +50,10 @@ namespace StereoSplitter
         VolumeSlider volMaster, volGain;
         Label lblVolMaster, lblVolGain;
         // 顶部固定行需要用到的控件 (自适应重排时要改它们的坐标/宽度)
-        Label lblD, lblSpec, lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
-        Button btnStart;
+        Label lblD, lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
+        RoundButton btnStart;        // 自绘圆角 + 四态配色 (默认 / 启动中 / 运行中 / 正在停止)
         Button btnRefresh;
-        Button btnAddOutput;      // 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
+        RoundButton btnAddOutput;    // 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
         Button btnClearLog;
 
         // ---- 设置页的入口与选项 ----
@@ -359,34 +359,59 @@ namespace StereoSplitter
             lblVolMaster = new Label { Text = "100%", AutoSize = false, Width = 46, Height = 20, TextAlign = ContentAlignment.MiddleLeft };
             chkMuteMaster = new NoCueCheckBox { Text = "静音", AutoSize = false, Width = 56, Height = 20 };
 
-            // 规格行: [规格:] [下拉] [开始分流] [添加输出(贴右)]
-            // 行高按「开始分流」按钮的 35px 算: 下拉/标签/添加输出都与按钮中心对齐, 见下方 y 值。
-            // 水平位置里只有「添加输出」贴右、其它随面板宽度走 → 交给 LayoutTopRows 重算 Left/Width。
-            lblSpec = new Label { Text = "规格:", Location = new Point(15, 129), AutoSize = true };
+            // 主操作行 + 规格行。
+            // 「规格:」标签已删 —— 下拉里显示的就是规格, 再挂一个"规格:"是重复标注; 空出来的
+            // 横向空间让给右对齐的下拉。
+            // 行序 (上面还有捕获行 y10~38、增益 y52、主音量 y86 三行, 位置由各自的块硬编码):
+            //   y=114: [开始分流]   独占一行, 水平居中 (LayoutTopRows 按面板宽度算)
+            //   y=153: [＋]   ……   [声道标注]   ……   [规格下拉]
+            //          三者同一行: 加号贴左、规格贴右、标注在两者之间居中
+            //          (标注居中范围由 CenterSpecBadges 按两侧控件的位置收窄)
+            //   y=187: 卡片区
+            //
+            // 规格下拉与加号同为 76×30 圆角 6。宽度 76 不是随手取的: 下拉本体文字区 =
+            // 宽 - 8 (左内缩) - 22 (箭头区), 而「立体声」在 9pt 下要 44px —— 60 宽只剩 30px,
+            // 三个字会全被省略成"立…"。44 + 8 + 22 = 74 是下限, 取 76 留两像素。
+            // 改小之前先跑 `uidump`, 看 COMBO[...] 行里的 selW / textRoom。
+            btnStart = new RoundButton
+            {
+                Text = "开始分流",
+                Location = new Point(15, 114),
+                Width = 130,
+                Height = 35
+            };
             cmbSpec = new RoundedCombo
             {
-                Location = new Point(62, 125),
-                Width = 100,
-                Height = 28,
+                Location = new Point(15, 153),
+                Width = 76,
+                Height = 30,
                 ItemHeight = 24,
                 MaxDropDownItems = 6
             };
             cmbSpec.Items.AddRange(new object[] { "单声道", "立体声", "2.1", "四声道", "5.1" });
             cmbSpec.SelectedIndex = 1;
-            btnStart = new NoCueButton { Text = "开始分流", Location = new Point(170, 120), Width = 130, Height = 35 };
-            btnAddOutput = new NoCueButton
+            // 「+」: 与规格下拉同尺寸、同圆角、同白底灰边 —— 两个控件并排时像一对
+            btnAddOutput = new RoundButton
             {
-                Text = "添加输出",
-                Location = new Point(482, 127),
-                Width = 92,
-                Height = 26
+                Text = "+",
+                Location = new Point(15, 153),
+                Width = 76,
+                Height = 30,
+                Font = new Font("Segoe UI", 14F, FontStyle.Regular),
+                FillColor = Color.White,
+                // 禁用态跟 RoundedCombo.DisabledBack 同值, 并排时两块的"不可用"观感一致
+                FillDisabled = Color.FromArgb(244, 245, 247),
+                TextColor = Color.FromArgb(52, 56, 64)
+                // 边框色跟进 RoundedCombo.BorderNormal (#CBD0D8), 见 RoundButton.BorderColor 注释
             };
+            btnAddOutput.BorderColor = Color.FromArgb(203, 208, 216);
 
-            // 声道名 + 输出路数角标: 单独一行, 水平居中 (宽度由 CenterSpecBadges 按内容算)
+            // 声道名 + 输出路数角标: 与「＋」「规格」同一行, 在两者之间居中
+            // (宽度由 CenterSpecBadges 按内容算; 高度只取内容高, 不撑满整行)
             flwSpecChannels = new FlowLayoutPanel
             {
                 Location = new Point(166, 158),
-                Size = new Size(310, 30),
+                Size = new Size(310, 20),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
                 AutoScroll = false
@@ -398,7 +423,7 @@ namespace StereoSplitter
             // (见 ComputeCardGrid), 所以窗口变宽是"多一列", 而不是把单张卡片拉成一根长条。
             cardHost = new BufferedFlowPanel
             {
-                Location = new Point(15, 196),
+                Location = new Point(15, 187),
                 Size = new Size(559, 166),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = true,
@@ -478,7 +503,7 @@ namespace StereoSplitter
 
             // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
             // 都在设置页里 (控件由本类持有, 由 SettingsForm 搬入搬出)。
-            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, btnRefresh, btnSettings, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, btnStart, lblSpec, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, btnRefresh, btnSettings, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, btnStart, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
 
             // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。
@@ -672,6 +697,7 @@ namespace StereoSplitter
             {
                 case AppState.Starting: txt = "启动中..."; break;
                 case AppState.Running: txt = "运行中"; break;
+                case AppState.Stopping: txt = "正在停止..."; break;
                 case AppState.Stopped: txt = "已停止"; break;
                 case AppState.Failed: txt = "启动失败(见日志)"; break;
                 default: txt = "就绪"; break;
@@ -682,7 +708,7 @@ namespace StereoSplitter
             if (prev != s) Log("[状态] " + txt);
 
             running = (s == AppState.Running);
-            btnStart.Text = running ? "停止分流" : "开始分流";
+            UpdateStartButton(s);
             ApplyUiLock();
 
             // 数值标签: 仅分流运行中(双向绑定生效)为黑, 其余灰色表示无效
@@ -692,6 +718,50 @@ namespace StereoSplitter
 
             // 水位监控仅运行时按间隔跑, Ready/Stopped 或间隔0=不跑 (防空转)
             SyncWaterTimer();
+        }
+
+        /// <summary>
+        /// 「开始分流」按钮的文案与配色。四个状态各一套，靠颜色直接读出链路在干什么：
+        /// <list type="bullet">
+        /// <item>默认 (Ready/Stopped/Failed): 蓝 +「开始分流」—— 可以开始</item>
+        /// <item>启动中 (Starting): 深蓝灰 +「启动中…」—— 正在建链路，不可点</item>
+        /// <item>运行中 (Running): 红 +「停止分流」—— 点击即停止</item>
+        /// <item>正在停止 (Stopping): 浅红 +「正在停止…」—— 正在拆链路，不可点</item>
+        /// </list>
+        /// <para>过渡态同时被 <see cref="ApplyUiLock"/> 置为不可点，所以这里给的是"看得出状态、
+        /// 但明显不是可点的主按钮"的色。两态都显式给 <see cref="RoundButton.FillDisabled"/>，
+        /// 不能留 Empty —— 自动混白会把深蓝灰混成接近白底，白字直接糊掉。</para>
+        /// </summary>
+        void UpdateStartButton(AppState s)
+        {
+            switch (s)
+            {
+                case AppState.Starting:
+                    btnStart.Text = "启动中…";
+                    btnStart.FillDisabled = Color.FromArgb(0x5F, 0x7E, 0x9E);
+                    btnStart.TextColor = Color.White;
+                    break;
+                case AppState.Stopping:
+                    btnStart.Text = "正在停止…";
+                    // 停止中用"浅红底 + 深红字", 与运行中的"红底白字"形成反转 ——
+                    // 两档都靠红的时候, 只调深浅在缩略图里几乎分不出来 (试过 #C97B70 白字, 又虚又像)
+                    btnStart.FillDisabled = Color.FromArgb(0xD9, 0xA3, 0x9A);
+                    btnStart.TextColor = Color.FromArgb(0x7A, 0x2E, 0x24);
+                    break;
+                case AppState.Running:
+                    btnStart.Text = "停止分流";
+                    btnStart.FillColor = Color.FromArgb(0xC4, 0x2B, 0x1C);
+                    btnStart.FillDisabled = Color.Empty;
+                    btnStart.TextColor = Color.White;
+                    break;
+                default:
+                    btnStart.Text = "开始分流";
+                    btnStart.FillColor = Color.FromArgb(0x00, 0x78, 0xD7);
+                    btnStart.FillDisabled = Color.Empty;
+                    btnStart.TextColor = Color.White;
+                    break;
+            }
+            btnStart.Invalidate();
         }
 
         /// <summary>
@@ -710,7 +780,9 @@ namespace StereoSplitter
         /// </summary>
         void ApplyUiLock()
         {
-            bool busy = (state == AppState.Starting);
+            // 过渡态 (启动中 / 正在停止) 一律锁死: 链路正在建或正在拆, 这时改任何链路级参数
+            // 都是在跟后台线程抢设备。顺带也挡住了重复点击 —— 按钮不可点, 点击事件根本不会发。
+            bool busy = (state == AppState.Starting || state == AppState.Stopping);
             bool run = (state == AppState.Running);
 
             cmbDefault.Enabled = !busy && !run;

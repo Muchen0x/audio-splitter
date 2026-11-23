@@ -19,6 +19,14 @@ namespace StereoSplitter
     {
         void BtnStart_Click(object sender, EventArgs e)
         {
+            // 过渡态防重复触发: 按钮本身已置为不可点 (见 ApplyUiLock), 但托盘菜单、快捷键、
+            // 程序化调用仍可能打到这条路径 —— 启动中再点一次会重复 AutoConfigure 并第二次建链路。
+            if (state == AppState.Starting || state == AppState.Stopping)
+            {
+                Log("[提示] 正在" + (state == AppState.Starting ? "启动" : "停止") + "，请稍候。");
+                return;
+            }
+
             if (running)
             {
                 StopEngine();
@@ -35,6 +43,9 @@ namespace StereoSplitter
             preStartDefaultId = catalog.DefaultRenderId();
 
             SetAppState(AppState.Starting);
+            // 按钮是独立 HWND, 窗体的 Update() 不会重绘它 —— 这里单点一次, 让"启动中…"
+            // 在 AutoConfigure 那段同步耗时之前就落到屏幕上
+            btnStart.Update();
 
             // 捕获主音量 UI 当前值 (AutoConfigure 的 Bind 会用设备真值回填覆盖, 须提前存下)
             snapM = volMaster.Value;
@@ -485,8 +496,19 @@ namespace StereoSplitter
         void StopEngine()
         {
             DisarmDeviceReturnWatch();      // 用户主动停止 → 不做设备回归续播
+
+            // 先亮出"正在停止": TearDownEngine 里的 Stop/Dispose 是同步的 (WASAPI 拆除会等
+            // 渲染线程退出), 耗时几十到几百毫秒 —— 期间界面仍显示"停止分流/运行中",
+            // 看起来就是"点了没反应", 用户会再点一次。
+            bool wasActive = (state == AppState.Running || state == AppState.Starting);
+            if (wasActive)
+            {
+                SetAppState(AppState.Stopping);
+                btnStart.Update();          // 同上: 按钮有自己的 HWND, 不点它不会当场重绘
+            }
+
             TearDownEngine();
-            if (state == AppState.Running || state == AppState.Starting)
+            if (state == AppState.Stopping)
             {
                 SetAppState(AppState.Stopped);
                 Log("[停止] 分流已停止。");

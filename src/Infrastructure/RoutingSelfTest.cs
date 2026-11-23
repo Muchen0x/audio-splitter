@@ -1602,19 +1602,20 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// R-07: 状态迁移表。穷举 5×5 全部组合，不只测白名单 —— 漏掉的边只有穷举才会暴露，
+        /// R-07: 状态迁移表。穷举 6×6 全部组合，不只测白名单 —— 漏掉的边只有穷举才会暴露，
         /// 而漏边的表现是正常路径在日志里刷"迁移越界"；那种噪声会让人很快学会忽略这条警告，
         /// 等于把刚建立的观测通道又关掉。
         /// </summary>
         static void CaseAppStateMachine()
         {
-            Begin("状态迁移表 (5×5 穷举)");
+            Begin("状态迁移表 (6×6 穷举)");
 
             var legal = new HashSet<string>
             {
                 "Ready->Ready", "Ready->Starting", "Ready->Failed",
-                "Starting->Starting", "Starting->Running", "Starting->Stopped", "Starting->Failed",
-                "Running->Running", "Running->Starting", "Running->Stopped", "Running->Failed",
+                "Starting->Starting", "Starting->Running", "Starting->Stopping", "Starting->Failed",
+                "Running->Running", "Running->Starting", "Running->Stopping", "Running->Failed",
+                "Stopping->Stopping", "Stopping->Stopped", "Stopping->Failed",
                 "Stopped->Stopped", "Stopped->Starting",
                 "Failed->Failed", "Failed->Starting",
             };
@@ -1630,8 +1631,8 @@ namespace StereoSplitter
                     else Check("迁移表: " + key + " 期望 " + expect + " 实际 " + got, false);
                 }
 
-            Check("白名单 15 条全部放行 (" + pass + ")", pass == legal.Count && legal.Count == 15);
-            Check("其余 10 条全部拒绝 (" + deny + ")", deny == 25 - legal.Count && deny == 10);
+            Check("白名单 18 条全部放行 (" + pass + ")", pass == legal.Count && legal.Count == 18);
+            Check("其余 18 条全部拒绝 (" + deny + ")", deny == 36 - legal.Count && deny == 18);
 
             // 单独点出四条最危险的误放行: 它们会让两条恢复路径互相踩
             Check("Ready→Running 拒绝 (没经过 Starting 不可能在跑)",
@@ -1642,6 +1643,12 @@ namespace StereoSplitter
                 !AppStateMachine.CanTransition(AppState.Running, AppState.Ready));
             Check("Stopped→Failed 拒绝 (停止与放弃各有专属入口)",
                 !AppStateMachine.CanTransition(AppState.Stopped, AppState.Failed));
+
+            // 新增过渡态的两条边: 停止必须能进 Stopping, 但拆除途中不能回到运行态
+            Check("Running→Stopping 放行 (点停止要能进过渡态)",
+                AppStateMachine.CanTransition(AppState.Running, AppState.Stopping));
+            Check("Stopping→Running 拒绝 (拆除途中不可能回到运行态)",
+                !AppStateMachine.CanTransition(AppState.Stopping, AppState.Running));
         }
 
         /// <summary>

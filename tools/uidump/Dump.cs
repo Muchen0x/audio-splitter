@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
+using StereoSplitter.Model;
 
 namespace StereoSplitter
 {
@@ -313,6 +314,94 @@ namespace StereoSplitter
                     setM.Invoke(cf, new object[] { false });
                     Application.DoEvents();
                     dumpStart("CALIB-BACK ");
+                }
+                return;
+            }
+
+            // 四种状态的按钮配色: 反射调 SetAppState, 把「开始分流」按钮逐态画出来拼成一张。
+            // 配色与文案没法用几何量测证明, 只能看图 (也顺手把文案打进控制台, 便于 diff)。
+            if (args.Length >= 1 && args[0] == "states")
+            {
+                var sf2 = new MainForm();
+                sf2.Size = new Size(520, 520);
+                sf2.Show();
+                for (int i = 0; i < 15; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+
+                MethodInfo setState = typeof(MainForm).GetMethod("SetAppState", BindingFlags.Instance | BindingFlags.NonPublic);
+                RoundButton btn = Field(sf2, "btnStart") as RoundButton;
+                if (setState == null || btn == null) { Console.Out.WriteLine("STATES unavailable"); return; }
+
+                string path = args.Length >= 2 ? args[1] : "states.png";
+                AppState[] states =
+                {
+                    AppState.Ready, AppState.Starting, AppState.Running, AppState.Stopping, AppState.Stopped
+                };
+                int bw = btn.Width, bh = btn.Height, gap = 12, padX = 12;
+                using (var bmp = new Bitmap(states.Length * (bw + gap) + padX, bh + padX * 2))
+                using (var g = System.Drawing.Graphics.FromImage(bmp))
+                {
+                    g.Clear(Color.White);
+                    for (int i = 0; i < states.Length; i++)
+                    {
+                        setState.Invoke(sf2, new object[] { states[i] });
+                        Application.DoEvents();
+                        Console.Out.WriteLine("STATE " + AppStateMachine.Text(states[i])
+                            + " text='" + btn.Text + "' enabled=" + btn.Enabled
+                            + " fill=" + btn.FillColor.Name + " fillDisabled=" + btn.FillDisabled.Name);
+                        using (var one = new Bitmap(bw, bh))
+                        {
+                            btn.DrawToBitmap(one, new Rectangle(0, 0, bw, bh));
+                            g.DrawImage(one, padX + i * (bw + gap), padX);
+                        }
+                    }
+                    bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                }
+                Console.Out.WriteLine("STATES -> " + path);
+                return;
+            }
+
+            // 截图: 把真实窗体画到位图, 用来肉眼核对自绘控件 (圆角/配色/对齐) ——
+            // 几何量测只能证明"放得下", 证明不了"看着对"。弹层是独立窗口, 单独再抓一张。
+            if (args.Length >= 1 && args[0] == "shot")
+            {
+                int sw = 500, sh = 500;
+                if (args.Length >= 3) { int.TryParse(args[1], out sw); int.TryParse(args[2], out sh); }
+                string path = args.Length >= 4 ? args[3] : "shot.png";
+
+                var sf = new MainForm();
+                sf.Size = new Size(sw, sh);
+                sf.Show();
+                for (int i = 0; i < 15; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+
+                using (var bmp = new Bitmap(sf.Width, sf.Height))
+                {
+                    sf.DrawToBitmap(bmp, new Rectangle(0, 0, sf.Width, sf.Height));
+                    bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                }
+                Console.Out.WriteLine("SHOT form=" + sf.Size + " -> " + path);
+
+                // 弹层: 展开规格下拉后单独抓 (含自绘圆角阴影)
+                RoundedCombo combo = Field(sf, "cmbSpec") as RoundedCombo;
+                if (combo != null)
+                {
+                    MethodInfo openM = typeof(RoundedCombo).GetMethod("OpenDropDown", BindingFlags.Instance | BindingFlags.NonPublic);
+                    if (openM != null)
+                    {
+                        openM.Invoke(combo, null);
+                        for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                        ToolStrip pts = Field(combo, "popup") as ToolStrip;
+                        if (pts != null && pts.Visible)
+                        {
+                            using (var pb = new Bitmap(pts.Width, pts.Height))
+                            {
+                                pts.DrawToBitmap(pb, new Rectangle(0, 0, pts.Width, pts.Height));
+                                string pp = System.IO.Path.Combine(
+                                    System.IO.Path.GetDirectoryName(path), "popup.png");
+                                pb.Save(pp, System.Drawing.Imaging.ImageFormat.Png);
+                                Console.Out.WriteLine("SHOT popup=" + pts.Size + " -> " + pp);
+                            }
+                        }
+                    }
                 }
                 return;
             }
@@ -648,13 +737,21 @@ namespace StereoSplitter
             bool fit = list != null && list.Height >= rows * combo.ItemHeight;
             // 自绘列表不另存条目副本 → 行数直接来自数据源
             int listItems = list == null ? -1 : combo.Items.Count;
-            // 弹层必须与本体等宽 (滚动条画在右侧留白里, 不再把窗口撑宽)
-            bool sameW = ts.Width == Math.Max(combo.Width, combo.DropDownWidth);
+            // 弹层必须与本体等宽。窗口四周多了一圈自绘阴影 (ShadowPad), 所以要减掉再看内容宽
+            int shadow = RoundedCombo.ShadowPad;
+            bool sameW = ts.Width - shadow * 2 == Math.Max(combo.Width, combo.DropDownWidth);
+            // 本体文字区够不够放下当前选中项 —— 60px 宽的下拉最容易在这里翻车 (直接看界面只是
+            // 觉得"怎么是省略号", 量出来才知道差几像素)
+            int textRoom = combo.Width - RoundedCombo.TextPadX - RoundedCombo.ArrowZone;
+            int selW = TextRenderer.MeasureText(combo.SelectedText ?? "", combo.Font).Width;
             Console.Out.WriteLine("COMBO[" + label + "] items=" + combo.Items.Count
                 + " rows=" + rows + " rowH=" + combo.ItemHeight
                 + " scroll=" + (combo.Items.Count > rows ? "yes" : "no")
                 + " popup=" + ts.Size
+                + " shadowPad=" + shadow
                 + " comboW=" + combo.Width
+                + " textRoom=" + textRoom + "/selW=" + selW
+                + (selW > textRoom ? " <<< ELLIPSIS" : "")
                 + " pad=" + ts.Padding.Horizontal + "/" + ts.Padding.Vertical
                 + " list=" + (list == null ? "null" : list.Size.ToString())
                 + " listItems=" + listItems

@@ -6,7 +6,7 @@ namespace StereoSplitter.Model
     /// 迁移表写漏一条边，表现是日志里刷一条"迁移越界"，而不是功能坏掉 —— 这种错只有穷举
     /// 测试才拦得住，而自检跑在 Infrastructure 层，够不到 UI 的嵌套类型。</para>
     /// </summary>
-    enum AppState { Ready, Starting, Running, Stopped, Failed }
+    enum AppState { Ready, Starting, Running, Stopping, Stopped, Failed }
 
     /// <summary>
     /// 状态迁移的唯一权威定义（R-07）。
@@ -29,7 +29,8 @@ namespace StereoSplitter.Model
     {
         public static readonly AppState[] All =
         {
-            AppState.Ready, AppState.Starting, AppState.Running, AppState.Stopped, AppState.Failed
+            AppState.Ready, AppState.Starting, AppState.Running,
+            AppState.Stopping, AppState.Stopped, AppState.Failed
         };
 
         /// <summary>日志用的短名。故意用英文枚举名：日志要能 grep，中文文案留给界面。</summary>
@@ -39,6 +40,7 @@ namespace StereoSplitter.Model
             {
                 case AppState.Starting: return "Starting";
                 case AppState.Running: return "Running";
+                case AppState.Stopping: return "Stopping";
                 case AppState.Stopped: return "Stopped";
                 case AppState.Failed: return "Failed";
                 default: return "Ready";
@@ -49,12 +51,14 @@ namespace StereoSplitter.Model
         /// 允许的迁移集合。每条边的语义：
         /// <list type="bullet">
         /// <item>Ready→Starting：点开始；Ready→Failed：Load 期间初始化失败</item>
-        /// <item>Starting→Running：链路建成；→Stopped：启动中被停止；→Failed：启动失败或放弃</item>
-        /// <item>Running→Starting：整链路重建；→Stopped：用户停止；→Failed：看门狗放弃</item>
+        /// <item>Starting→Running：链路建成；→Stopping：启动中被停止；→Failed：启动失败或放弃</item>
+        /// <item>Running→Starting：整链路重建；→Stopping：用户点停止；→Failed：看门狗放弃</item>
+        /// <item>Stopping→Stopped：拆除完成；→Failed：拆除中出错放弃</item>
         /// <item>Stopped→Starting / Failed→Starting：再次点开始</item>
         /// </list>
         /// 刻意不包含的：任何 →Ready（Ready 只表示"进程起来了、还没开始过"）、
-        /// Stopped→Failed / Failed→Stopped（放弃与停止各有专属入口，互相穿越说明两条路径同时动手）。
+        /// Stopped→Failed / Failed→Stopped（放弃与停止各有专属入口，互相穿越说明两条路径同时动手）、
+        /// Stopping→Running（拆除途中不可能回到运行态，出现即说明有代码在重建与拆除之间打架）。
         /// </summary>
         public static bool CanTransition(AppState from, AppState to)
         {
@@ -65,9 +69,11 @@ namespace StereoSplitter.Model
                 case AppState.Ready:
                     return to == AppState.Starting || to == AppState.Failed;
                 case AppState.Starting:
-                    return to == AppState.Running || to == AppState.Stopped || to == AppState.Failed;
+                    return to == AppState.Running || to == AppState.Stopping || to == AppState.Failed;
                 case AppState.Running:
-                    return to == AppState.Starting || to == AppState.Stopped || to == AppState.Failed;
+                    return to == AppState.Starting || to == AppState.Stopping || to == AppState.Failed;
+                case AppState.Stopping:
+                    return to == AppState.Stopped || to == AppState.Failed;
                 case AppState.Stopped:
                     return to == AppState.Starting;
                 case AppState.Failed:

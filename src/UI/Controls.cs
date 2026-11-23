@@ -129,6 +129,162 @@ namespace StereoSplitter
         }
     }
 
+    /// <summary>
+    /// 自绘圆角矩形按钮。
+    ///
+    /// <para><b>为什么另起一个类而不给 NoCueButton 加个开关</b>：原生 Button 的外框与圆角由系统
+    /// 窗口类绘制（FlatStyle 只有 System/Standard/Flat 三档，圆角做不了，底色也只能取系统色）。
+    /// 要"圆角 + 按状态换底色"就必须接管整块绘制（<c>UserPaint</c>）。做成开关的话，
+    /// "哪些按钮是圆角"会散落在各处调用点上；分成两个类，看类型就知道。</para>
+    ///
+    /// <para><b>只接管绘制</b>：Click、DialogResult、Enabled、键盘 Space/Enter 这些语义全部沿用
+    /// <see cref="Button"/>，所以替换原生按钮不会改变任何交互行为。</para>
+    /// </summary>
+    class RoundButton : Button
+    {
+        static readonly Color DefaultFill = Color.FromArgb(0, 120, 215);
+
+        Color fill = DefaultFill;
+        Color fillDisabled = Color.Empty;
+        Color borderColor = Color.Empty;
+        Color textColor = Color.White;
+        int radius = 6;
+        bool hot, pressed;
+
+        public RoundButton()
+        {
+            // UserPaint: 不走系统按钮绘制。少了它, 下面的 SetStyle 与 OnPaint 都不会生效
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+
+        /// <summary>常态底色。悬停/按下的派生色由它算出来，不用再给两套。</summary>
+        public Color FillColor
+        {
+            get { return fill; }
+            set { if (fill != value) { fill = value; Invalidate(); } }
+        }
+
+        /// <summary>
+        /// 禁用态底色。<c>Color.Empty</c> (默认) = 按 <see cref="FillColor"/> 与白混合，即普通的
+        /// "不可点"观感；过渡态（启动中 / 正在停止）需要显式给色，否则会被混成接近白底、文字发虚。
+        /// </summary>
+        public Color FillDisabled
+        {
+            get { return fillDisabled; }
+            set { if (fillDisabled != value) { fillDisabled = value; Invalidate(); } }
+        }
+
+        public Color TextColor
+        {
+            get { return textColor; }
+            set { if (textColor != value) { textColor = value; Invalidate(); } }
+        }
+
+        /// <summary>
+        /// 描边色。<c>Color.Empty</c> (默认) = 按底色自动加深一档；需要与旁边的控件（比如
+        /// <see cref="RoundedCombo"/> 的 #CBD0D8 边框）看起来是一对时，显式给同一个值。
+        /// </summary>
+        public Color BorderColor
+        {
+            get { return borderColor; }
+            set { if (borderColor != value) { borderColor = value; Invalidate(); } }
+        }
+
+        /// <summary>圆角半径。默认 6，与 <see cref="RoundedCombo"/> 本体同一个值。</summary>
+        public int CornerRadius
+        {
+            get { return radius; }
+            set { if (radius != value) { radius = value; Invalidate(); } }
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            FocusCue.HideNow(this);          // 自绘本来就不画虚线框, 这句是防系统在别处补一刀
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == FocusCue.WM_UPDATEUISTATE) FocusCue.Suppress(ref m);
+            base.WndProc(ref m);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            // 圆角外那几个角要补成父容器底色, 否则会露出方角白块 (与 RoundedCombo.OnPaint 同一手法)
+            if (Parent != null)
+                using (var b = new SolidBrush(Parent.BackColor))
+                    g.FillRectangle(b, ClientRectangle);
+
+            Color c = Enabled
+                ? fill
+                : (fillDisabled.IsEmpty ? Blend(fill, Color.White, 0.55f) : fillDisabled);
+            if (Enabled && pressed) c = Blend(c, Color.Black, 0.16f);
+            else if (Enabled && hot) c = Blend(c, Color.Black, 0.06f);
+
+            // 描边: 显式给了就跟它走 (白底按钮靠这条与下拉框对齐), 否则按底色加深一档 ——
+            // 纯色块在白底上边界发糊, 浅色的「+」尤其明显
+            Color edge = borderColor.IsEmpty ? Blend(c, Color.Black, 0.12f) : borderColor;
+            if (!Enabled && !borderColor.IsEmpty) edge = Blend(edge, Color.White, 0.45f);
+
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (var path = UiDraw.RoundRect(rect, radius))
+            {
+                using (var b = new SolidBrush(c)) g.FillPath(b, path);
+                using (var p = new Pen(edge)) g.DrawPath(p, path);
+            }
+
+            // 文字色: 只有在"自动淡化成的禁用态"里才跟着变浅。显式给了 FillDisabled 的
+            // (过渡态 / 图标按钮) 说明配色是特意定的, 再淡化会把深色字也洗白。
+            TextRenderer.DrawText(g, Text, Font, ClientRectangle,
+                (Enabled || !fillDisabled.IsEmpty) ? textColor : Blend(textColor, Color.White, 0.20f),
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
+                | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine
+                | TextFormatFlags.EndEllipsis);
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { hot = true; Invalidate(); base.OnMouseEnter(e); }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            hot = false; pressed = false; Invalidate();
+            base.OnMouseLeave(e);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left) { pressed = true; Invalidate(); }
+            base.OnMouseDown(e);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            if (pressed) { pressed = false; Invalidate(); }
+            base.OnMouseUp(e);
+        }
+
+        protected override void OnEnabledChanged(EventArgs e)
+        {
+            hot = false; pressed = false; Invalidate();
+            base.OnEnabledChanged(e);
+        }
+
+        /// <summary>按比例混色（不做 alpha 混合，免得底色透出来）。t=0 返回 a，t=1 返回 b。</summary>
+        static Color Blend(Color a, Color b, float t)
+        {
+            if (t <= 0f) return a;
+            if (t >= 1f) return b;
+            return Color.FromArgb(
+                (int)Math.Round(a.R + (b.R - a.R) * t),
+                (int)Math.Round(a.G + (b.G - a.G) * t),
+                (int)Math.Round(a.B + (b.B - a.B) * t));
+        }
+    }
+
     /// <summary>点完不留虚线焦点框的复选框 (原生 CheckBox 点一下就画一圈虚线)。</summary>
     class NoCueCheckBox : CheckBox
     {
