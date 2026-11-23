@@ -401,8 +401,8 @@ namespace StereoSplitter
                 Width = 76,
                 Height = 30,
                 Glyph = ButtonGlyph.Plus,
-                GlyphRadius = 9,
-                GlyphThickness = 3.5f,
+                GlyphRadius = 6,
+                GlyphThickness = 3.2f,
                 FillColor = Color.White,
                 // 禁用态跟 RoundedCombo.DisabledBack 同值, 并排时两块的"不可用"观感一致
                 FillDisabled = Color.FromArgb(244, 245, 247),
@@ -411,12 +411,13 @@ namespace StereoSplitter
             };
             btnAddOutput.BorderColor = Color.FromArgb(203, 208, 216);
 
-            // 声道名 + 输出路数角标: 与「＋」「规格」同一行, 在两者之间居中
-            // (宽度由 CenterSpecBadges 按内容算; 高度只取内容高, 不撑满整行)
+            // 声道名 + 输出路数上标: 与「规格」「＋」同一行, 在两者之间居中
+            // (宽度由 CenterSpecBadges 按内容算; 高度必须容得下 Label 的字框 + 上边距 ——
+            //  原来给 20 就比 9pt 的字框(17) 加 Margin.Top(5) 小, 文字底部被裁一条)
             flwSpecChannels = new FlowLayoutPanel
             {
-                Location = new Point(166, 158),
-                Size = new Size(310, 20),
+                Location = new Point(166, 155),
+                Size = new Size(310, 26),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
                 AutoScroll = false

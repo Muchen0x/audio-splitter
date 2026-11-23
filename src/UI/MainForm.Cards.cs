@@ -18,12 +18,10 @@ namespace StereoSplitter
     {
         // ==================== 规格与输出卡片 ====================
 
-        /// <summary>
-        /// R-02: 规格行角标字体。原先每次 RefreshSpecBadges 都 new Font, 一次重建 4~12 个。
-        /// Font 不是控件拥有的资源 (Control.Dispose 不会释放它), 所以必须有人管:
-        /// 这里是进程内唯一实例, 随类型一起活到进程结束 —— 一个 GDI 字体句柄, 可接受。
-        /// </summary>
-        static readonly Font SpecBadgeFont = new Font("Microsoft YaHei UI", 7F, FontStyle.Bold);
+        // R-02: 上标数字的字体。虽然每个声道都要建一个 Label, 但字体本身复用同一个实例
+        // (Font 不是控件拥有的资源, Control.Dispose 不会释放它, 必须有人管)。
+        // 8pt 而不是更小: 7pt 的「¹」在 96dpi 下只剩 5px 高, 贴在汉字后面基本看不出是数字。
+        static readonly Font SpecBadgeFont = new Font("Microsoft YaHei UI", 8F, FontStyle.Bold);
 
         /// <summary>当前规格的声道清单 (键, 显示名)。键与 Windows 扬声器位对应。
         /// 表在 LaneRouting 里 (内核翻译与界面共用同一张, 免得两边各写一套)。</summary>
@@ -1128,28 +1126,31 @@ namespace StereoSplitter
                 for (int i = 0; i < chans.Count; i++)
                 {
                     int n = counts[i];
-                    var name = new Label
+                    // 上标不用 Unicode 字符 (⁸ 在 9pt 下只有 5px 高, 而且字形顶部会被 Label
+                    // 的字框裁掉): 单独一个无底色的小号 Label, 靠 Margin.Top 比名字小 2px
+                    // 形成上标位置, 字号与字重都能单独调。
+                    flwSpecChannels.Controls.Add(new Label
                     {
                         Text = chans[i].Value,
                         AutoSize = true,
-                        Margin = new Padding(1, 7, 0, 0),
+                        Margin = new Padding(1, 5, n > 0 ? 0 : 3, 0),
                         ForeColor = n > 0 ? Color.SteelBlue : Color.Gray
-                    };
-                    flwSpecChannels.Controls.Add(name);
+                    });
                     if (n > 0)
                     {
-                        var badge = new Label
+                        flwSpecChannels.Controls.Add(new Label
                         {
                             Text = n.ToString(),
-                            AutoSize = false,
-                            Size = new Size(15, 15),
-                            TextAlign = ContentAlignment.MiddleCenter,
-                            BackColor = Color.SteelBlue,
-                            ForeColor = Color.White,
-                            Margin = new Padding(1, 4, 3, 0),
-                            Font = SpecBadgeFont
-                        };
-                        flwSpecChannels.Controls.Add(badge);
+                            AutoSize = true,
+                            Font = SpecBadgeFont,
+                            // 上标感靠"顶对齐"而不是"缩小字号": 数字顶部要明显高过汉字顶部。
+                            // 名字的 Margin.Top 是 5, 这里取 1 —— 数字(8pt)本身就比汉字矮,
+                            // 再只差 2px 的话看着只是"一行小字", 不像上标。
+                            // 左 0 是下限: 负 Margin 会被 FlowLayout 夹成 0 (试过 -2, 纹丝不动),
+                            // 「左」与上标之间那 4~5px 的间隙来自 AutoSize 的字体尾部留白, 消不掉。
+                            Margin = new Padding(0, 1, 4, 0),
+                            ForeColor = Color.SteelBlue
+                        });
                     }
                 }
             }
