@@ -396,7 +396,9 @@ namespace StereoSplitter
         {
             const int WM_LBUTTONDOWN = 0x0201;
             const int WM_LBUTTONUP = 0x0202;
+            const int WM_LBUTTONDBLCLK = 0x0203;
             const int WM_RBUTTONDOWN = 0x0204;
+            const int WM_RBUTTONDBLCLK = 0x0206;
             const int WM_CAPTURECHANGED = 0x0215;
 
             readonly NoWheelNumeric owner;
@@ -417,8 +419,22 @@ namespace StereoSplitter
                     {
                         owner.StepArrow(dir);
                         owner.BeginRepeat(dir);
+                        // 若焦点原本就在文本框 (例如刚手动输完一个数), 点箭头时也收走:
+                        // 点箭头只该改数字, 不该留着插入符/选区在闪。
+                        if (owner.ContainsFocus) UiFocus.ParkOnForm(owner);
                         return;      // 吞掉: 基类不会再 SetFocus 到文本框
                     }
+                }
+                else if (m.Msg == WM_LBUTTONDBLCLK)
+                {
+                    // 连续快速点击时系统会在第二次 DOWN/UP 之外**额外**投递这一条。
+                    // 基类处理它时会把焦点塞进 UpDownEdit (插入符 + 蓝选区), 还会再多走一步值。
+                    // 两次真实点击已经由两条 WM_LBUTTONDOWN 各走了一步, 这里直接吞掉。
+                    return;
+                }
+                else if (m.Msg == WM_RBUTTONDBLCLK)
+                {
+                    return;          // 右键双击同样别把焦点挪进文本框
                 }
                 else if (m.Msg == WM_LBUTTONUP || m.Msg == WM_CAPTURECHANGED || m.Msg == WM_RBUTTONDOWN)
                 {
