@@ -140,6 +140,7 @@ src/
   Audio/          捕获、延迟线、时钟组、路由模型 (AudioEngine / Routing* / ClockGroup)
   Devices/        设备枚举、端点音量绑定、默认设备变更监听
   Infrastructure/ 日志、崩溃上报、ini 配置、错误文案、路由自检
+  Model/          纯数据模型：输出卡片 / 声道行 / 内核输入的"路" (无控件依赖)
   UI/             主窗体、输出卡片、卡片 → 路由模型翻译 (LaneRouting)
 tools/uidump/     布局量测工具：实例化真实窗口，打印控件边界/重叠/文字截断
 CHANGELOG.md      更新日志 (版本号以 csproj 的 <Version> 为单一来源)

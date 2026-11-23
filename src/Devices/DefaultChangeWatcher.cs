@@ -11,7 +11,7 @@ using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using StereoSplitter.Devices;
 
-namespace StereoSplitter
+namespace StereoSplitter.Devices
 {
     // 系统默认输出变化/设备断开监听 (COM回调线程 → 转发给主窗体处理)
     class DefaultChangeWatcher : IMMNotificationClient

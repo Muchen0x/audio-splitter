@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using StereoSplitter.Infrastructure;
+using StereoSplitter.Model;
 
 namespace StereoSplitter.Infrastructure
 {

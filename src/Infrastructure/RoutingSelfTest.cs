@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using StereoSplitter.Infrastructure;
+using StereoSplitter.Model;
 
 namespace StereoSplitter
 {

@@ -10,6 +10,7 @@ using NAudio.Wave;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using StereoSplitter.Devices;
+using StereoSplitter.Model;
 
 namespace StereoSplitter
 {
