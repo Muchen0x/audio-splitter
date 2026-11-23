@@ -224,8 +224,10 @@ namespace StereoSplitter
         /// <summary>
         /// 运行中热替换路由矩阵 (声道抽头/静音/音量增益): 重新 Compile 并逐路原子换引用,
         /// 不停链路、不断音。
-        /// <para>设备与延迟是**链路级**参数 (每台设备一条 WasapiOut + 一条延迟线), 改它们只能
-        /// 重新开始 —— 这里比对链路形状后给出明确提示, 而不是悄悄换一半。</para>
+        /// <para>设备与声道数仍是**链路级**参数 (每台设备一条 WasapiOut, 换设备/换物理声道数
+        /// 都要重建), 改它们只能重新开始 —— 这里比对链路形状后给出明确提示, 而不是悄悄换一半。</para>
+        /// <para>延迟例外: 它只是延迟线的 FIFO 深度, 不碰端点与矩阵, 于是可以就地热改
+        /// (见 <see cref="AudioEngine.ApplyDelays"/>) —— 校准完能立刻听效果。</para>
         /// </summary>
         void ApplyRoutingHot(string reason, bool quiet = false)
         {
@@ -235,10 +237,17 @@ namespace StereoSplitter
             try { srcCh = eng.CaptureChannels; } catch { }
 
             var model = BuildModelFromLanes(srcCh, false);
+            bool delayHot = false;
             if (runModel != null && !SameLinkShape(runModel, model))
             {
-                Log("[提示] 设备或延迟已改动，需「停止 → 开始」才会生效（当前链路保持不变）");
-                return;
+                // 差异只在延迟 → 逐路改延迟线目标, 不必停分流。
+                // 设备/声道数变了才是真正的链路变更 (要换端点、换缓冲), 那时才要求停→开始。
+                if (OnlyDelayDiffers(runModel, model) && eng.ApplyDelays(model)) delayHot = true;
+                else
+                {
+                    Log("[提示] 设备或声道数已改动，需「停止 → 开始」才会生效（当前链路保持不变）");
+                    return;
+                }
             }
 
             bool ok = false;
@@ -249,13 +258,48 @@ namespace StereoSplitter
             {
                 runModel = model;
                 if (!quiet)
-                    Log("[设置] 路由已热更新 (" + reason + "): " + model.DescribeConfig() +
+                {
+                    // 纯延迟改动只说一句: 矩阵那一句是同一次操作的一半, 分开报反而像发生了两件事
+                    if (delayHot) Log("[设置] 延迟已热生效 (" + reason + "): " + DescribeDelays(model));
+                    else Log("[设置] 路由已热更新 (" + reason + "): " + model.DescribeConfig() +
                         (srcCh > 0 ? " / 源 " + RoutingModel.DescribeSource(srcCh) : ""));
+                }
             }
             else if (!quiet)
             {
-                Log("[提示] 路由热更新未生效（与当前链路的声道数不匹配），需停止后重新开始");
+                if (delayHot) Log("[提示] 延迟已生效，但矩阵未刷新（声道数与当前链路不匹配），新配置需停止后重新开始");
+                else Log("[提示] 路由热更新未生效（与当前链路的声道数不匹配），需停止后重新开始");
             }
+        }
+
+        /// <summary>日志用的延迟摘要, 如 "左=0ms / 右=180ms"。</summary>
+        static string DescribeDelays(RoutingModel m)
+        {
+            var sinks = m.EnabledSinks();
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < sinks.Count; i++)
+            {
+                if (i > 0) sb.Append(" / ");
+                sb.Append(sinks[i].Label).Append('=').Append(sinks[i].DelayMs).Append("ms");
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>两份模型的差异是否**只在延迟**上 (路数、稳定键、设备、声道数完全一致)。</summary>
+        static bool OnlyDelayDiffers(RoutingModel a, RoutingModel b)
+        {
+            var sa = a.EnabledSinks();
+            var sb = b.EnabledSinks();
+            if (sa.Count != sb.Count || sa.Count == 0) return false;
+            bool diff = false;
+            for (int i = 0; i < sa.Count; i++)
+            {
+                if (!string.Equals(sa[i].Key, sb[i].Key, StringComparison.Ordinal)) return false;
+                if (!string.Equals(sa[i].DeviceId, sb[i].DeviceId, StringComparison.Ordinal)) return false;
+                if (sa[i].OutChannels != sb[i].OutChannels) return false;
+                if (sa[i].DelayMs != sb[i].DelayMs) diff = true;
+            }
+            return diff;
         }
 
         /// <summary>链路形状是否一致: 路数、设备、每路声道数、延迟。</summary>

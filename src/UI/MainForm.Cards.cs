@@ -1012,7 +1012,38 @@ namespace StereoSplitter
                 if (b != null && b.IsValid && b.ReadMuted() != card.chkMute.Checked)
                     b.WriteMute(card.chkMute.Checked);
             }
-            if (running) ApplyRoutingHot("卡片改动", false);
+            if (running)
+            {
+                // 改延迟是"改本路延迟线深度", 可以热生效; 但数字框每敲一位都会触发一次
+                // ValueChanged, 逐次跳变会连成一串"咔"。攒 180ms 再用最终值跳一次。
+                if (DelayDiffersFromRunning())
+                {
+                    delayHotTimer.Stop();
+                    delayHotTimer.Start();
+                }
+                else ApplyRoutingHot("卡片改动", false);
+            }
+        }
+
+        /// <summary>
+        /// 卡片上的延迟是否已经和运行中的链路不同 —— 决定这次变动能不能走热改路径。
+        /// <para>按**设备**比: 同一个设备挂多张卡片时引擎取其中的最小延迟
+        /// (见 LaneRouting 的"设备级延迟取最小"), 所以这里也取最小, 否则两张卡的
+        /// 延迟不一致会被误判成"改了延迟", 每次动别的设置都多跳一下。</para>
+        /// </summary>
+        bool DelayDiffersFromRunning()
+        {
+            if (runModel == null) return false;
+            var run = runModel.EnabledSinks();
+            for (int i = 0; i < run.Count; i++)
+            {
+                int want = int.MaxValue;
+                for (int c = 0; c < cards.Count; c++)
+                    if (string.Equals(cards[c].Model.DeviceId, run[i].DeviceId, StringComparison.Ordinal))
+                        want = Math.Min(want, Math.Max(0, cards[c].Model.DelayMs));
+                if (want != int.MaxValue && want != run[i].DelayMs) return true;
+            }
+            return false;
         }
 
         /// <summary>

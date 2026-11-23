@@ -44,6 +44,7 @@ namespace StereoSplitter
         System.Windows.Forms.Timer waterTimer;
         System.Windows.Forms.Timer saveDebounce;
         System.Windows.Forms.Timer watchTimer;   // 看门狗: 2 秒一看输出线程活性
+        System.Windows.Forms.Timer delayHotTimer; // 延迟热改的合并窗口 (数字框逐位输入只跳一次)
         System.Windows.Forms.Timer powerTimer;   // 唤醒后延迟重建 (端点恢复要几百毫秒)
         VolumeSlider volMaster, volGain;
         Label lblVolMaster, lblVolGain;
@@ -576,6 +577,15 @@ namespace StereoSplitter
             watchTimer = new System.Windows.Forms.Timer { Interval = 2000 };
             watchTimer.Tick += (s, e) => WatchdogTick();
 
+            // 延迟热改合并窗口: 数字框每敲一位都会 ValueChanged, 逐次跳变会连成一串"咔"。
+            // 攒一小段再一次性应用, 最终值只跳一次 (跳变是改时间轴绕不开的代价, 但没必要跳三次)。
+            delayHotTimer = new System.Windows.Forms.Timer { Interval = 180 };
+            delayHotTimer.Tick += (s, e) =>
+            {
+                delayHotTimer.Stop();
+                if (running) ApplyRoutingHot("延迟", false);
+            };
+
             // 休眠唤醒: 等端点恢复再重建, 太早重建大概率失败
             powerTimer = new System.Windows.Forms.Timer { Interval = 2500 };
             powerTimer.Tick += (s, e) =>
@@ -645,8 +655,10 @@ namespace StereoSplitter
         /// 按当前状态统一切换控件的可用性。分三档，与内核能力严格对齐
         /// （<see cref="AudioEngine.SetRouting"/> 只能换矩阵，声道数/设备/延迟都换不了）：
         /// <list type="bullet">
-        /// <item>链路级：捕获设备 / 刷新设备 / 延迟档位 / 规格 / 加卡 / 卡片设备 / 卡片延迟 / 移除卡片
+        /// <item>链路级：捕获设备 / 刷新设备 / 延迟档位 / 规格 / 加卡 / 卡片设备 / 移除卡片
         ///       —— 运行中置灰</item>
+        /// <item>延迟级：卡片延迟 —— 只有启动中置灰；运行中改的是本路延迟线深度，就地生效
+        ///       （设备与声道数定死，但延迟只是一个 FIFO 深度）</item>
         /// <item>矩阵级：卡片声道 / 多声道行声道 —— 运行中可改（热替换矩阵）</item>
         /// <item>形态级：单 ↔ 多声道 —— 会改设备物理声道数，运行中把「多声道…」画灰并拦下</item>
         /// <item>采样级 / 监控级：音量、静音、消音、校正、水位间隔、最小化 —— 始终可动</item>
@@ -676,7 +688,8 @@ namespace StereoSplitter
 
             for (int ci = 0; ci < cards.Count; ci++)
             {
-                cards[ci].SetStructuralLock(busy || run);   // 设备 / 延迟 / 移除
+                cards[ci].SetStructuralLock(busy || run);   // 设备 / 移除
+                cards[ci].SetDelayLock(busy);               // 延迟: 运行中可改 (只换延迟线深度)
                 cards[ci].SetChannelLock(busy);             // 声道 / 行声道
                 cards[ci].SetShapeLock(busy || run);        // 单 ↔ 多声道形态
                 cards[ci].SetVolumeLock(busy);              // 主音量(端点) / 静音 / 行音量
@@ -1521,6 +1534,12 @@ namespace StereoSplitter
                 powerTimer.Stop();
                 powerTimer.Dispose();
                 powerTimer = null;
+            }
+            if (delayHotTimer != null)
+            {
+                delayHotTimer.Stop();
+                delayHotTimer.Dispose();
+                delayHotTimer = null;
             }
             if (activateEvent != null)
             {
