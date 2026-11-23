@@ -30,6 +30,9 @@ namespace StereoSplitter
         readonly List<byte[]> pool = new List<byte[]>();
         int pooledBytes;
         const int PoolMaxBytes = 1 << 20; // 池上限 1MB, 防止大块数据长期驻留
+        // R-19: 只按字节封顶, 小块 (<8B, 例如 1 声道 8bit 的极短回调) 能塞进 13 万条目 ——
+        // List 自身开销反超收益。条目数也封一个, 64 条已覆盖常见块大小。
+        const int PoolMaxEntries = 64;
         int targetBytes;
         readonly Action<byte[], int, int> emit;
         readonly object sync = new object(); // Write(采集线程) 与 Clear/SetTarget(UI线程) 并发保护
@@ -88,7 +91,7 @@ namespace StereoSplitter
         void RecycleLocked(byte[] data)
         {
             if (data == null) return;
-            if (pooledBytes + data.Length <= PoolMaxBytes)
+            if (pool.Count < PoolMaxEntries && pooledBytes + data.Length <= PoolMaxBytes)
             {
                 pool.Add(data);
                 pooledBytes += data.Length;

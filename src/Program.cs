@@ -34,7 +34,15 @@ namespace StereoSplitter
 
         // 退出码: 0 成功; 2 命令行语法/参数错误 (统一, F-19); 3 volprobe 配置不可信;
         // 10 写型维护命令因已有实例/跨进程锁被占用而拒绝 (F-18)。
+        // 退出码约定 (verify.cmd / CI 依赖):
+        //   0  正常 (自检: 全部通过)
+        //   1  自检有用例失败
+        //   2  命令行参数错误
+        //   3  自检报告写盘失败 (用例结果本身可能没问题)
+        //   4  自检自身抛异常 (原实现复用 2, 会让 CI 把"自检崩溃"误诊成"命令行写错")
+        //  10  已有实例占用 (写型维护命令 / GUI 单实例)
         const int ExitUsage = 2;
+        const int ExitSelfTestCrash = 4;
         const int ExitBusy = 10;
 
         internal enum Command { Gui, SelfTest, VolProbe, List, PlayTest, Maintenance }
@@ -265,7 +273,7 @@ namespace StereoSplitter
                     catch (Exception ex)
                     {
                         try { Console.WriteLine("自检异常: " + ex); } catch { }
-                        code = ExitUsage;
+                        code = ExitSelfTestCrash;
                     }
                     try { Console.WriteLine(code == 0 ? "自检通过" : "自检失败, 详见 log/selftest-routing.txt"); } catch { }
                     Environment.ExitCode = code;

@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Threading;
 using NAudio.Wave;
 
 namespace StereoSplitter
@@ -208,7 +209,7 @@ namespace StereoSplitter
         public long UnderrunSamples { get { return System.Threading.Interlocked.Read(ref underrunSamples); } }
 
         /// <summary>累计渲染样本数 (只增不减), 看门狗用它判定输出线程是否还在跑。</summary>
-        public long RenderedSamples { get { return renderedSamples; } }
+        public long RenderedSamples { get { return Interlocked.Read(ref renderedSamples); } }
 
         public string TimingInfo
         {
@@ -248,7 +249,9 @@ namespace StereoSplitter
         public int Read(float[] samples, int offset, int countRequested)
         {
             long t0 = Stopwatch.GetTimestamp();
-            renderedSamples += countRequested;   // 活性计数: 只要被调用就说明输出线程还活着
+            // 活性计数: 只要被调用就说明输出线程还活着。看门狗跨线程读它, 与同文件的
+            // underrunSamples 保持同一套 Interlocked 语义 (R-20: 原来是裸 long 读, 无内存屏障)
+            Interlocked.Add(ref renderedSamples, countRequested);
             int ch = channels;
             int frames = countRequested / ch;
             if (frames <= 0) return countRequested;
