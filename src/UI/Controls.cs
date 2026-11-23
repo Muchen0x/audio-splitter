@@ -286,12 +286,13 @@ namespace StereoSplitter
                 c.HandleCreated += OnSpinHandleCreated;
                 return;
             }
-            // 子控件还没进 Controls: 本轮消息处理完再试一次
-            if (IsHandleCreated && !IsDisposed)
-            {
-                try { BeginInvoke(new Action(AttachSpinHook)); } catch { }
-            }
+            // 子控件还没进 Controls: 本轮消息处理完再试一次 (只重试一次, 免得自投递打转)
+            if (spinRetried || !IsHandleCreated || IsDisposed) return;
+            spinRetried = true;
+            try { BeginInvoke(new Action(AttachSpinHook)); } catch { }
         }
+
+        bool spinRetried;
 
         void OnSpinHandleCreated(object sender, EventArgs e)
         {
