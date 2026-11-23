@@ -388,8 +388,6 @@ namespace StereoSplitter
                 card.VolumeScrolled += OnCardVolumeScrolled;
                 card.RemoveRequested += OnCardRemoveRequested;
                 card.ShapeBlocked += OnCardShapeBlocked;
-                // 设备下拉展开前刷新设备 (「刷新设备」按钮已去掉, 与默认捕获下拉同一套)
-                card.cmbDevice.DropDownOpening += (s, e) => RefreshDevicesOnOpen();
                 // 卡片自带圆角外框: 竖向靠紧 (间隙 = Margin.Bottom), 横向留 CardGrid.GapX 供换列
                 card.Margin = gridMargin;
                 card.Width = gridW;
@@ -496,7 +494,7 @@ namespace StereoSplitter
         void LayoutTopRows()
         {
             if (lblD == null || cmbDefault == null || btnAddOutput == null || btnSettings == null) return;
-            if (btnStart == null || cmbSpec == null) return;
+            if (btnStart == null || cmbSpec == null || btnRefresh == null) return;
             Control host = cmbDefault.Parent;
             if (host == null) return;
 
@@ -508,9 +506,10 @@ namespace StereoSplitter
             const int leftEdge = 15;                // 与其它行左缘一致
             const int gap = 8;
 
-            // —— 第 1 行: [捕获(虚拟):] [下拉] [设置(齿轮, 贴右)] —— (刷新设备按钮已去掉)
+            // —— 第 1 行: [捕获:] [下拉] [刷新(图标)] [设置(齿轮, 贴右)] ——
             btnSettings.Left = panelW - rightEdge - btnSettings.Width;
-            cmbDefault.Width = Math.Max(60, btnSettings.Left - gap - cmbDefault.Left);
+            btnRefresh.Left = btnSettings.Left - gap - btnRefresh.Width;
+            cmbDefault.Width = Math.Max(60, btnRefresh.Left - gap - cmbDefault.Left);
 
             // —— 第 2 行: [开始分流] 独占一行, 水平居中 ——
             // 它是这一屏唯一的主操作, 居中比贴左更稳: 窗口拉宽时不会飘到角落里去。
@@ -738,6 +737,66 @@ namespace StereoSplitter
             cardHost.AutoScroll = true;
             cardHost.PerformLayout();
             cardHost.AutoScrollPosition = new Point(Math.Abs(keep.X), Math.Abs(keep.Y));
+        }
+
+        /// <summary>
+        /// 「添加设备」的第一步: 弹出选择窗 (输出到哪台设备 + 负责哪个声道),
+        /// 确认后按所选建卡片。不再"直接加一张默认卡片再让用户改" —— 加出来的卡片
+        /// 常常带着不是本意的设备/声道, 还得删掉重来。
+        /// </summary>
+        void AddOutputViaDialog()
+        {
+            // F-24: 达上限就别弹窗了, 弹了也加不了
+            if (models.Count >= Infrastructure.LaneSettingsCodec.MaxOutputCards)
+            {
+                Log("[输出] 已达输出卡上限 " + Infrastructure.LaneSettingsCodec.MaxOutputCards + " 张，无法继续添加");
+                return;
+            }
+            if (Devices.Count == 0)
+            {
+                Log("[输出] 没有可用输出设备, 请先点「刷新设备」或接入设备");
+                return;
+            }
+
+            // 设备清单与卡片设备下拉同一格式; 已被占用的设备灰显
+            var texts = new string[Devices.Count];
+            var ids = new string[Devices.Count];
+            var used = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < models.Count; i++) used.Add(models[i].DeviceId ?? "");
+            int freeIdx = -1;
+            for (int i = 0; i < Devices.Count; i++)
+            {
+                texts[i] = "[" + i + "] " + Devices[i].FriendlyName;
+                ids[i] = DeviceIdAt(i);
+                if (freeIdx < 0 && !used.Contains(ids[i])) freeIdx = i;
+            }
+
+            // 声道清单与默认值: 默认接第一路还没人接的声道 (与原来的直加逻辑一致)
+            var chans = CurrentSpecChannels();
+            var usedKeys = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < models.Count; i++)
+                for (int s = 0; s < models[i].Slots.Count; s++)
+                    usedKeys.Add(models[i].Slots[s].ChannelKey);
+            string defaultKey = null;
+            for (int i = 0; i < chans.Count; i++)
+                if (!usedKeys.Contains(chans[i].Key)) { defaultKey = chans[i].Key; break; }
+            if (defaultKey == null && chans.Count > 0) defaultKey = chans[0].Key;
+
+            using (var dlg = new AddOutputDialog(texts, ids, used, freeIdx, chans, defaultKey))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+                var m = new OutputCardModel { DeviceId = dlg.DeviceId };
+                if (dlg.IsMulti)
+                {
+                    m.Multi = true;   // 行数由 NormalizeModels 按设备物理声道数补齐
+                }
+                else if (!string.IsNullOrEmpty(dlg.ChannelKey))
+                {
+                    m.Slots.Add(new ChannelSlot { ChannelKey = dlg.ChannelKey, Volume = 100 });
+                }
+                AddLaneCard(m);
+            }
         }
 
         void AddLaneCard(OutputCardModel preset)

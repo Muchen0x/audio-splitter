@@ -325,7 +325,7 @@ namespace StereoSplitter
                 return;
             }
 
-            // 图标总览: 喇叭三态 + 禁用 / 增益推子 / 设置螺母 / 添加设备方框加号。
+            // 图标总览: 喇叭三态 + 禁用 / 增益圆圈加号 / 设置螺母 / 方框加号 / × / 刷新圆环箭头。
             // 这种"22px 下看不看得懂"的问题只能放大看像素, 悬停态要点鼠标截不到。
             if (args.Length >= 1 && args[0] == "icons")
             {
@@ -334,11 +334,11 @@ namespace StereoSplitter
                 using (var hostForm = new Form
                 {
                     StartPosition = FormStartPosition.Manual, Location = new Point(40, 40),
-                    ClientSize = new Size(cell * 4, cell * rows + 6), BackColor = Color.White
+                    ClientSize = new Size(cell * 5, cell * rows + 6), BackColor = Color.White
                 })
                 using (var host = new Panel { Dock = DockStyle.Fill, BackColor = Color.White })
                 {
-                    var ctl = new Control[8];
+                    var ctl = new Control[9];
                     for (int i = 0; i < 4; i++)
                         ctl[i] = new SpeakerButton { Location = new Point(6 + i * cell, 6) };
                     // 喇叭四态: 正常出声 / 已静音 / 音量 0 / 禁用
@@ -356,6 +356,10 @@ namespace StereoSplitter
                     {
                         Glyph = ButtonGlyph.Cross, Location = new Point(6 + cell * 3, 4 + cell),
                         Size = new Size(20, 20), Enabled = false
+                    };
+                    ctl[8] = new GearButton
+                    {
+                        Glyph = ButtonGlyph.Refresh, Location = new Point(6 + cell * 4, 4 + cell)
                     };
                     host.Controls.AddRange(ctl);
                     hostForm.Controls.Add(host);
@@ -376,6 +380,37 @@ namespace StereoSplitter
                     }
                     Console.Out.WriteLine("ICONS speaker x4 / gain / gear / add / remove -> " + file);
                 }
+                return;
+            }
+
+            // 「添加设备」选择弹窗: 假数据渲染一张, 看圆角下拉/描边按钮/灰显设备是否成型。
+            if (args.Length >= 1 && args[0] == "adddlg")
+            {
+                string path = args.Length >= 2 ? args[1] : "adddlg.png";
+                var texts = new[] { "[0] 扬声器 (Realtek(R) Audio)", "[1] 网易虚拟音频设备", "[2] OF24Q (NVIDIA High Definition Audio)" };
+                var ids = new[] { "id0", "id1", "id2" };
+                var used = new HashSet<string> { "id1" };   // 第二台灰显
+                var chans = new List<KeyValuePair<string, string>>
+                {
+                    new KeyValuePair<string, string>("FL", "左声道"),
+                    new KeyValuePair<string, string>("FR", "右声道")
+                };
+                var dlg = new AddOutputDialog(texts, ids, used, 0, chans, "FR");
+                dlg.StartPosition = FormStartPosition.Manual;
+                dlg.Location = new Point(40, 40);
+                dlg.Show();
+                dlg.TopMost = true;
+                for (int i = 0; i < 12; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                string file = System.IO.Directory.Exists(path)
+                    ? System.IO.Path.Combine(path, "adddlg.png") : path;
+                using (var bmp = new Bitmap(dlg.Width, dlg.Height))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                        g.CopyFromScreen(dlg.Location, Point.Empty, dlg.Size);
+                    bmp.Save(file, System.Drawing.Imaging.ImageFormat.Png);
+                }
+                dlg.Close();
+                Console.Out.WriteLine("ADDDLG rendered -> " + file);
                 return;
             }
 

@@ -696,6 +696,18 @@ namespace StereoSplitter
             List.Highlight(index);
         }
 
+        /// <summary>
+        /// 滚轮只滚弹层列表, 绝不放它冒泡: ToolStripDropDown 不处理 WM_MOUSEWHEEL,
+        /// 未处理的消息会被 DefWindowProc 转给 owner (主窗体), 再经焦点控件链落到卡片区 ——
+        /// 表现就是"滚轮在弹层上滚, 底下的卡片却动了"。截下来直接投给列表,
+        /// 与下拉本体那条路 (<see cref="RoundedCombo"/>) 共用 <see cref="DeliverWheel"/>。
+        /// </summary>
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WheelRouting.WM_MOUSEWHEEL) { DeliverWheel(m); return; }
+            base.WndProc(ref m);
+        }
+
         /// <summary>把滚轮消息转给列表 (下拉展开时滚的是选项, 不是卡片区)。</summary>
         internal void DeliverWheel(Message m)
         {

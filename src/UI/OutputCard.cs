@@ -27,8 +27,6 @@ namespace StereoSplitter
         public readonly SpeakerButton btnMute;
         public readonly GearButton btnRemove;
 
-        readonly Label lblMs;
-
         /// <summary>多声道行: 每个物理声道一行 (声道下拉 + 音量条 + 百分比)。</summary>
         sealed class SlotRow
         {
@@ -113,12 +111,11 @@ namespace StereoSplitter
                 Maximum = 2000,
                 Increment = 10
             };
-            // 圆角外壳把「延迟」字样 + 数字框 + 上下箭头包成同一个圆角矩形 (用户指定);
+            // 圆角外壳把「延迟」字样 + 数字框 + 上下箭头 + 「ms」单位包成同一个圆角矩形 (用户指定);
             // 描边画在壳身上, 数字框嵌 1px 内衬。壳的宽度在字体确定后会重算 (Recalc),
             // 布局按壳宽右起排, 所以壳变宽时要重跑一次布局。
-            nudShell = new RoundNumericShell(nudDelay, "延迟");
+            nudShell = new RoundNumericShell(nudDelay, "延迟", "ms");
             nudShell.SizeChanged += (s, e) => LayoutControls();
-            lblMs = new Label { Text = "ms", AutoSize = true };
             // 移除按钮: "×" 图标 (用户指定), 无边框, 悬停铺浅底; 摆在卡片最右上角 (见 LayoutControls)
             btnRemove = new GearButton
             {
@@ -154,7 +151,7 @@ namespace StereoSplitter
 
             Controls.AddRange(new Control[]
             {
-                cmbDevice, cmbChannel, nudShell, lblMs, btnRemove,
+                cmbDevice, cmbChannel, nudShell, btnRemove,
                 btnMute, volTrack, lblVol
             });
 
@@ -373,11 +370,9 @@ namespace StereoSplitter
         {
             int w = Width;
 
-            // 第一行右起排: [×] ← [ms] ← [延迟圆角壳(字样+数字框+箭头)] ← [声道], 设备下拉占满左侧。
-            // × 紧挨延迟组右侧 (距 ms 8px), 与单位文字不再互相遮挡。
+            // 第一行右起排: [×] ← [延迟圆角壳(字样+数字框+箭头+ms 单位)] ← [声道], 设备下拉占满左侧。
             btnRemove.Location = new Point(w - 6 - btnRemove.Width, 3);
-            lblMs.Location = new Point(btnRemove.Left - 8 - lblMs.Width, 8);
-            nudShell.Location = new Point(lblMs.Left - 4 - nudShell.Width, 5);
+            nudShell.Location = new Point(btnRemove.Left - 8 - nudShell.Width, 5);
             cmbChannel.Location = new Point(nudShell.Left - 8 - cmbChannel.Width, 5);
             cmbDevice.Location = new Point(8, 5);
             cmbDevice.Width = Math.Max(90, cmbChannel.Left - 14);

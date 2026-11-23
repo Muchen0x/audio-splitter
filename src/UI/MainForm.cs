@@ -53,6 +53,7 @@ namespace StereoSplitter
         // 顶部固定行需要用到的控件 (自适应重排时要改它们的坐标/宽度)
         Label lblD, lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
         RoundButton btnStart;        // 自绘圆角 + 四态配色 (默认 / 启动中 / 运行中 / 正在停止)
+        GearButton btnRefresh;       // 刷新设备 (圆环箭头图标): 运行中置灰, 链路级
         RoundButton btnAddOutput;    // 「添加设备」文字按钮; 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
         Button btnClearLog;
 
@@ -321,19 +322,25 @@ namespace StereoSplitter
             splitContainer.SizeChanged += (s, e) => KeepContentOnShrink();
             Controls.Add(splitContainer);
 
-            lblD = new Label { Text = "捕获(虚拟):", Location = new Point(15, 15), AutoSize = true };
+            lblD = new Label { Text = "捕获:", Location = new Point(15, 15), AutoSize = true };
             cmbDefault = new RoundedCombo
             {
-                Location = new Point(110, 10),
+                Location = new Point(65, 10),
                 Width = 250,
                 Height = 28,
                 // 不设 DropDownWidth: 弹层宽度与本体一致 (设备名过长靠行内省略号收尾)
                 ItemHeight = 24,
                 MaxDropDownItems = 12
             };
-            // 「刷新设备」按钮已去掉: 点开下拉框的那一刻刷新 (见 DropDownOpening)。
-            // 插拔 USB/DAC 后不再需要先找按钮, 打开列表就能看到最新设备。
-            cmbDefault.DropDownOpening += (s, e) => RefreshDevicesOnOpen();
+            // 「刷新设备」: 圆环箭头图标按钮 (用户指定图形), 无边框 —— 与设置齿轮同一行同一套。
+            // 点一下重新枚举设备 (插拔 USB/DAC 后用); 点开下拉不再自动刷新 (用户要求撤掉)。
+            btnRefresh = new GearButton
+            {
+                Glyph = ButtonGlyph.Refresh,
+                Location = new Point(365, 8),
+                Size = new Size(28, 28)
+            };
+            btnRefresh.Click += (s2, e2) => RefreshDevicesClick();
             // 设置入口: 右上角齿轮 (位置由 LayoutTopRows 按面板宽度贴右)
             btnSettings = new GearButton { Location = new Point(440, 8) };
             btnSettings.Click += (s2, e2) => OpenSettings();
@@ -462,7 +469,7 @@ namespace StereoSplitter
             // 否则卡片的宽度会取决于创建那一刻滚动条在不在 (差 17px 对不齐)。
             cardHost.Resize += (s2, e2) => FitCardWidths();
             cardHost.ClientSizeChanged += (s2, e2) => FitCardWidths();
-            btnAddOutput.Click += (s2, e2) => AddLaneCard(null);
+            btnAddOutput.Click += (s2, e2) => AddOutputViaDialog();
             btnCalibrate.Click += (s2, e2) => OpenLatencyCalibration();
             cmbSpec.SelectedIndexChanged += (s2, e2) =>
             {
@@ -514,16 +521,17 @@ namespace StereoSplitter
 
             // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
             // 都在设置页里 (控件由本类持有, 由 SettingsForm 搬入搬出)。
-            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, btnSettings, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, btnRefresh, btnSettings, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterShell, lblWaterSec, btnClearLog, txtLog });
 
             // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。
             // 必须放在所有控件都建好之后（水位监控那几个是后面才 new 的）。
             // 已迁入设置页的选项由设置页自己的说明文字负责解释, 这里不再挂提示。
             tipTop = new ToolTip();
-            tipTop.SetToolTip(cmbDefault, "把哪台虚拟声卡的输出抓过来。\n点开下拉框时会自动重新枚举设备。\n运行中不可改（要重开捕获端点），需先停止分流。");
+            tipTop.SetToolTip(cmbDefault, "把哪台虚拟声卡的输出抓过来。\n运行中不可改（要重开捕获端点），需先停止分流。");
+            tipTop.SetToolTip(btnRefresh, "重新枚举输出设备（插拔 USB/DAC 后用）。\n运行中不可刷新（会改动卡片与链路），需先停止分流。");
             tipTop.SetToolTip(cmbSpec, "可用的逻辑声道清单（单声道…5.1）。\n运行中不可改（会改变矩阵与每路声道数），需先停止分流。");
-            tipTop.SetToolTip(btnAddOutput, "新增一张输出卡片（一台设备）。\n运行中不可加卡（会改变链路），需先停止分流。");
+            tipTop.SetToolTip(btnAddOutput, "新增一张输出卡片（一台设备）：先选设备和负责声道，确认后添加。\n运行中不可加卡（会改变链路），需先停止分流。");
             tipTop.SetToolTip(icoGain, "总增益（100% = 原样，>100% 放大）。\n作用在采样层，与「主音量」是两条独立的滑条。\n运行中可调。");
             tipTop.SetToolTip(volGain, "总增益，作用在采样层。\n运行中可调。");
             tipTop.SetToolTip(volMaster, "总音量，作用在采样层。\n运行中可调。");
@@ -803,6 +811,7 @@ namespace StereoSplitter
             bool run = (state == AppState.Running);
 
             cmbDefault.Enabled = !busy && !run;
+            btnRefresh.Enabled = !busy && !run;
             cmbLatency.Enabled = !busy && !run;
             cmbSpec.Enabled = !busy && !run;
             btnAddOutput.Enabled = !busy && !run && models.Count < Infrastructure.LaneSettingsCodec.MaxOutputCards;  // F-24: 达上限禁用
@@ -1537,10 +1546,10 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 设备下拉框展开前刷新 (点开即刷新, 「刷新设备」按钮已去掉)。
-        /// 与原手动刷新同一套枚举/重建逻辑, 但不存盘 —— 只是看看列表, 没改任何东西。
+        /// 「刷新设备」按钮: 重新枚举设备并重建下拉/卡片 (设备被拔掉等场景)。
+        /// 与下拉展开解耦 —— 点开下拉不再自动刷新 (用户要求撤掉), 刷新只走这个按钮。
         /// </summary>
-        void RefreshDevicesOnOpen()
+        void RefreshDevicesClick()
         {
             Log("[刷新] 重新枚举设备...");
 
@@ -1548,6 +1557,7 @@ namespace StereoSplitter
             UnbindAllVolumeSync();
 
             RefreshDevices();
+            SaveSettings();
             Log("[刷新] 完成, 共 " + Devices.Count + " 个设备");
         }
 

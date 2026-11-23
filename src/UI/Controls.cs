@@ -64,6 +64,36 @@ namespace StereoSplitter
             if (nearest != null)
                 SendMessage(nearest.Handle, m.Msg, m.WParam, m.LParam);   // 交给父窗口按默认规则冒泡
         }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr WindowFromPoint(System.Drawing.Point p);
+
+        /// <summary>
+        /// 这条滚轮消息是否落在一个打开的下拉弹层上 (弹层自己的窗口, 或光标压在弹层上)。
+        /// <para><b>为什么需要它</b>: VolumeWheelRouter / WheelByCursorRouter 两个全局过滤器按
+        /// 「光标下的控件」找滚轮的去向, 而弹层 (<see cref="ComboPopup"/>) 是独立窗口,
+        /// 不在主窗体控件树里 —— 弹层开着时, 过滤器会拿消息坐标在弹层<b>底下</b>找到音量滑条 /
+        /// 卡片区, 把滚轮改投出去并吞掉: 弹层列表收不到, 底下的卡片却滚走了 ("滚轮穿透")。
+        /// 两个过滤器开头都先查这一条, 命中就放行 —— 消息会按系统路由到达弹层或下拉本体,
+        /// 那两条路各自都把滚轮交给弹层列表。</para>
+        /// </summary>
+        public static bool OverOpenComboPopup(Message m)
+        {
+            // 消息的目标窗口本身就是弹层/弹层列表 (Win10+ 默认按光标位置投递)
+            if (IsPopupWindow(m.HWnd)) return true;
+            // 消息被投给了焦点窗口 —— 用消息自带的屏幕坐标判断光标是否压在弹层上
+            long lp = m.LParam.ToInt64();
+            var at = new System.Drawing.Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
+            return IsPopupWindow(WindowFromPoint(at));
+        }
+
+        static bool IsPopupWindow(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return false;
+            for (Control c = Control.FromChildHandle(hwnd); c != null; c = c.Parent)
+                if (c is ComboPopup || c is ComboRowList) return true;
+            return false;
+        }
     }
 
     /// <summary>
@@ -130,7 +160,7 @@ namespace StereoSplitter
     }
 
     /// <summary><see cref="RoundButton"/> 可以画的自绘符号 (不依赖字体)。</summary>
-    enum ButtonGlyph { None, Plus, Nut, SquarePlus, Cross }
+    enum ButtonGlyph { None, Plus, Nut, SquarePlus, Cross, Refresh }
 
     /// <summary>
     /// 自绘圆角矩形按钮。
@@ -846,8 +876,9 @@ namespace StereoSplitter
     /// 圆角数字框外壳: <see cref="NoWheelNumeric"/> 是原生控件, 自己画不了圆角描边 ——
     /// 外壳负责按 <see cref="RoundedCombo"/> 同一套框色画圆角边框, 数字框嵌在 1px 内衬里,
     /// 并把它的窗口裁成圆角 (与 RoundButton.ShapeRound 同一手法), 方角才不会盖住边框弧线。
-    /// <para>可以带文字 (<c>new RoundNumericShell(nud, "延迟")</c>): 文字与数字框、上下箭头
-    /// 一起包进同一个圆角矩形 —— 整组控件看起来是一个完整的框, 而不是三件散件。</para>
+    /// <para>可以带文字 (<c>new RoundNumericShell(nud, "延迟")</c>) 和单位后缀
+    /// (<c>new RoundNumericShell(nud, "延迟", "ms")</c>): 文字、数字框、上下箭头、单位
+    /// 一起包进同一个圆角矩形 —— 整组控件看起来是一个完整的框, 而不是几件散件。</para>
     /// <para>上下箭头由 <see cref="NoWheelNumeric.SpinButtonsHook"/> 自绘成两条圆头短线,
     /// 不再带原生那圈立体边框 —— 「设置了图标的按钮不要边框」同一条规矩的延伸。</para>
     /// </summary>
@@ -863,11 +894,14 @@ namespace StereoSplitter
 
         public readonly NoWheelNumeric Inner;
         readonly Label caption;      // 框内的文字 (可空)
+        readonly Label unit;         // 框内的单位后缀 (可空, 如 "ms")
         bool hot;
 
-        public RoundNumericShell(NoWheelNumeric inner) : this(inner, null) { }
+        public RoundNumericShell(NoWheelNumeric inner) : this(inner, null, null) { }
 
-        public RoundNumericShell(NoWheelNumeric inner, string captionText)
+        public RoundNumericShell(NoWheelNumeric inner, string captionText) : this(inner, captionText, null) { }
+
+        public RoundNumericShell(NoWheelNumeric inner, string captionText, string unitText)
         {
             Inner = inner;
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
@@ -884,6 +918,17 @@ namespace StereoSplitter
                 };
                 Controls.Add(caption);
             }
+            if (unitText != null)
+            {
+                unit = new Label
+                {
+                    Text = unitText,
+                    AutoSize = true,
+                    BackColor = Color.Transparent,
+                    ForeColor = Color.FromArgb(120, 126, 136)   // 单位弱化成辅色 (与卡片行标签同色)
+                };
+                Controls.Add(unit);
+            }
             Size = new Size(ContentWidth(), Inner.Height + 2);
             // 鼠标几乎全落在 Inner 上 (外壳只剩内衬和文字), 悬停跟踪得挂在它身上
             inner.MouseEnter += (s, e) => { hot = true; Invalidate(); };
@@ -892,17 +937,23 @@ namespace StereoSplitter
             {
                 inner.BackColor = inner.Enabled ? Color.White : BackDisabled;
                 if (caption != null) caption.ForeColor = inner.Enabled ? SystemColors.ControlText : TextDisabled;
+                if (unit != null) unit.ForeColor = inner.Enabled ? UnitColor : TextDisabled;
                 Invalidate();
             };
             // 字体是环境继承的: 挂进父级后才定, caption 宽度跟着变, 定了之后要重排
             FontChanged += (s, e) => { if (IsHandleCreated) BeginInvoke((Action)Recalc); };
         }
 
-        /// <summary>外壳总宽 = 边框 + [文字+间隔] + 数字框 + 边框。</summary>
+        /// <summary>单位后缀的常态色 (与 OutputCard 行标签同色, 禁用时换灰)。</summary>
+        static readonly Color UnitColor = Color.FromArgb(120, 126, 136);
+
+        /// <summary>外壳总宽 = 边框 + [文字+间隔] + 数字框 + [间隔+单位+文字边距] + 边框。</summary>
         int ContentWidth()
         {
             return 1 + (caption == null ? 0 : PadX + caption.PreferredWidth + GapCapInner)
-                     + Inner.Width + 1;
+                     + Inner.Width
+                     + (unit == null ? 0 : GapCapInner + unit.PreferredWidth + PadX - 2)
+                     + 1;
         }
 
         /// <summary>按内容重排: 外壳尺寸、文字与数字框的位置、数字框的圆角裁剪一次到位。</summary>
@@ -910,16 +961,16 @@ namespace StereoSplitter
         {
             if (IsDisposed) return;
             Size = new Size(ContentWidth(), Inner.Height + 2);
+            int x = 1;
             if (caption != null)
             {
                 caption.Location = new Point(PadX, (Height - caption.PreferredHeight) / 2);
-                int x = PadX + caption.PreferredWidth + GapCapInner;
-                PlaceInner(x, Width - x - 1);
+                x = PadX + caption.PreferredWidth + GapCapInner;
             }
-            else
-            {
-                PlaceInner(1, Width - 2);
-            }
+            int innerW = Width - x - (unit == null ? 1 : GapCapInner + unit.PreferredWidth + PadX - 2 + 1);
+            PlaceInner(x, innerW);
+            if (unit != null)
+                unit.Location = new Point(x + innerW + GapCapInner, (Height - unit.PreferredHeight) / 2);
             Invalidate();
         }
 
@@ -1035,6 +1086,9 @@ namespace StereoSplitter
         public bool PreFilterMessage(ref Message m)
         {
             if (m.Msg != WM_MOUSEWHEEL) return false;
+            // 下拉弹层开着时滚轮归弹层列表, 过滤器一律放行 (不然会按消息坐标在弹层
+            // 底下找到滑条/列表, 把滚轮改投出去 —— 弹层收不到, 底下却滚了)
+            if (WheelRouting.OverOpenComboPopup(m)) return false;
 
             // 消息自带屏幕坐标 (投递那一刻的位置), 比读 Cursor.Position 可靠
             long lp = m.LParam.ToInt64();
@@ -1074,6 +1128,9 @@ namespace StereoSplitter
         public bool PreFilterMessage(ref Message m)
         {
             if (m.Msg != WM_MOUSEWHEEL) return false;
+            // 下拉弹层开着时滚轮归弹层列表, 过滤器一律放行 (否则会按消息坐标在弹层底下
+            // 找到音量滑条, 把滚轮改投给卡片区 —— 弹层收不到, 底下的卡片却滚走了)
+            if (WheelRouting.OverOpenComboPopup(m)) return false;
 
             // 命中判定用消息自带的屏幕坐标 (就是滚轮真正发生的位置), 比读光标更可靠:
             // 光标可能被别的程序挪走, 而这条消息的坐标是投递那一刻定下的。
@@ -1225,6 +1282,14 @@ namespace StereoSplitter
                         g.DrawLine(p, cx - 4.5f, cy + 4.5f, cx + 4.5f, cy - 4.5f);
                     }
                     break;
+
+                case ButtonGlyph.Refresh:
+                    // 「刷新设备」: 圆环 + 右上角实心直角旗标 (照用户给的 SVG 描的)。
+                    // 原图 1024 视图: 圆环外径 382 内径 287 (中线 334.5, 笔宽 95.6),
+                    // 旗标是被斜边(过圆心)切开的直角三角形, 直角顶在 (889,459)-(889,125)。
+                    // 22px 下: 半径 7.18、笔宽 2.05、旗标顶点见 DrawRefresh。
+                    DrawRefresh(g, cx, cy, Math.Min(Width, Height) / 22f, icon);
+                    break;
             }
         }
 
@@ -1265,6 +1330,31 @@ namespace StereoSplitter
                 g.FillEllipse(fill, cx - rOut, cy - rOut, rOut * 2, rOut * 2);
             using (var fill = new SolidBrush(back))
                 g.FillEllipse(fill, cx - rIn, cy - rIn, rIn * 2, rIn * 2);
+        }
+
+        /// <summary>
+        /// 刷新图标: 圆环弧 + 右上角实心直角旗标。坐标按 22×22 折算 (s = 按钮短边 / 22)。
+        /// <para>原图环形从 -45°(右上对角) 逆时针绕过左/下/右, 在 17° 收口 —— 缺口正好被旗标
+        /// 填满, 弧的 -45° 端与旗标斜边(过圆心的 45° 线)无缝相接。GDI 的角度顺时针为正,
+        /// 所以这段弧 = <c>DrawArc(start=17°, sweep=298°)</c>。</para>
+        /// </summary>
+        static void DrawRefresh(Graphics g, float cx, float cy, float s, Color icon)
+        {
+            const float r = 7.18f, penW = 2.05f;
+            var rect = new RectangleF(cx - r * s, cy - r * s, r * 2 * s, r * 2 * s);
+            using (var pen = new Pen(icon, penW * s))
+                g.DrawArc(pen, rect, 17f, 298f);
+
+            // 旗标: 直角三角形, 斜边过圆心 (原图顶点 (889,459)(889,125)(775,240) — 斜边与
+            // 内圆 -45° 交点共线, 这里按 22px 折算后省略与斜边共线的中间点)。
+            var flag = new PointF[]
+            {
+                new PointF(cx + 0.91f * s,  cy - 1.13f * s),   // 近圆心 (斜边下端)
+                new PointF(cx + 8.08f * s,  cy - 1.13f * s),   // 右下 (直角)
+                new PointF(cx + 8.08f * s,  cy - 8.32f * s),   // 右上 (直角)
+            };
+            using (var fill = new SolidBrush(icon))
+                g.FillPolygon(fill, flag);
         }
     }
 
@@ -1478,11 +1568,9 @@ namespace StereoSplitter
 
 
     /// <summary>
-    /// 增益图标: 四根高低不一的竖条, 其中两根套着滑块 —— 一望即知是"电平/推子"。
-    /// <para>图形照用户给的 SVG 描的 (1024 视图): 竖条中心 x = 190 / 417 / 644 / 872,
-    /// 条宽 116、端头半圆; 滑块是半径 95.7 的实心圆, 环着一圈 15 宽的空隙把竖条断开。
-    /// 这里只做一件事: **把 1024 坐标等比缩到 22×22 的内容区**, 再把那圈空隙从 0.33px
-    /// 放大到 0.7px —— 22px 下 0.33px 等于没有, 滑块会和竖条糊成一根粗线。</para>
+    /// 增益图标: 圆圈加号 (照用户给的 SVG 描的) —— 圆环一圈 + 中心十字, 线宽全部同宽。
+    /// <para>1024 视图: 圆环外径 512 / 内径 409.6 (笔宽 102.4), 加号臂半长 307.2、臂厚 102.4;
+    /// 22px 下笔宽 2.2、环中线半径 9.9、臂半长 6.6。</para>
     /// <para>静态、不可点: 增益没有开关语义, 也没有可切换的状态。做成按钮会让人去点,
     /// 点了却什么都不会发生 —— 那是比"少一个功能"更糟的体验。</para>
     /// </summary>
@@ -1509,36 +1597,19 @@ namespace StereoSplitter
             Color back = Parent != null ? Parent.BackColor : SystemColors.Control;
             using (var b = new SolidBrush(back)) g.FillRectangle(b, ClientRectangle);
 
-            float s = Math.Min(Width, Height) / 22f;
+            // 圆圈加号 (照用户给的 SVG 描的): 1024 视图圆环外径 512 内径 409.6 (笔宽 102.4),
+            // 加号臂半长 307.2、臂厚 102.4, 全部同宽。22px 下笔宽 2.2、环中线半径 9.9、臂 ±6.6。
+            // 圆环外缘会顶到 11 (=控件半宽), 缩一档基准 (s 用 /23) 给抗锯齿留 0.5px 余量。
+            float s = Math.Min(Width, Height) / 23f;
+            float cx = Width / 2f, cy = Height / 2f;
+            const float ringR = 9.9f, stroke = 2.2f, arm = 6.6f;
 
-            // 坐标直接按 22×22 写, 不再从 1024 视图换算 —— 等比缩小到 22px 后,
-            // 竖条只有 2.3px、滑块与竖条之间的空隙只有 0.33px, 后者等于没有:
-            // 滑块会和竖条糊成一根粗线, 图标就读成"四根线"而不是"推子"。
-            // 所以这里保比例、放大特征: 条 2.7px, 滑块半径 2.4px, 空隙 ~0.75px。
-            float[] cx = { 3.9f, 8.9f, 13.9f, 18.9f };
-            float[] top = { 14.0f, 8.2f, 3.5f, 0.8f };   // 底端齐平, 顶端一根比一根高
-            const float bottom = 21.2f, barW = 2.2f;
-            float knobR = 2.5f, holeR = 3.3f;
-
-            using (var pen = new Pen(Ink, barW * s))
+            using (var pen = new Pen(Ink, stroke * s))
+                g.DrawEllipse(pen, cx - ringR * s, cy - ringR * s, ringR * 2 * s, ringR * 2 * s);
+            using (var pen = new Pen(Ink, stroke * s))
             {
-                pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
-                pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
-                for (int i = 0; i < cx.Length; i++)
-                    g.DrawLine(pen, cx[i] * s, top[i] * s, cx[i] * s, bottom * s);
-            }
-
-            // 两根带滑块的竖条: 先用底色在滑块位置挖一个圆, 再把滑块实心填回来 ——
-            // 顺序反了就只是一圈实心圆压住竖条, 看不出"滑块能滑"。
-            float[] knobY = { 17.6f, 7.6f };
-            int[] knobCol = { 0, 2 };
-            for (int i = 0; i < knobY.Length; i++)
-            {
-                float kx = cx[knobCol[i]] * s, ky = knobY[i] * s;
-                using (var fill = new SolidBrush(back))
-                    g.FillEllipse(fill, kx - holeR * s, ky - holeR * s, holeR * 2 * s, holeR * 2 * s);
-                using (var fill = new SolidBrush(Ink))
-                    g.FillEllipse(fill, kx - knobR * s, ky - knobR * s, knobR * 2 * s, knobR * 2 * s);
+                g.DrawLine(pen, cx - arm * s, cy, cx + arm * s, cy);
+                g.DrawLine(pen, cx, cy - arm * s, cx, cy + arm * s);
             }
         }
     }
