@@ -214,7 +214,7 @@ namespace StereoSplitter
         /// DeviceChannelCount → 这里, 而 <c>catalog.Open(id)</c> 会真的激活一次音频客户端
         /// (USB/蓝牙端点 10~100ms, 且是 COM 调用)。3 张多声道卡上每松一次音量滑条 = 3 次激活,
         /// 全部压在 UI 线程上。缓存后这条链退化成纯算术。</para>
-        /// <para>失效时机: <see cref="RefreshDevices"/> (用户点刷新 / 设备列表重建)、
+        /// <para>失效时机: <see cref="RefreshDevices"/> (设备下拉展开前刷新 / 设备列表重建)、
         /// <see cref="HandleDeviceLost"/> (端点消失/停用)、设备属性变化回调
         /// (<c>DefaultChangeWatcher.OnPropertyValueChanged</c>, 覆盖"在 Windows 里改了扬声器配置"),
         /// 另有 <see cref="ChannelCacheMs"/> 的 TTL 兜底。</para>

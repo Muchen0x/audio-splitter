@@ -26,7 +26,7 @@ namespace StereoSplitter
     {
         /// <summary>声道下拉里「多声道」项的哨兵键 / 显示文字。</summary>
         public const string MultiKey = "*multi*";
-        public const string MultiText = "多声道…";
+        public const string MultiText = "多声道";
 
         /// <summary>规格 → 声道清单（键 + 显示名）。键与 Windows 扬声器位对应。</summary>
         public static List<KeyValuePair<string, string>> SpecChannels(int specIndex)

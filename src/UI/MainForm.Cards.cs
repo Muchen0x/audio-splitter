@@ -388,6 +388,8 @@ namespace StereoSplitter
                 card.VolumeScrolled += OnCardVolumeScrolled;
                 card.RemoveRequested += OnCardRemoveRequested;
                 card.ShapeBlocked += OnCardShapeBlocked;
+                // 设备下拉展开前刷新设备 (「刷新设备」按钮已去掉, 与默认捕获下拉同一套)
+                card.cmbDevice.DropDownOpening += (s, e) => RefreshDevicesOnOpen();
                 // 卡片自带圆角外框: 竖向靠紧 (间隙 = Margin.Bottom), 横向留 CardGrid.GapX 供换列
                 card.Margin = gridMargin;
                 card.Width = gridW;
@@ -464,7 +466,7 @@ namespace StereoSplitter
             // 宽度没变 (改高度/拖分隔条也会走到这里) → 摆出来的结果不会变, 直接跳过
             if (panelW == lastVolPanelW) return;
             lastVolPanelW = panelW;
-            const int leftEdge = 78;    // 滑条左端: 两行共用一个起点, 图标都在 x=15..37
+            const int leftEdge = 45;    // 滑条左端: 两行共用一个起点, 图标都在 x=15..37, 右侧留 8px 就贴上
             const int rightEdge = 10;   // 右端留白, 与卡片区/日志框右缘一致
             int pctW = lblVolMaster.Width;
 
@@ -493,9 +495,9 @@ namespace StereoSplitter
         /// </summary>
         void LayoutTopRows()
         {
-            if (lblD == null || btnRefresh == null || btnAddOutput == null || btnSettings == null) return;
+            if (lblD == null || cmbDefault == null || btnAddOutput == null || btnSettings == null) return;
             if (btnStart == null || cmbSpec == null) return;
-            Control host = btnRefresh.Parent;
+            Control host = cmbDefault.Parent;
             if (host == null) return;
 
             Size panelSize = host.ClientSize;
@@ -506,19 +508,17 @@ namespace StereoSplitter
             const int leftEdge = 15;                // 与其它行左缘一致
             const int gap = 8;
 
-            // —— 第 1 行: [捕获(虚拟):] [下拉] [刷新设备] [设置(齿轮, 贴右)] ——
+            // —— 第 1 行: [捕获(虚拟):] [下拉] [设置(齿轮, 贴右)] —— (刷新设备按钮已去掉)
             btnSettings.Left = panelW - rightEdge - btnSettings.Width;
-            btnRefresh.Left = btnSettings.Left - gap - btnRefresh.Width;
-            cmbDefault.Width = Math.Max(60, btnRefresh.Left - gap - cmbDefault.Left);
+            cmbDefault.Width = Math.Max(60, btnSettings.Left - gap - cmbDefault.Left);
 
             // —— 第 2 行: [开始分流] 独占一行, 水平居中 ——
             // 它是这一屏唯一的主操作, 居中比贴左更稳: 窗口拉宽时不会飘到角落里去。
             // 宽度固定 130, 窄窗口也放得下 (panelW 最小约 340 → 居中后两侧各留 105)。
             btnStart.Left = Math.Max(leftEdge, (panelW - btnStart.Width) / 2);
 
-            // —— 第 3 行: [规格下拉] 贴左, [＋] 贴右 ——
-            // 规格标签已删, 下拉自己说明是什么: 它当行首读起来才顺, 空出来的右端留给「＋」。
-            // 显式 Max: 万一面板窄到 60+8+60 都放不下, 至少不让两者压在一起。
+            // —— 第 3 行: [规格下拉] 贴左, [添加设备] 贴右 ——
+            // 规格标签已删, 下拉自己说明是什么: 它当行首读起来才顺, 空出来的右端留给「添加设备」。
             cmbSpec.Left = leftEdge;
             btnAddOutput.Left = Math.Max(cmbSpec.Right + gap, panelW - rightEdge - btnAddOutput.Width);
 

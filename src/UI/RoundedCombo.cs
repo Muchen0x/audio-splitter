@@ -129,6 +129,13 @@ namespace StereoSplitter
         public event EventHandler SelectedIndexChanged;
 
         /// <summary>
+        /// 弹层即将展开 (点击本体 / Enter / Space / F4 / Alt+↓ 都会走这一条路)。
+        /// <para>触发时机在展开条件检查之前 —— 外部可以在这里重建条目 (比如设备下拉
+        /// 「点开时刷新设备」), 刷出来的 Items 当场就能进弹层。</para>
+        /// </summary>
+        public event EventHandler DropDownOpening;
+
+        /// <summary>
         /// 弹层最小宽度。0 (默认) = 与本控件同宽。
         /// <para>界面里所有下拉都不设这个值: 弹层比本体宽多少, 视觉上就是"两个错开的框",
         /// 而滚动条也不再撑宽弹层 (改成右侧悬浮细条), 所以宽度天然一致。</para>
@@ -145,7 +152,7 @@ namespace StereoSplitter
 
         /// <summary>
         /// 哪些行显示成灰色 (不可选的样子)。
-        /// <para>卡片里的「多声道…」在运行中就是这样: 列表项本身没法单独禁用, 只能靠这一层告诉绘制
+        /// <para>卡片里的「多声道」在运行中就是这样: 列表项本身没法单独禁用, 只能靠这一层告诉绘制
         /// "这行是灰的"。传委托而不是传集合, 是因为判据随时在变 (shapeLocked), 闭包读字段天然跟着变。</para>
         /// </summary>
         public Func<int, bool> ItemGrayedFilter { get; set; }
@@ -471,7 +478,14 @@ namespace StereoSplitter
 
         void OpenDropDown()
         {
-            if (open || !Enabled || Items.Count == 0 || !IsHandleCreated) return;
+            if (open || !Enabled || !IsHandleCreated) return;
+
+            // 展开前通知外部 (可能在这里刷新条目), 之后再看条目数决定要不要真的展开
+            var opening = DropDownOpening;
+            if (opening != null) opening(this, EventArgs.Empty);
+            // 外部刷新可能重建了宿主 (设备变化 → 卡片合并 → 本控件被 Dispose), 别再往下走
+            if (IsDisposed || !IsHandleCreated) return;
+            if (Items.Count == 0) return;
 
             // 刚刚被"点击外部"自动收起的话, 本次点击不能再打开。
             // 场景: 弹层开着, 用户点下拉框本体想收起 —— ToolStripDropDown 的 AutoClose 会先把弹层
