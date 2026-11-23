@@ -49,7 +49,7 @@ namespace StereoSplitter
 
             // 捕获主音量 UI 当前值 (AutoConfigure 的 Bind 会用设备真值回填覆盖, 须提前存下)
             snapM = volMaster.Value;
-            snapMm = chkMuteMaster.Checked;
+            snapMm = btnMuteMaster.Muted;
             snapMc = chkMuteCapture.Checked;
             hasSnap = true;
 
@@ -1201,7 +1201,7 @@ namespace StereoSplitter
 
         float CurrentMaster()
         {
-            return chkMuteMaster.Checked ? 0f : volMaster.Value / 100f;
+            return btnMuteMaster.Muted ? 0f : volMaster.Value / 100f;
         }
     }
 }

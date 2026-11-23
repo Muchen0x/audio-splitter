@@ -144,9 +144,9 @@ namespace StereoSplitter
                 settings.Put("VolumeLeft", (vcl != null ? vcl.volTrack.Value : 100).ToString());
                 settings.Put("VolumeRight", (vcr != null ? vcr.volTrack.Value : 100).ToString());
                 settings.Put("VolumeMaster", volMaster.Value.ToString());
-                settings.Put("MuteLeft", (vcl != null && vcl.chkMute.Checked) ? "1" : "0");
-                settings.Put("MuteRight", (vcr != null && vcr.chkMute.Checked) ? "1" : "0");
-                settings.Put("MuteMaster", chkMuteMaster.Checked ? "1" : "0");
+                settings.Put("MuteLeft", (vcl != null && vcl.btnMute.Muted) ? "1" : "0");
+                settings.Put("MuteRight", (vcr != null && vcr.btnMute.Muted) ? "1" : "0");
+                settings.Put("MuteMaster", btnMuteMaster.Muted ? "1" : "0");
                 settings.Put("MuteCapture", chkMuteCapture.Checked ? "1" : "0");
                 settings.Put("DriftMode", driftMode.ToString());
                 settings.Put("FixedRatioPpm", fixedPpm.ToString());
@@ -191,7 +191,7 @@ namespace StereoSplitter
                 if (settings.Has("MuteMaster"))
                 {
                     bool m = GetInt("MuteMaster", 0) != 0;
-                    chkMuteMaster.Checked = m;
+                    btnMuteMaster.Muted = m;
                     any = true;
                 }
                 if (settings.Has("MuteCapture"))
@@ -207,12 +207,12 @@ namespace StereoSplitter
             }
 
             // 存量设置音量为0 → 补勾静音 (与拖到0自动静音规则一致)
-            if (volMaster.Value == 0) chkMuteMaster.Checked = true;
+            if (volMaster.Value == 0) btnMuteMaster.Muted = true;
             for (int i = 0; i < models.Count; i++)
                 if (models[i].Volume == 0) models[i].Mute = true;
 
             if (any)
-                Log("[初始化] 设置已加载: 主=" + volMaster.Value + "%/" + (chkMuteMaster.Checked ? "静音" : "开") +
+                Log("[初始化] 设置已加载: 主=" + volMaster.Value + "%/" + (btnMuteMaster.Muted ? "静音" : "开") +
                     " 输出 " + models.Count + " 张卡片 (" + LaneSummary() + ")" +
                     " 增益=" + volGain.Value + "%" +
                     (chkMuteCapture.Checked ? " 捕获消音=开" : ""));

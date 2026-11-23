@@ -318,6 +318,105 @@ namespace StereoSplitter
                 return;
             }
 
+            // 喇叭图标: 22px 见方, 静音的"×"是否分得清、声波会不会糊成一团 ——
+            // 这种"看不看得懂"只能放大看像素。四种状态并排各出一张 (悬停态要点鼠标, 截不到)。
+            if (args.Length >= 1 && args[0] == "speaker")
+            {
+                string path = args.Length >= 2 ? args[1] : "speaker.png";
+                const int cell = 34;
+                using (var hostForm = new Form { ClientSize = new Size(cell * 4, cell), BackColor = Color.White })
+                using (var host = new Panel { Dock = DockStyle.Fill, BackColor = Color.White })
+                {
+                    var btns = new SpeakerButton[4];
+                    for (int i = 0; i < 4; i++)
+                        btns[i] = new SpeakerButton { Location = new Point(6 + i * cell, 6) };
+                    btns[1].Muted = true;              // 静音
+                    btns[3].Enabled = false;           // 禁用
+                    host.Controls.AddRange(btns);
+                    hostForm.Controls.Add(host);
+                    hostForm.Show();
+                    for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+
+                    using (var bmp = new Bitmap(hostForm.ClientSize.Width, hostForm.ClientSize.Height))
+                    {
+                        host.DrawToBitmap(bmp, new Rectangle(Point.Empty, hostForm.ClientSize));
+                        int z = 6;   // 最近邻放大, 便于数像素
+                        using (var big = new Bitmap(bmp.Width * z, bmp.Height * z))
+                        {
+                            using (var g = Graphics.FromImage(big))
+                            {
+                                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                                g.DrawImage(bmp, 0, 0, big.Width, big.Height);
+                            }
+                            big.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                    }
+                    Console.Out.WriteLine("SPEAKER normal/muted/disabled x" + 6 + " -> " + path);
+                }
+                return;
+            }
+
+            // 静音按钮的接线自检: 「点一下真的静音」这件事光看图证明不了 ——
+            // 图只能证明图标换了样子, 证明不了 MutedChanged 有没有接到增益计算/落盘上。
+            // 这里把按钮的 OnClick 反射调一遍, 再读引擎真正用的 CurrentMaster()。
+            if (args.Length >= 1 && args[0] == "mute")
+            {
+                using (var sf = new MainForm())
+                {
+                    sf.Show();
+                    for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+
+                    var btnM = Field(sf, "btnMuteMaster") as SpeakerButton;
+                    var volM = Field(sf, "volMaster") as VolumeSlider;
+                    var cardList = Field(sf, "cards") as System.Collections.IList;
+                    var curMaster = typeof(MainForm).GetMethod("CurrentMaster",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+
+                    // 先记下原值, 全部跑完再放回去 (MainForm 关闭时会落盘, 别把用户设置改了)
+                    bool wasMuted = btnM.Muted;
+                    int wasVol = volM.Value;
+                    var card = cardList != null && cardList.Count > 0 ? cardList[0] as OutputCardControl : null;
+                    bool wasCardMuted = card != null && card.btnMute.Muted;
+                    int wasCardVol = card != null ? card.volTrack.Value : 100;
+
+                    Action<string, bool> check = (name, ok) =>
+                        Console.Out.WriteLine((ok ? "  ok   " : "  BAD  ") + name);
+
+                    Console.Out.WriteLine("MUTE 初始 master.muted=" + btnM.Muted + " vol=" + volM.Value);
+
+                    Click(btnM);
+                    check("点喇叭 → 静音 (eng=" + curMaster.Invoke(sf, null) + ")", btnM.Muted && (float)curMaster.Invoke(sf, null) == 0f);
+                    Click(btnM);
+                    check("再点 → 恢复 (eng=" + curMaster.Invoke(sf, null) + ")", !btnM.Muted && (float)curMaster.Invoke(sf, null) > 0f);
+
+                    // 注意: 自动静音规则挂在 Scroll 上 (用户拖动才发), 程序赋值 Value 不算"用户操作",
+                    // 所以这里必须走 SetValue(v, fromUser:true) 才算真的模拟了一次拖动。
+                    Drag(volM, 0);
+                    check("音量拖到 0 → 自动静音", btnM.Muted);
+                    Drag(volM, 60);
+                    check("拖离 0 → 自动恢复", !btnM.Muted);
+
+                    if (card != null)
+                    {
+                        Click(card.btnMute);
+                        check("卡片喇叭 → Model.Mute=" + card.Model.Mute, card.Model.Mute);
+                        Click(card.btnMute);
+                        check("卡片再点 → Model.Mute=" + card.Model.Mute, !card.Model.Mute);
+                        Drag(card.volTrack, 0);
+                        check("卡片音量 0 → 自动静音", card.btnMute.Muted);
+                    }
+
+                    // 还原
+                    btnM.Muted = wasMuted; volM.Value = wasVol;
+                    if (card != null) { card.btnMute.Muted = wasCardMuted; card.volTrack.Value = wasCardVol; }
+                    Pump();
+                    sf.Close();
+                }
+                return;
+            }
+
+
             // 四种状态的按钮配色: 反射调 SetAppState, 把「开始分流」按钮逐态画出来拼成一张。
             // 配色与文案没法用几何量测证明, 只能看图 (也顺手把文案打进控制台, 便于 diff)。
             if (args.Length >= 1 && args[0] == "states")
@@ -378,6 +477,8 @@ namespace StereoSplitter
                 sf.StartPosition = FormStartPosition.Manual;
                 sf.Location = new Point(40, 40);
                 sf.Size = new Size(lw, lh);
+                // 截图走 CopyFromScreen, 会被别的窗口盖住 → 抓之前先置顶, 抓完随窗体一起关掉
+                sf.TopMost = true;
                 sf.Show();
                 sf.Activate();
                 for (int i = 0; i < 12; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
@@ -804,6 +905,30 @@ namespace StereoSplitter
             MethodInfo closeM = typeof(RoundedCombo).GetMethod("CloseDropDown", BindingFlags.Instance | BindingFlags.NonPublic);
             if (closeM != null) closeM.Invoke(combo, null);
             for (int i = 0; i < 3; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+        }
+
+        /// <summary>空转消息泵: 让布局/事件跑完 (无窗口应用里 DoEvents 是唯一的"再刷新一次")。</summary>
+        static void Pump()
+        {
+            for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+        }
+
+        /// <summary>模拟一次用户拖动 (Value 赋值不会触发 Scroll, 自动静音那类规则就测不到)。</summary>
+        static void Drag(VolumeSlider s, int v)
+        {
+            if (s == null) return;
+            var m = typeof(VolumeSlider).GetMethod("SetValue", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (m != null) m.Invoke(s, new object[] { v, true });
+            Pump();
+        }
+
+        /// <summary>模拟一次点击: Control.OnClick 是 protected, 而它正是按钮切状态的入口。</summary>
+        static void Click(Control c)
+        {
+            if (c == null) return;
+            var m = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (m != null) m.Invoke(c, new object[] { EventArgs.Empty });
+            Pump();
         }
 
         static object Field(object o, string name)

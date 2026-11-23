@@ -960,6 +960,172 @@ namespace StereoSplitter
         }
     }
 
+    /// <summary>
+    /// 喇叭图标按钮: 顶替「音量」文字标签 + 独立静音勾选框。点一下静音, 再点恢复。
+    /// <para>图标本身就是状态: 正常时喇叭带两道声波, 静音时声波换成一个小 "×" 并转灰 ——
+    /// 喇叭本体两个状态一模一样, 所以"同一个东西被关了"这一点不需要文字解释。</para>
+    /// <para>比原来「文字标签 + 勾选框」省下 ~84px 横向空间 (卡片第二行), 主音量行省 ~66px,
+    /// 空出来的宽度全给滑条。</para>
+    /// <para>与 <see cref="GearButton"/> 同一套画法 (自绘 / 透明底 / 只在悬停按下时铺浅底),
+    /// 也不用字体图标: Segoe MDL2 在精简版或老系统上缺字会画成方块。</para>
+    /// <para><b>语义与勾选框一致</b>: <see cref="Muted"/> 赋值会触发 <see cref="MutedChanged"/>,
+    /// 所以原来挂在 CheckedChanged 上的「同步/落盘/重算增益」逻辑可以原样搬过来, 不必改调用顺序。</para>
+    /// </summary>
+    class SpeakerButton : Control
+    {
+        static readonly Color IconColor = Color.FromArgb(95, 94, 90);
+        static readonly Color IconActive = Color.FromArgb(44, 44, 42);
+        // 静音态: 灰蓝而不是红。红在本程序里已经等于「停止/失败」, 静音只是一个开关,
+        // 而且同一行里滑条变灰、百分比照旧, 用红色会读成"出错了"。
+        static readonly Color IconMuted = Color.FromArgb(0x8A, 0x90, 0x99);
+        static readonly Color HoverBack = Color.FromArgb(234, 234, 234);
+        static readonly Color PressBack = Color.FromArgb(216, 216, 216);
+        static readonly Color DisabledInk = Color.FromArgb(178, 178, 178);
+
+        bool hot, down, muted;
+
+        /// <summary>静音状态 (等价于原来勾选框的 Checked)。</summary>
+        public bool Muted
+        {
+            get { return muted; }
+            set
+            {
+                if (muted == value) return;
+                muted = value;
+                Invalidate();
+                var h = MutedChanged;
+                if (h != null) h(this, EventArgs.Empty);
+            }
+        }
+
+        /// <summary>静音状态变化 (鼠标点 / 代码赋值都会触发, 与 CheckedChanged 一致)。</summary>
+        public event EventHandler MutedChanged;
+
+        public SpeakerButton()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor
+                | ControlStyles.ResizeRedraw, true);
+            BackColor = Color.Transparent;
+            Size = new Size(22, 22);
+            Cursor = Cursors.Hand;
+            // 不进 Tab 序列: 自绘控件不画焦点框, 有焦点也看不见, 反而会在点过之后留下
+            // 一个"按空格会静音"的隐形按钮。静音始终可以用滑条拖到 0 达成。
+            TabStop = false;
+        }
+
+        protected override void OnClick(EventArgs e)
+        {
+            if (Enabled) Muted = !muted;
+            base.OnClick(e);
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { hot = true; Invalidate(); base.OnMouseEnter(e); }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            hot = false; down = false; Invalidate();
+            base.OnMouseLeave(e);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left) { down = true; Invalidate(); }
+            base.OnMouseDown(e);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            if (down) { down = false; Invalidate(); }
+            base.OnMouseUp(e);
+        }
+
+        protected override void OnEnabledChanged(EventArgs e)
+        {
+            if (!Enabled) { hot = false; down = false; }
+            Invalidate();
+            base.OnEnabledChanged(e);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            Color back = Parent != null ? Parent.BackColor : SystemColors.Control;
+            using (var b = new SolidBrush(back)) g.FillRectangle(b, ClientRectangle);
+
+            if (Enabled && (hot || down))
+            {
+                back = down ? PressBack : HoverBack;
+                using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), 5))
+                using (var fill = new SolidBrush(back))
+                    g.FillPath(fill, path);
+            }
+
+            Color ink = !Enabled ? DisabledInk
+                : (muted ? IconMuted : ((hot || down) ? IconActive : IconColor));
+
+            // 几何按 22×22 设计, 换尺寸时整体等比缩放 (卡片/主界面都用 22, 这里只是兜底)
+            float s = Math.Min(Width, Height) / 22f;
+            DrawSpeaker(g, Width / 2f, Height / 2f, s, ink, muted);
+        }
+
+        /// <summary>画喇叭: 左侧小方箱 + 向右张开的锥形; 有声波 / 静音"×"两种收尾。</summary>
+        static void DrawSpeaker(Graphics g, float cx, float cy, float s, Color ink, bool muted)
+        {
+            // 尺寸全部按 22×22 定, 再整体乘 s: 方箱 4×5, 锥口开到 ±6.2, 锥尖在中心右侧 1px。
+            // 锥尖让出 1px 给声波/叉号留位置 —— 22px 的图标里"锥尖顶到右边缘"会把收尾符号挤没。
+            float bx = cx - 8f * s, by = cy - 2.5f * s;
+            float bw = 4f * s, bh = 5f * s;
+            float coneX = bx + bw, tip = cx + 1f * s;
+
+            using (var brush = new SolidBrush(ink))
+            {
+                g.FillRectangle(brush, bx, by, bw, bh);
+                g.FillPolygon(brush, new[]
+                {
+                    new PointF(coneX, cy - 2.5f * s),
+                    new PointF(tip,   cy - 6.2f * s),
+                    new PointF(tip,   cy + 6.2f * s),
+                    new PointF(coneX, cy + 2.5f * s),
+                });
+            }
+
+            if (!muted)
+            {
+                // 两道同心圆弧, 只取右侧 ~100°: 半径从锥口往外排, 间距随尺寸走
+                using (var p = new Pen(ink, Math.Max(1.2f, 1.5f * s)))
+                {
+                    p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                    p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                    for (int i = 0; i < 2; i++)
+                    {
+                        float r = (3.5f + i * 3.4f) * s;
+                        g.DrawArc(p, tip - r, cy - r, r * 2, r * 2, -50, 100);
+                    }
+                }
+                return;
+            }
+
+            // 静音: 声波的位置换成一个小 "×" (喇叭本体一个像素都不动)。
+            // 试过"斜杠贯穿整只喇叭"的经典画法, 22px 下不成立: 斜杠要么窄到看不见,
+            // 要么宽到把 4px 的方箱和锥形劈成两半, 剩下的碎片认不出是喇叭;
+            // 加一圈底色"挖槽"救回来的代价是斜杠自身变成一道灰带, 反而更糊。
+            // 换成"同一只喇叭, 只会把声音打叉", 静音与正常两个状态像同一个东西。
+            using (var p = new Pen(ink, Math.Max(1.3f, 1.6f * s)))
+            {
+                p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                // 叉号左端要离开锥尖 ≥2px: 1.6px 的笔宽各出一半, 实际只剩 1px 白色,
+                // 再近就会连成一片, 看着像喇叭尾部长了个毛刺, 而不是"把声音打叉"。
+                float mx = cx + 5.6f * s, my = cy, r = 2.5f * s;
+                g.DrawLine(p, mx - r, my - r, mx + r, my + r);
+                g.DrawLine(p, mx - r, my + r, mx + r, my - r);
+            }
+        }
+    }
+
     /// <summary>自绘用的公共绘制工具。</summary>
     static class UiDraw
     {

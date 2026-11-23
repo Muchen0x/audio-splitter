@@ -448,12 +448,15 @@ namespace StereoSplitter
 
         /// <summary>
         /// 增益/主音量两行的自适应布局 (与输出卡片里的音量条同理): 滑条右端跟着面板宽度走,
-        /// 右起固定为 [静音][10][百分比][8][滑条]。
-        /// 增益行没有静音框, 但预留同样的宽度 —— 两条滑条等长、百分比数字竖向对齐。
+        /// 右起固定为 [百分比][8][滑条]。
+        /// <para>主音量行行首换成喇叭按钮 (点一下 = 主静音), 原来右侧那个独立的「静音」勾选框
+        /// 随之前删掉, 滑条因此比增益行多出 ~66px 的可用长度 —— 但这儿刻意**不给两行不同的长度**:
+        /// 滑条左端仍钉在 78 (与「增益:」标签右缘同列), 右端都收到百分比左边 8px,
+        /// 两条滑条等长、两个百分比竖向对齐, 改音量时不至于看错行。</para>
         /// </summary>
         void LayoutVolumeRows()
         {
-            if (volMaster == null || chkMuteMaster == null) return;
+            if (volMaster == null || btnMuteMaster == null) return;
             Control host = volMaster.Parent;
             if (host == null) return;
 
@@ -461,13 +464,11 @@ namespace StereoSplitter
             // 宽度没变 (改高度/拖分隔条也会走到这里) → 摆出来的结果不会变, 直接跳过
             if (panelW == lastVolPanelW) return;
             lastVolPanelW = panelW;
-            const int leftEdge = 78;    // 滑条左端 = "增益:"/"主音量:" 标签右缘
+            const int leftEdge = 78;    // 滑条左端 = "增益:" 标签右缘
             const int rightEdge = 10;   // 右端留白, 与卡片区/日志框右缘一致
-            int muteW = chkMuteMaster.Width;
             int pctW = lblVolMaster.Width;
 
-            chkMuteMaster.Location = new Point(panelW - rightEdge - muteW, 86);
-            int pctX = chkMuteMaster.Left - 10 - pctW;
+            int pctX = panelW - rightEdge - pctW;
             int volW = Math.Max(120, pctX - 8 - leftEdge);
 
             volGain.SetBounds(leftEdge, 52, volW, 20);
@@ -988,8 +989,8 @@ namespace StereoSplitter
             if (running && bindings != null && !volSyncing)
             {
                 var b = bindings.SinkOf(card.Model.DeviceId);
-                if (b != null && b.IsValid && b.ReadMuted() != card.chkMute.Checked)
-                    b.WriteMute(card.chkMute.Checked);
+                if (b != null && b.IsValid && b.ReadMuted() != card.btnMute.Muted)
+                    b.WriteMute(card.btnMute.Muted);
             }
             if (running)
             {

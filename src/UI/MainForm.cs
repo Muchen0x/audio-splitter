@@ -77,7 +77,7 @@ namespace StereoSplitter
         Infrastructure.SessionLog sessionLog;
         SplitContainer splitContainer;
         TextBox txtLog;
-        CheckBox chkMuteMaster;
+        SpeakerButton btnMuteMaster;   // 主音量行的喇叭: 点一下 = 主静音 (原「静音」勾选框)
         NotifyIcon trayIcon;
         EventWaitHandle activateEvent;
         volatile bool exiting = false; // 后台启动线程读 → 需 volatile
@@ -354,10 +354,11 @@ namespace StereoSplitter
             lblVolGain = new Label { Text = "100%", AutoSize = false, Width = 46, Height = 20, TextAlign = ContentAlignment.MiddleLeft };
 
             // 主音量独占一行 (增益下方)。SmallChange/LargeChange=5: 点击/方向键/滚轮每次 5%, 与输出卡片一致
-            var lblVM = new Label { Text = "主音量:", Location = new Point(15, 86), AutoSize = true };
+            // 行首放喇叭图标而不是「主音量:」文字: 图标本身就是静音开关, 原来右侧那个
+            // 独立的「静音」勾选框因此删掉 (点喇叭 = 勾/取消), 滑条右端多出 ~66px。
+            btnMuteMaster = new SpeakerButton { Location = new Point(15, 85) };
             volMaster = new VolumeSlider { Location = new Point(78, 86), Width = 300, Minimum = 0, Maximum = 100, Value = 100, SmallChange = 5, LargeChange = 5 };
             lblVolMaster = new Label { Text = "100%", AutoSize = false, Width = 46, Height = 20, TextAlign = ContentAlignment.MiddleLeft };
-            chkMuteMaster = new NoCueCheckBox { Text = "静音", AutoSize = false, Width = 56, Height = 20 };
 
             // 主操作行 + 规格行。
             // 「规格:」标签已删 —— 下拉里显示的就是规格, 再挂一个"规格:"是重复标注; 空出来的
@@ -511,7 +512,7 @@ namespace StereoSplitter
 
             // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
             // 都在设置页里 (控件由本类持有, 由 SettingsForm 搬入搬出)。
-            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, btnRefresh, btnSettings, lblVM, volMaster, lblVolMaster, chkMuteMaster, lblG, volGain, lblVolGain, btnStart, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, btnRefresh, btnSettings, btnMuteMaster, volMaster, lblVolMaster, lblG, volGain, lblVolGain, btnStart, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterInterval, lblWaterSec, btnClearLog, txtLog });
 
             // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。
@@ -524,7 +525,7 @@ namespace StereoSplitter
             tipTop.SetToolTip(btnAddOutput, "新增一张输出卡片（一台设备）。\n运行中不可加卡（会改变链路），需先停止分流。");
             tipTop.SetToolTip(volGain, "总增益，作用在采样层。\n运行中可调。");
             tipTop.SetToolTip(volMaster, "总音量，作用在采样层。\n运行中可调。");
-            tipTop.SetToolTip(chkMuteMaster, "总静音。\n运行中可调。");
+            tipTop.SetToolTip(btnMuteMaster, "点击静音 / 取消静音（总静音，作用在采样层，不写设备端点）。\n音量拖到 0 会自动静音，拖回去自动恢复。\n运行中可调。");
             tipTop.SetToolTip(nudWaterInterval, "水位监控的刷新间隔（秒，1~3600；0 = 关闭监控）。\n随时可改，回车提交。");
             RefreshSettingsTip();
             // 增益/主音量两行的滑条宽度跟面板宽度走 (窗口拉宽自动变长);
@@ -579,14 +580,14 @@ namespace StereoSplitter
             {
                 lblVolMaster.Text = volMaster.Value + "%";
                 ApplyVolumes();
-                // 音量到0自动勾选主静音; 拖离0取消 (捕获消音锁定不受拖动影响)
-                if (chkMuteMaster.Checked != (volMaster.Value == 0)) chkMuteMaster.Checked = volMaster.Value == 0;
+                // 音量到0自动静音; 拖离0取消 (捕获消音锁定不受拖动影响)
+                if (btnMuteMaster.Muted != (volMaster.Value == 0)) btnMuteMaster.Muted = volMaster.Value == 0;
                 // 双向同步: 写入当前默认输出设备的端点音量 (不改捕获消音状态)
                 if (!volSyncing && bindings != null && bindings.Master != null)
                     bindings.Master.WriteVolume(volMaster.Value / 100f);
                 SaveSettings();
             };
-            chkMuteMaster.CheckedChanged += (s, e) =>
+            btnMuteMaster.MutedChanged += (s, e) =>
             {
                 // 主静音仅采样层(左右分流), 不写捕获设备端点 Mute
                 ApplyVolumes();
@@ -808,7 +809,7 @@ namespace StereoSplitter
 
             volMaster.Enabled = !busy;
             volGain.Enabled = !busy;
-            chkMuteMaster.Enabled = !busy;
+            btnMuteMaster.Enabled = !busy;
             chkMuteCapture.Enabled = !busy;
             chkMinimizeToTray.Enabled = !busy;
             chkDrift.Enabled = !busy;
@@ -969,7 +970,7 @@ namespace StereoSplitter
 
                 // 捕获主音量 UI 当前值 (Bind 回读会用设备值覆盖)
                 int uiM = volMaster.Value;
-                bool uiMm = chkMuteMaster.Checked, uiMc = chkMuteCapture.Checked;
+                bool uiMm = btnMuteMaster.Muted, uiMc = chkMuteCapture.Checked;
 
                 BindDefaultVolumeSync("[恢复]");
                 bool ok = BindEndpointVolumeSync("[恢复]");
@@ -991,7 +992,7 @@ namespace StereoSplitter
             volSyncing = true;
             volMaster.Value = uiM;
             lblVolMaster.Text = uiM + "%";
-            chkMuteMaster.Checked = uiMm;
+            btnMuteMaster.Muted = uiMm;
             chkMuteCapture.Checked = uiMc;
             volSyncing = false;
         }
@@ -1134,7 +1135,7 @@ namespace StereoSplitter
                         {
                             // 不变式: 值0=静音; 外部静音→主静音跟勾, 外部解除→跟取消 (音量0时保持勾选)
                             bool want = (v == 0) || (follow && data.Muted);
-                            if (chkMuteMaster.Checked != want) chkMuteMaster.Checked = want;
+                            if (btnMuteMaster.Muted != want) btnMuteMaster.Muted = want;
                         }
                         if (chkMuteCapture.Checked && !data.Muted)
                         {
@@ -1241,7 +1242,7 @@ namespace StereoSplitter
                 }
                 // 与主音量同构: 音量0=静音不变式 + 外部静音跟随 (仅 UI, volSyncing 内不写端点)
                 bool want = (v == 0) || data.Muted;
-                if (card.chkMute.Checked != want) card.chkMute.Checked = want;
+                if (card.btnMute.Muted != want) card.btnMute.Muted = want;
                 SyncLanesFromCards();
                 SaveSettings();
             }

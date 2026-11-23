@@ -9,7 +9,7 @@ namespace StereoSplitter
     /// <summary>
     /// 输出卡片:
     ///   [设备▾] [声道▾/多声道] [延迟][n][ms] [×]
-    ///   音量 [滑条] n% [静音]
+    ///   [🔊] [滑条] n%            ← 喇叭 = 该设备的静音开关 (点一下静音)
     ///   (多声道时) 每行: p0 [声道▾] [滑条] n%
     /// 一张卡片对应一台设备; 声道下拉里的"多声道"把该设备的每个物理声道展开成一行。
     /// </summary>
@@ -21,10 +21,11 @@ namespace StereoSplitter
         public readonly NumericUpDown nudDelay;
         public readonly VolumeSlider volTrack;
         public readonly Label lblVol;
-        public readonly CheckBox chkMute;
+        /// <summary>喇叭按钮: 该设备的静音开关 (原「静音」勾选框, 点图标即切换)。</summary>
+        public readonly SpeakerButton btnMute;
         public readonly Button btnRemove;
 
-        readonly Label lblDelay, lblMs, lblVolTitle;
+        readonly Label lblDelay, lblMs;
 
         /// <summary>多声道行: 每个物理声道一行 (声道下拉 + 音量条 + 百分比)。</summary>
         sealed class SlotRow
@@ -120,17 +121,13 @@ namespace StereoSplitter
                 TabStop = false
             };
 
-            // 第二行独占: 音量 + 静音。
-            // 标题/百分比/复选框都用固定宽度(AutoSize=false): 滑条宽度公式不再依赖
-            // 字体测量值和当前文字("100%" vs "5%"), 所有卡片的滑条长度必然一致。
-            lblVolTitle = new Label
-            {
-                Text = "音量",
-                AutoSize = false,
-                Width = 32,
-                Height = 20,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
+            // 第二行: 喇叭(静音开关) + 滑条 + 百分比。
+            // 原来这里是「音量」文字 + 滑条 + 百分比 + 「静音」勾选框: 两个标签占掉 ~90px,
+            // 滑条被挤到 120px 下限。改成图标后省下的宽度全部给滑条, 而且静音状态就在行首,
+            // 不用眼睛跨到行尾去看。
+            // 百分比用固定宽度(AutoSize=false): 滑条宽度公式不再依赖字体测量值和当前文字
+            // ("100%" vs "5%"), 所有卡片的滑条长度必然一致。
+            btnMute = new SpeakerButton();
             volTrack = new VolumeSlider
             {
                 Width = 250,
@@ -149,18 +146,11 @@ namespace StereoSplitter
                 Height = 20,
                 TextAlign = ContentAlignment.MiddleLeft
             };
-            chkMute = new NoCueCheckBox
-            {
-                Text = "静音",
-                AutoSize = false,
-                Width = 62,
-                Height = 20
-            };
 
             Controls.AddRange(new Control[]
             {
                 cmbDevice, cmbChannel, lblDelay, nudDelay, lblMs, btnRemove,
-                lblVolTitle, volTrack, lblVol, chkMute
+                btnMute, volTrack, lblVol
             });
 
             LayoutControls();
@@ -199,15 +189,15 @@ namespace StereoSplitter
             {
                 if (syncing) return;
                 lblVol.Text = volTrack.Value + "%";
-                // 音量到 0 自动勾静音, 拖离 0 取消 (与主音量一致)
-                if (chkMute.Checked != (volTrack.Value == 0)) chkMute.Checked = volTrack.Value == 0;
+                // 音量到 0 自动静音, 拖离 0 取消 (与主音量一致)
+                if (btnMute.Muted != (volTrack.Value == 0)) btnMute.Muted = volTrack.Value == 0;
                 var h = VolumeScrolled;
                 if (h != null) h(this, false);
             };
             volTrack.MouseUp += (s, e) => Fire();
             volTrack.KeyUp += (s, e) => Fire();
             lblVol.DoubleClick += (s, e) => { volTrack.Value = 100; Fire(); };
-            chkMute.CheckedChanged += (s, e) =>
+            btnMute.MutedChanged += (s, e) =>
             {
                 if (syncing) return;
                 Fire();
@@ -223,6 +213,7 @@ namespace StereoSplitter
             tip.SetToolTip(cmbChannel, "这张卡片输出的声道。\n选「多声道」= 该设备的每个物理声道各占一行, 行内可分别选声道、分别调音量。\n角标: 规格行右侧的数字 = 有几个物理声道接到该声道。\n运行中可改（只换混音矩阵）；但「多声道…」形态要改设备物理声道数，运行中不可切。");
             tip.SetToolTip(nudDelay, "这张卡片的延迟补偿 (毫秒)。多台设备距离不同时, 给近的加延迟对齐声场。\n上下按钮 / ↑↓ 每次 ±10ms, 也可直接输入数字。\n滚轮在这里不生效(避免误滚把声场拖偏), 但会照常滚动输出卡片列表。\n延迟是设备级: 合并后取原卡片里的最小值。\n运行中可改: 加延迟本路会停顿一下(约等于增量), 减延迟会跳过一小段, 其余不受影响。");
             tip.SetToolTip(volTrack, "主音量。\n单声道卡片: 写该设备的端点音量(与系统音量条双向同步, 停止时还原)。\n多声道卡片: 同样是设备端点音量; 各声道的微调在下方各行。\n双击百分比可复位 100%。\n运行中可调。");
+            tip.SetToolTip(btnMute, "点击静音 / 取消静音这台设备 (写设备端点 Mute, 停止时还原)。\n音量拖到 0 会自动静音, 拖回去自动恢复。\n运行中可调。");
             tip.SetToolTip(btnRemove, "移除这张输出卡片 (整台设备)。\n运行中不可移除（会改变链路），需先停止分流。");
         }
 
@@ -384,15 +375,17 @@ namespace StereoSplitter
             cmbDevice.Location = new Point(8, 5);
             cmbDevice.Width = Math.Max(90, cmbChannel.Left - 14);
 
-            // 第二行: 音量标题 → 滑条(拉满可用宽度) → 百分比 → 静音 (标签与轨道中心对齐)
+            // 第二行: 喇叭(静音开关) → 滑条(拉满可用宽度) → 百分比。
+            // 喇叭 22 高放在 row2-1 处, 中心正好落在滑条轨道线上 (滑条 20 高, 轨道画在垂直中心);
+            // 左缘 8 与第一行的设备下拉同列。
             // 单声道卡片高 56 = 上边距4 + 第一行21 + 间隔5 + 第二行20 + 下边距6, 下方不再留空。
             const int row2 = 30;
-            lblVolTitle.Location = new Point(10, row2);
-            int volX = lblVolTitle.Right + 6;
+            btnMute.Location = new Point(8, row2 - 1);
+            int volX = btnMute.Right + 6;
             volTrack.Location = new Point(volX, row2);
-            volTrack.Width = Math.Max(120, w - volX - (8 + lblVol.Width + 12 + chkMute.Width + 8));
+            // 右起只剩 [百分比][8]: 静音勾选框已并入行首的喇叭图标, 空出的宽度全给滑条
+            volTrack.Width = Math.Max(120, w - volX - (8 + lblVol.Width + 10));
             lblVol.Location = new Point(volTrack.Right + 8, row2);
-            chkMute.Location = new Point(lblVol.Right + 12, row2 - 2);
 
             // 多声道行: p0 [声道▾] [滑条] n%
             for (int i = 0; i < rows.Count; i++)
@@ -440,7 +433,7 @@ namespace StereoSplitter
                 nudDelay.Value = Math.Max(nudDelay.Minimum, Math.Min(nudDelay.Maximum, Model.DelayMs));
                 volTrack.Value = Math.Max(volTrack.Minimum, Math.Min(volTrack.Maximum, Model.Volume));
                 lblVol.Text = Model.Volume + "%";
-                chkMute.Checked = Model.Mute;
+                btnMute.Muted = Model.Mute;
 
                 // 声道: 多声道选哨兵项, 单声道选 Slots[0]
                 int idx = -1;
@@ -547,7 +540,7 @@ namespace StereoSplitter
 
             Model.DelayMs = (int)nudDelay.Value;
             Model.Volume = volTrack.Value;
-            Model.Mute = chkMute.Checked;
+            Model.Mute = btnMute.Muted;
 
             if (!Model.Multi)
             {
@@ -610,7 +603,7 @@ namespace StereoSplitter
         {
             volLocked = locked;
             volTrack.Enabled = !locked;
-            chkMute.Enabled = !locked;
+            btnMute.Enabled = !locked;
             for (int i = 0; i < rows.Count; i++) rows[i].Vol.Enabled = !locked;
         }
 
