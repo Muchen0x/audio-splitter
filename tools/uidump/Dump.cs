@@ -57,6 +57,13 @@ namespace StereoSplitter
                     DumpTextFit(sf, "form", sb2);
                     Console.Out.Write(sb2.ToString());
 
+                    // 借用期间故意改一下延迟档位: 归还时必须被还原成借用前的值,
+                    // 否则"打开设置页 → 关掉 → 档位莫名其妙变了"这类问题看不出来
+                    int nItems = Math.Max(1, ItemCountOf(cmb));
+                    SetSel(cmb, (SelOf(cmb) + 1) % nItems);
+                    Application.DoEvents();
+                    Console.Out.WriteLine("DISTURB idx=" + SelOf(cmb) + " (借用期间改值, 归还后应回到 " + idx0 + ")");
+
                     sf.ReturnControls();
                 }
                 for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }

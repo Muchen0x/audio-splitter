@@ -192,12 +192,29 @@ namespace StereoSplitter
             });
         }
 
+        /// <summary>
+        /// 读下拉框的选中索引, 不认识的控件返回 <see cref="int.MinValue"/> (= 不参与记录)。
+        /// <para>面板上的"延迟档位"现在是自绘的 <see cref="RoundedCombo"/>, 不再是 ComboBox ——
+        /// 若这里只认 ComboBox, 借用/归还这套状态保护会**静默失效** (不报错, 但关页时不再还原值)。</para>
+        /// </summary>
+        static int ComboIndexOf(Control c)
+        {
+            if (c is RoundedCombo) return ((RoundedCombo)c).SelectedIndex;
+            if (c is ComboBox) return ((ComboBox)c).SelectedIndex;
+            return int.MinValue;
+        }
+
+        static void SetComboIndex(Control c, int index)
+        {
+            if (c is RoundedCombo) { ((RoundedCombo)c).SelectedIndex = index; return; }
+            if (c is ComboBox) { ((ComboBox)c).SelectedIndex = index; }
+        }
+
         /// <summary>把主界面持有的控件搬进本页, 并记下搬出前的状态。</summary>
         void Borrow(Control control, Control host, int x, int y, int w, int h)
         {
             var b = new Borrowed { C = control, IsCheck = control is CheckBox };
-            ComboBox combo = control as ComboBox;
-            if (combo != null) b.ComboIndex = combo.SelectedIndex;
+            b.ComboIndex = ComboIndexOf(control);
             CheckBox chk = control as CheckBox;
             if (chk != null) b.Checked = chk.Checked;
 
@@ -226,9 +243,8 @@ namespace StereoSplitter
                 if (c == null || c.IsDisposed) continue;
                 if (c.Parent != null) c.Parent.Controls.Remove(c);
 
-                ComboBox combo = c as ComboBox;
-                if (combo != null && b.ComboIndex != int.MinValue && combo.SelectedIndex != b.ComboIndex)
-                    combo.SelectedIndex = b.ComboIndex;
+                if (b.ComboIndex != int.MinValue && ComboIndexOf(c) != b.ComboIndex)
+                    SetComboIndex(c, b.ComboIndex);
                 CheckBox chk = c as CheckBox;
                 if (chk != null && b.IsCheck && chk.Checked != b.Checked) chk.Checked = b.Checked;
             }
