@@ -26,6 +26,9 @@
 
 ### 移除
 
+- **旧路由 ini schema 退役**：`Routing.Config.cs`（338 行）整体删除 —— `LoadFromIni`/`SaveToIni`/`FromLegacy`
+  的唯一调用者是自检用例本身，产品路径早已改走 `LaneSettingsCodec`。自检 33 → 32 项
+  （老 ini 里的 `RoutingMode`/`Sink*`/`Bind*`/`Chan*` 键在此前版本就已不被读取，删除不影响升级）
 - 两路时代的死 API 一并清掉：`AudioEngine.Start(float,…)`、`LeftRenderedSamples` / `RightBufferMs` 等六个属性、
   `SharedRatioPpm`、`RoutingModel.ApplyTwoSinkLegacy` / `EnsureLegacySinks`，以及只服务这条路径的左右设备 ID 字段。
   `Start(RoutingModel,…)` 成为唯一启动入口（`BufferStatus()` 的两路分支保留，日志仍用它）

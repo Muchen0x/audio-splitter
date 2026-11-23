@@ -54,7 +54,6 @@ namespace StereoSplitter
                 CaseMergeLoudnessWhenNoEndpoint,
                 CaseDelayConflict,
                 CaseValidateWarnings,
-                CaseIniRoundTrip,
                 CaseLaneSettingsCodecBounds,
                 CaseCompileUsesFreshSinkVolume,
                 CaseCommandLineParsing,
@@ -578,47 +577,6 @@ namespace StereoSplitter
             }
             Check("无 Error", !anyError);
             Check("有 Warn", anyWarn);
-        }
-
-        /// <summary>ini 往返: 三台设备 / 6 声道 / 延迟 / 绑定增益都要活下来。</summary>
-        static void CaseIniRoundTrip()
-        {
-            Begin("ini 往返");
-            var lanes = new List<OutputLane>
-            {
-                Lane("FL", "devA", 0, 100), Lane("FR", "devA", 12, 100),
-                Lane("C", "devB", 25, 60), Lane("LFE", "devB", 25, 100),
-                Lane("SL", "devC", 40, 80), Lane("SR", "devC", 40, 100)
-            };
-            bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
-
-            string dir = Path.Combine(Path.GetTempPath(), "ss-selftest-" + Guid.NewGuid().ToString("N"));
-            string file = Path.Combine(dir, "test.ini");
-            RoutingModel back = null;
-            try
-            {
-                Directory.CreateDirectory(dir);
-                var store = new SettingsStore(file);
-                m.SaveToIni(store);
-                string err;
-                Check("写盘", store.WriteAll(out err));
-
-                var store2 = new SettingsStore(file);
-                store2.Load();
-                bool migrated;
-                back = RoutingModel.LoadFromIni(store2, out migrated);
-                Check("不触发迁移", !migrated);
-            }
-            finally { try { Directory.Delete(dir, true); } catch { } }
-
-            if (back == null) { Check("回读", false); return; }
-            Check("3 路", back.SinkSpecs.Count == 3);
-            Check("6 声道", back.Channels.Count == 6);
-            Check("6 绑定", back.Bindings.Count == 6);
-            Check("延迟保留", back.SinkSpecs[2].DelayMs == 40);
-            Check("中置增益保留 (C 卡 60% → 已进绑定增益)",
-                Math.Abs(back.Bindings[2].Gain - 0.6f) < 1e-3f);
         }
 
         /// <summary>

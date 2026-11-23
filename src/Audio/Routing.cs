@@ -263,22 +263,6 @@ namespace StereoSplitter
         }
 
         /// <summary>原行为的等价表达: 两个逻辑声道各绑一台单声道设备。</summary>
-        public static RoutingModel SplitLr(string leftKey, string leftDev, string leftLabel, int leftDelay,
-                                           string rightKey, string rightDev, string rightLabel, int rightDelay)
-        {
-            var m = new RoutingModel { Mode = WorkMode.SplitLr, Layout = ChannelLayout.Stereo };
-            m.Channels.Add(new LogicalChannel("ch0", "左", ChannelKind.FL, new SourceTap(0, 1f)));
-            m.Channels.Add(new LogicalChannel("ch1", "右", ChannelKind.FR, new SourceTap(1, 1f)));
-            m.Bindings.Add(new ChannelBinding("ch0", leftKey, 0, 1f));
-            m.Bindings.Add(new ChannelBinding("ch1", rightKey, 0, 1f));
-            m.SinkSpecs = new List<SinkSpec>
-            {
-                new SinkSpec(leftKey, leftLabel, leftDev, 1, leftDelay) { ClockGroupId = "g0" },
-                new SinkSpec(rightKey, rightLabel, rightDev, 1, rightDelay) { ClockGroupId = "g0" }
-            };
-            return m;
-        }
-
         /// <summary>与清单配套的设备规格 (P1 由 SplitLr 工厂填充; P2 起从 ini 读)。</summary>
         public List<SinkSpec> SinkSpecs = new List<SinkSpec>();
 
@@ -759,6 +743,32 @@ namespace StereoSplitter
                 var c = FindChannel(Bindings[b].ChannelKey);
                 if (c != null) c.BindingCount++;
             }
+        }
+
+        /// <summary>模式的可读名 (日志/界面用)。</summary>
+        public static string ModeText(WorkMode m)
+        {
+            switch (m)
+            {
+                case WorkMode.SplitLr: return "split-lr";
+                case WorkMode.MirrorStereo: return "mirror-stereo";
+                case WorkMode.Surround: return "surround";
+                case WorkMode.MonoBroadcast: return "mono-broadcast";
+                default: return "custom";
+            }
+        }
+
+        /// <summary>一句话摘要 (日志用): "split-lr 2 路 / 2 声道 / 2 绑定"。</summary>
+        public string DescribeConfig()
+        {
+            var sb = new StringBuilder();
+            sb.Append(ModeText(Mode)).Append(' ');
+            int en = 0;
+            for (int i = 0; i < SinkSpecs.Count; i++) if (SinkSpecs[i].Enabled) en++;
+            sb.Append(en).Append('/').Append(SinkSpecs.Count).Append(" 路 / ")
+              .Append(Channels.Count).Append(" 声道 / ")
+              .Append(Bindings.Count).Append(" 绑定");
+            return sb.ToString();
         }
 
         /// <summary>调试/日志用: 矩阵的非零项写成 "p0←s0*1.00"。</summary>
