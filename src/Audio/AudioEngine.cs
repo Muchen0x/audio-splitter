@@ -529,6 +529,30 @@ namespace StereoSplitter
             return true;
         }
 
+        /// <summary>
+        /// 运行中逐路改延迟: 只换各路的延迟线目标, 不重建端点/缓冲/矩阵。
+        /// <para>与 <see cref="SetRouting"/> 的分工: 那个只能换矩阵, 延迟/设备/声道数都算
+        /// "链路级"改不了。延迟这一项其实可以单独热改 —— 延迟线本身就是个可调深度的 FIFO,
+        /// 换深度不会影响任何已经连好的端点, 于是"边听边调"只需要放开这一个参数。</para>
+        /// <para>返回 false = 有路在模型里找不到(设备被换掉), 调用方应退回"停→开始"提示。
+        /// 中途失败时已改的路保持新值 —— 它们本来就各自独立生效, 不存在半条链路的中间态。</para>
+        /// </summary>
+        public bool ApplyDelays(RoutingModel model)
+        {
+            if (model == null || sinks.Count == 0 || specs.Count != sinks.Count) return false;
+            for (int i = 0; i < specs.Count; i++)
+            {
+                SinkSpec fresh = FindSinkByKey(model.SinkSpecs, specs[i].Key);
+                if (fresh == null) return false;
+                if (fresh.DelayMs == specs[i].DelayMs) continue;
+                if (!sinks[i].SetDelayMs(fresh.DelayMs)) return false;
+                // 同步运行规格: 之后 SetRouting 的"延迟不可热换"校验、看门狗、日志口径
+                // 读到的都是这条链路当前的真实延迟 (而不是启动那一刻的旧值)。
+                specs[i].DelayMs = Math.Max(0, Math.Min(2000, fresh.DelayMs));
+            }
+            return true;
+        }
+
         static SinkSpec FindSinkByKey(IList<SinkSpec> list, string key)
         {
             if (list == null || key == null) return null;

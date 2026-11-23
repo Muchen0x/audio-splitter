@@ -59,6 +59,8 @@ namespace StereoSplitter
                 CaseTrimWindowWatchdog,
                 CaseDriftProviderOverfill,
                 CasePcmRingBufferShortRead,
+                CaseDelayLineRetarget,
+                CaseSeamCrossfade,
                 CaseClockGroupAlignment,
                 CaseLifecycleGate,
                 CaseLogClassify,
@@ -937,6 +939,111 @@ namespace StereoSplitter
         {
             for (int i = from; i < b.Length; i++) if (b[i] != 0xCC) return false;
             return true;
+        }
+
+        /// <summary>
+        /// 运行中改延迟 (= 换延迟线目标) 的语义: 增大 → 数据先攒着不往下游放 (下游停一拍);
+        /// 减小 → 立刻丢掉**最旧**的一小段 (跳过), 而不是等下一次 Write 一次性倒给下游
+        /// (那会让下游水位瞬间超出目标 2 倍, 触发它的"堆积削峰"并打一条告警 ——
+        /// 明明是用户主动改延迟, 却被报成设备卡顿)。
+        /// </summary>
+        static void CaseDelayLineRetarget()
+        {
+            Begin("延迟线运行中换目标: 增大补延迟 / 减小丢最旧");
+            const int frameBytes = 4;            // 单声道 float: 一帧 4 字节
+            var got = new List<int>();
+            var line = new DelayLine(0, delegate(byte[] data, int off, int len)
+            {
+                for (int i = 0; i + frameBytes <= len; i += frameBytes)
+                    got.Add(BitConverter.ToInt32(data, off + i));
+            });
+            int next = 0;                        // 下一帧序号 (= 已写入帧数)
+            Action<int> write = delegate(int count)
+            {
+                var buf = new byte[count * frameBytes];
+                for (int i = 0; i < count; i++)
+                    Buffer.BlockCopy(BitConverter.GetBytes(next + i), 0, buf, i * frameBytes, 4);
+                next += count;
+                line.Write(buf, buf.Length);
+            };
+
+            write(5);
+            Check("目标 0: 写入即全部放出", got.Count == 5);
+            Check("目标 0: 顺序正确", got.Count == 5 && got[4] == 4);
+
+            // ① 增大到 4 帧: 先攒够 4 帧, 之后写多少放多少 → 恒定滞留
+            line.SetTarget(4 * frameBytes);
+            Check("增大目标不会立刻吐出/吞掉数据", got.Count == 5);
+            write(10);
+            Check("增大到 4 帧: 进 10 放 6 (滞留 4)", got.Count == 11 && line.TargetBytes == 4 * frameBytes);
+
+            // ② 再增大到 10 帧: 滞留量随之补到 10, 所以进 10 只放 4
+            line.SetTarget(10 * frameBytes);
+            write(10);
+            Check("增大到 10 帧: 进 10 放 4 (滞留补到 10)", got.Count == 15);
+
+            // ③ 减小到 2 帧: 立刻丢最旧的 8 帧, 且不向下游投递任何数据
+            int before = got.Count;
+            line.SetTarget(2 * frameBytes);
+            Check("减小目标不向下游投数据 (丢弃在延迟线内部完成)", got.Count == before);
+            write(10);
+            Check("减小后: 进 10 放 10 (滞留只剩 2)", got.Count == before + 10);
+            bool monotonic = true;
+            for (int i = 1; i < got.Count; i++) if (got[i] <= got[i - 1]) monotonic = false;
+            Check("全程单调不重复 (没有重放/乱序)", monotonic);
+            Check("丢的是最旧数据: 15..22 被跳过, 从 23 接上",
+                got.Contains(23) && !got.Contains(22) && !got.Contains(15));
+
+            // ④ 归零: 滞留立即放掉, 之后回到"写入即放出"的快路径
+            line.SetTarget(0);
+            write(3);
+            Check("归零: 滞留清零且后续写入立即放出", got.Count == before + 13);
+            Check("归零后最后一帧就是最新写入帧", got[got.Count - 1] == next - 1);
+        }
+
+        /// <summary>
+        /// 减延迟的接缝淡化: 减延迟 = 丢掉最旧一段, 波形在时间轴上往前跳一格, 接缝两侧
+        /// 是两段互不相关的信号。直接放出就是一步到位的阶跃 (宽带能量全堆在一条竖线上,
+        /// 听起来是"咔")。这里用最坏情况 —— 旧内容 +1、新内容 −1 (阶跃 2.0, 满量程) ——
+        /// 验证交叉后**不存在单步跳变**, 且交叉窗之外原样放行。
+        /// </summary>
+        static void CaseSeamCrossfade()
+        {
+            Begin("减延迟的接缝: 余弦交叉把阶跃摊成渐变");
+            const int ch = 2;
+            const int n = 144;            // 3ms @48k, 与 SinkRuntime.seamFade 同量级
+            const int frames = 480;
+            var tail = new float[n * ch];
+            for (int f = 0; f < n; f++) { tail[f * ch] = 1f; tail[f * ch + 1] = 1f; }
+            var buf = new float[frames * ch];
+            for (int f = 0; f < frames; f++) { buf[f * ch] = -1f; buf[f * ch + 1] = -1f; }
+
+            SinkRuntime.CosineCrossfade(buf, frames, ch, tail, n);
+
+            // 逐样本最大单步: 硬切是 2.0, 交叉后应降到 1/n 量级
+            float maxStep = 0f;
+            float prev = tail[n * ch - 1];
+            for (int f = 0; f < frames; f++)
+            {
+                float v = buf[f * ch];
+                float d = Math.Abs(v - prev);
+                if (d > maxStep) maxStep = d;
+                prev = v;
+            }
+            Check("接缝不再有阶跃 (最大单步 < 0.05, 实为 " + maxStep.ToString("0.0000") + ")", maxStep < 0.05f);
+            Check("交叉起点仍由旧内容主导", Math.Abs(buf[0] - 1f) < 0.01f);
+            Check("交叉窗末尾已由新内容主导", Math.Abs(buf[(n - 1) * ch] + 1f) < 0.01f);
+            Check("交叉窗之后原样放行", buf[n * ch] == -1f && buf[(frames - 1) * ch + 1] == -1f);
+            Check("左右声道做同样处理", Math.Abs(buf[10 * ch] - buf[10 * ch + 1]) < 1e-6f);
+            Check("尾巴比块短时按实际帧数淡化 (不越界)",
+                SafeCrossfade(new float[8], 4, 2, new[] { 0.5f, 0.5f, 0.6f, 0.6f }, 2));
+            Check("空/零参数直接返回", SafeCrossfade(null, 4, 2, tail, n) && SafeCrossfade(buf, 0, 2, tail, n));
+        }
+
+        static bool SafeCrossfade(float[] buf, int frames, int ch, float[] tail, int have)
+        {
+            try { SinkRuntime.CosineCrossfade(buf, frames, ch, tail, have); return true; }
+            catch { return false; }
         }
 
         /// <summary>

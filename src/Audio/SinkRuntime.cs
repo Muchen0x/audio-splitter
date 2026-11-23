@@ -91,6 +91,17 @@ namespace StereoSplitter
         float[] srcF, mixed;
         byte[] outBytes;
 
+        // 运行中减延迟的接缝淡化: 减延迟 = 丢掉最旧的一小段, 声画在时间轴上往前跳一格。
+        // 若直接放出, 接缝两侧是两段互不相关的波形, 电平差一步到位 → 一声"咔"。
+        // 这里把**切断前的最后 ~3ms** 留成尾巴, 与**切断后的头 3ms** 余弦交叉,
+        // 接缝处就变成一段平滑过渡 (等同专业工具的 crossfade 编辑点)。
+        // 加延迟不需要它: 那边是"下游数据断供", DriftCorrectingProvider 本来就带
+        // 3ms 软收尾 + 恢复淡入, 接缝已经被遮住了。
+        int seamFade;            // 交叉淡化帧数 (约 3ms)
+        float[] seamTail;        // 上一块的最后 seamFade 帧 (交错 OutCh)
+        int seamTailFrames;      // 尾巴里已有多少帧 (首块不满时不淡化)
+        bool seamPending;        // 下一块开头要做交叉淡化
+
         public SinkRuntime(SinkSpec spec, MMDevice device, WaveFormat captureFormat, int driftTargetSamples,
             int fillTargetSamples, int outLatencyMs, int driftMode, int fixedPpm,
             int memberId, ClockGroup group, Action<string> log)
@@ -117,6 +128,7 @@ namespace StereoSplitter
 
             OutFormat = WaveFormat.CreateIeeeFloatWaveFormat(captureFormat.SampleRate, OutCh);
             FillBytes = fillTargetSamples * OutCh * 4;
+            seamFade = Math.Max(1, Math.Min(4096, captureFormat.SampleRate * 3 / 1000));
             CommitPipeline(BuildPipeline(device));
         }
 
@@ -411,12 +423,82 @@ namespace StereoSplitter
                 if (clipped > 0) OnClipped(clipped);
             }
 
+            ApplySeamFade(mixed, frames, oc);
             System.Buffer.BlockCopy(mixed, 0, outBytes, 0, need * 4);
             // 输出缓冲已满 → DiscardOnBufferOverflow 会整块静默丢弃 (听起来是断音), 限流记一条
             if (Buffer.BufferedBytes + need * 4 > Buffer.BufferLength && WarnOverflow())
                 log("[警告] 输出缓冲已满 (" + label + " " + Buffer.BufferedBytes + "/" + Buffer.BufferLength +
                     " 字节)，本块已丢弃；输出设备可能卡顿或时钟校正跟不上");
             Buffer.AddSamples(outBytes, 0, need * 4);
+        }
+
+        /// <summary>
+        /// 运行中减延迟的接缝交叉淡化 + 维护尾巴。
+        /// <para>只在 <see cref="SetDelayMs"/> 判为"变小"时触发一次: 把切断前的最后几毫秒与
+        /// 切断后的头几毫秒按余弦权重交叉, 让跳变处的电平连续过渡 (直接切是一步到位的阶跃,
+        /// 宽带能量全在一条竖线上, 听起来就是"咔")。</para>
+        /// <para>权重用 0.5−0.5·cos(π·t), 两端斜率为 0 —— 等功率交叉在两侧相关时会鼓包,
+        /// 余弦交叉不会。尾巴取的是**本块最后几帧**的副本, 所以每块都要更新,
+        /// 不能只在接缝时才记 (那时旧内容已经被丢掉了)。</para>
+        /// </summary>
+        void ApplySeamFade(float[] buf, int frames, int oc)
+        {
+            if (frames <= 0 || oc <= 0) return;
+            int n = seamFade;
+            if (n < 1) return;
+
+            if (seamPending)
+            {
+                seamPending = false;
+                // 尾巴不足 n 帧 (刚起播) 时按实际拥有的帧数淡化, 至少要有 1 帧
+                int have = seamTailFrames < n ? seamTailFrames : n;
+                if (have > 0 && seamTail != null) CosineCrossfade(buf, frames, oc, seamTail, have);
+            }
+
+            if (seamTail == null || seamTail.Length < n * oc)
+            {
+                seamTail = new float[n * oc];
+                seamTailFrames = 0;
+            }
+            if (frames >= n)
+            {
+                System.Buffer.BlockCopy(buf, (frames - n) * oc * 4, seamTail, 0, n * oc * 4);
+                seamTailFrames = n;
+            }
+            else
+            {
+                // 块比交叉窗还短 (极少见): 先左移丢掉最旧的, 再追加本块, 保证有效帧
+                // 始终从下标 0 连续排布 (与上面的整块路径一致, 交叉时用 have − k 对齐)。
+                int have = seamTailFrames;
+                int keep = have + frames > n ? n - frames : have;
+                if (keep < 0) keep = 0;
+                if (keep > 0 && keep < have)
+                    System.Buffer.BlockCopy(seamTail, (have - keep) * oc * 4, seamTail, 0, keep * oc * 4);
+                System.Buffer.BlockCopy(buf, 0, seamTail, keep * oc * 4, frames * oc * 4);
+                seamTailFrames = keep + frames;
+            }
+        }
+
+        /// <summary>
+        /// 余弦交叉淡化的纯计算: 用 <paramref name="tail"/> 的最后 min(frames, have) 帧，
+        /// 按权重 w = 0.5 − 0.5·cos(π·t) 与 <paramref name="buf"/> 的开头若干帧混合。
+        /// <para>权重两端斜率为 0 (不像线性淡化在两个接点各留一个折角), 中间也不像等功率
+        /// 淡化那样在两侧相关时鼓包 —— 3ms 的窗口里听感是一段平滑过渡。</para>
+        /// <para>抽成静态是为了自检能直接喂阶跃信号验证"不得再有单步跳变"。</para>
+        /// </summary>
+        internal static void CosineCrossfade(float[] buf, int frames, int ch, float[] tail, int have)
+        {
+            if (buf == null || tail == null || ch <= 0 || frames <= 0 || have <= 0) return;
+            int k = frames < have ? frames : have;
+            int baseIdx = have - k;      // 尾巴末尾与新区块头部对齐
+            for (int f = 0; f < k; f++)
+            {
+                float w = 0.5f - 0.5f * (float)Math.Cos(Math.PI * (f + 1) / (k + 1));
+                int tb = (baseIdx + f) * ch;
+                int bb = f * ch;
+                for (int p = 0; p < ch; p++)
+                    buf[bb + p] = tail[tb + p] * (1f - w) + buf[bb + p] * w;
+            }
         }
 
         /// <summary>捕获字节 → 交错 float。快路径 (32bit 浮点) 整块 BlockCopy, 与逐样本结果一致。</summary>
@@ -513,6 +595,31 @@ namespace StereoSplitter
         {
             masterNow = m;
             if (Provider != null) Provider.Master = m;
+        }
+
+        /// <summary>
+        /// 运行中改本路延迟 (毫秒)。只动延迟线目标, 不碰端点/缓冲/矩阵 —— 因此不会断流、
+        /// 不需要重建链路。
+        /// <para>听到的效果: 加延迟 = 本路停顿一下再继续 (停顿时长≈增量), 减延迟 = 跳过
+        /// 一小段 (跳过时长≈减量)。两者都是"改时间轴"的固有代价, 与停→开始相比短得多。</para>
+        /// <para>返回 false = 管线正在重建/已拆 (调用方应提示需停→开始)。</para>
+        /// </summary>
+        public bool SetDelayMs(int ms)
+        {
+            int target = Math.Max(0, Math.Min(2000, ms));
+            int want = BytesOf(captureFormat, target);
+            // 与 Feed / Rebuild 互斥: Rebuild 会先 paused 再抢这把锁再拆管线,
+            // 拿锁期间延迟线一定还是"当前这一代", 不会写进已废弃的对象。
+            lock (feedSync)
+            {
+                var line = Line;
+                if (line == null || closed || lifecycle.IsShutdown) return false;
+                // 减小 → 下一块的开头是新内容, 接缝在下一个 Consume 处
+                if (want < line.TargetBytes) seamPending = true;
+                line.SetTarget(want);
+                DelayMs = target;
+            }
+            return true;
         }
 
         public void SetDriftMode(int mode, int ppm)

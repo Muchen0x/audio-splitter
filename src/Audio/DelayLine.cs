@@ -30,15 +30,69 @@ namespace StereoSplitter
         readonly List<byte[]> pool = new List<byte[]>();
         int pooledBytes;
         const int PoolMaxBytes = 1 << 20; // 池上限 1MB, 防止大块数据长期驻留
-        readonly int targetBytes;
+        int targetBytes;
         readonly Action<byte[], int, int> emit;
-        readonly object sync = new object(); // Write(采集线程) 与 Clear(UI线程) 并发保护
+        readonly object sync = new object(); // Write(采集线程) 与 Clear/SetTarget(UI线程) 并发保护
         long buffered;
 
         public DelayLine(int targetBytes, Action<byte[], int, int> emit)
         {
             this.targetBytes = Math.Max(0, targetBytes);
             this.emit = emit;
+        }
+
+        /// <summary>当前目标字节数 (= 稳态时恒定的 FIFO 深度)。</summary>
+        public int TargetBytes { get { lock (sync) return targetBytes; } }
+
+        /// <summary>
+        /// 运行中更换延迟目标 (字节, 必须按整帧对齐)。
+        /// <para>增大: 什么也不用做 —— 下一次 Write 时 buffered 还没到新目标, 数据先攒在
+        /// 队列里不往下游放, 下游因此"停一拍", 净效果就是这段延迟被补上。</para>
+        /// <para>减小: 立刻丢掉**最旧**的超出部分, 而不是等下一次 Write 一次性倒给下游。
+        /// 倒出去会让下游缓冲水位瞬间超出目标 2 倍, 触发它的"堆积削峰"并打一条告警 ——
+        /// 明明是用户主动改延迟。就地丢最旧的语义与"减少延迟 = 跳过一小段"完全一致,
+        /// 下游看到的只是一次正常的数据间隙。</para>
+        /// <para>调用方可持有 feedSync 以保证不与在途 Write 交错; 内部仍加自己的锁。</para>
+        /// </summary>
+        public void SetTarget(int bytes)
+        {
+            int t = Math.Max(0, bytes);
+            lock (sync)
+            {
+                if (t == targetBytes) return;
+                bool shrinking = t < targetBytes;
+                targetBytes = t;
+                if (shrinking) TrimOldestLocked();
+            }
+        }
+
+        /// <summary>丢弃最旧的 buffered − targetBytes, 让存量立刻等于新目标 (持 sync 调用)。</summary>
+        void TrimOldestLocked()
+        {
+            while (buffered > targetBytes && blocks.Count > 0)
+            {
+                Block b = blocks.Peek();
+                int avail = b.Len - b.Offset;
+                int over = (int)(buffered - targetBytes);
+                int take = avail < over ? avail : over;
+                b.Offset += take;
+                buffered -= take;
+                if (b.Offset >= b.Len)
+                {
+                    blocks.Dequeue();
+                    RecycleLocked(b.Data);
+                }
+            }
+        }
+
+        void RecycleLocked(byte[] data)
+        {
+            if (data == null) return;
+            if (pooledBytes + data.Length <= PoolMaxBytes)
+            {
+                pool.Add(data);
+                pooledBytes += data.Length;
+            }
         }
 
         public void Write(byte[] data, int len)
@@ -92,11 +146,7 @@ namespace StereoSplitter
                     if (b.Offset >= b.Len)
                     {
                         blocks.Dequeue();
-                        if (pooledBytes + b.Data.Length <= PoolMaxBytes)
-                        {
-                            pool.Add(b.Data);
-                            pooledBytes += b.Data.Length;
-                        }
+                        RecycleLocked(b.Data);
                     }
                 }
             }
@@ -115,11 +165,7 @@ namespace StereoSplitter
                 while (blocks.Count > 0)
                 {
                     var b = blocks.Dequeue();
-                    if (pooledBytes + b.Data.Length <= PoolMaxBytes)
-                    {
-                        pool.Add(b.Data);
-                        pooledBytes += b.Data.Length;
-                    }
+                    RecycleLocked(b.Data);
                 }
                 buffered = 0;
             }
