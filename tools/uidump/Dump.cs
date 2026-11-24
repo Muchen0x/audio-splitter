@@ -2115,7 +2115,8 @@ namespace StereoSplitter
                     Console.Out.WriteLine("SEAM-SHOT -> seam-" + tag + ".png");
                 };
 
-                Console.Out.WriteLine("SPLIT W=" + scc.SplitterWidth + " back=" + scc.BackColor
+                Console.Out.WriteLine("SPLIT factor=" + StereoSplitter.Dpi.Factor.ToString("0.##")
+                    + " W=" + scc.SplitterWidth + " back=" + scc.BackColor
                     + " dist=" + scc.SplitterDistance + " collapsed=" + scc.Panel2Collapsed
                     + " glyph=" + glyphOf());
                 shot("normal");

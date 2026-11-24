@@ -336,26 +336,26 @@ namespace StereoSplitter
             // Panel1MinSize=Panel2MinSize=0: **两个面板都不设下限**, 分隔条可以任意拖 ——
             // 日志区能一路拉到顶(只看内容)，也能一路压到底(只看日志, 拉到最底自动整体收起)。
             // 窗口整体变矮的情况由 KeepContentOnShrink() 兜底, 不会把内容区缩没。
-            // 缝隙宽 12 (设计px): 参考图的缝:条 ≈ 4:1, 中间悬 4px 圆角条 (NoFocusSplitContainer.OnPaint)。
+            // 缝隙宽 6 (设计px): 用户反馈"还是太粗"再收一档 (10→6)。深色滑带通到窗口
+            // 两缘、端部在窗口边收圆角 (NoFocusSplitContainer.OnPaint + PaintSplitterBleed),
+            // 缝隙区露出的角是浅色 —— 与上下面板连成一个完整的圆角矩形。
             splitContainer = new NoFocusSplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
-                SplitterWidth = Dpi.S(10),
-                BackColor = Color.FromArgb(25, 25, 25),
+                SplitterWidth = Dpi.S(SplitterWidthDesign),
+                // 浅色: 容器自己画的分隔条区域 = 面板同支底色, 深带由 OnPaint 显式叠上
+                // (旧方案 BackColor=深缝色 + 面板角补丁, 用户改为"滑条端部圆角抵窗口边"后弃用)
+                BackColor = SystemColors.Control,
                 FixedPanel = FixedPanel.Panel2,
                 Panel1MinSize = 0,
                 Panel2MinSize = 0,
                 Size = new Size(500, 500),
                 TabStop = false
             };
-            // 显式恢复浅色面板, 阻断 BackColor(#191919 缝隙色) 传播 → 缝色只作用于分隔条
+            // 显式恢复浅色面板 (与容器底色同一支, 缝隙区的角部露出时才无缝)
             splitContainer.Panel1.BackColor = SystemColors.Control;
             splitContainer.Panel2.BackColor = SystemColors.Control;
-            // 面板朝缝隙的一侧做成圆角 (参考图): 上面板下缘两角、下面板上缘两角,
-            // 由角上的"缝隙色补丁"盖出圆角轮廓 (见 PaintPanelCornerSeam)
-            splitContainer.Panel1.Paint += PaintPanelCornerSeam;
-            splitContainer.Panel2.Paint += PaintPanelCornerSeam;
             // Panel1 自己不能滚: 否则窗口一缩, 整个内容区先冒出滚动条 (还带横向),
             // 而不是卡片区内部滚动。
             splitContainer.Panel1.AutoScroll = false;
@@ -818,6 +818,10 @@ namespace StereoSplitter
         protected override void OnLoad(EventArgs e)
         {
             Dpi.ScaleForm(this);
+            // Form.Scale 会把 SplitContainer.SplitterWidth 再乘一遍系数 (它是属性不是
+            // bounds, 没有布局代码事后重设, 只有它被二次放大 —— 实测 1.25 下
+            // Dpi.S(6)=8 被乘成 10)。这里在缩放后把设计值重新钉回去。
+            splitContainer.SplitterWidth = Dpi.S(SplitterWidthDesign);
             base.OnLoad(e);
             // 缩放之后才知道标题栏的实际高度与按钮尺寸 —— 位置按当前客户区排一次
             // 顺便把最外一圈让给窗体自己 (见下), 两件事都要用缩放后的数值。
@@ -828,6 +832,9 @@ namespace StereoSplitter
 
         /// <summary>缩放边框的宽度 (设计像素)。与 <see cref="HitTestCaption"/> 里的 grip 同一支数。</summary>
         const int ResizeBorderDesign = 6;
+        /// <summary>分隔条滑带宽度 (设计px)。OnLoad 里 ScaleForm 之后会重新钉一次 ——
+        /// SplitterWidth 是属性, 会被 Form.Scale 二次放大 (见 OnLoad 注释)。</summary>
+        const int SplitterWidthDesign = 6;
 
         /// <summary>
         /// 把窗口最外一圈让给窗体自己: 拖边缘缩放、Aero Snap、缩放光标全靠它。
@@ -848,10 +855,13 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 把 6px 灰分隔条补进左右那一圈让出去的空隙, 让分隔线仍然通到窗口边缘。
-        /// <para>颜色取容器自己的 BackColor, 与它画的分隔条是同一支; 位置取 Panel1 的下缘,
-        /// 所以用户上下拖分隔条时补丁跟着走 (SplitterMoved 里重画)。</para>
-        /// <para>日志面板整体收起后没有分隔条, 不再补 (避免在窗口底缘留一截深色带)。</para>
+        /// 把分隔条滑带补进左右那一圈让出去的 ResizeBorder 空隙 —— 深色滑带要通到窗口
+        /// 两缘, 且**端部在窗口边缘收圆角** (用户要求"滑条的圆角要抵住窗口边")。
+        /// <para>左右让边里: 先铺浅色底 (面板同支, 让边内这一段和上下面板连成一体),
+        /// 再补滑带的端部弧 —— 胶囊端 (半径 = 半高, 受让边宽度夹取): 弧从窗口边缘的
+        /// 一个点渐开到全高, 与容器内画的全高直边段 (NoFocusSplitContainer.OnPaint)
+        /// 在让边交界处精确相接。位置取 Panel1 的下缘, 拖动时跟着走 (SplitterMoved 重画)。</para>
+        /// <para>日志面板整体收起后没有滑带, 不再补。</para>
         /// </summary>
         void PaintSplitterBleed(Graphics g)
         {
@@ -861,10 +871,45 @@ namespace StereoSplitter
 
             int y = splitContainer.Top + splitContainer.Panel1.Bottom;
             int h = splitContainer.SplitterWidth;
-            using (var b = new SolidBrush(splitContainer.BackColor))
+            float R = Math.Min(h / 2f, grip);       // 端部弧必须整个落在让边里
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var light = new SolidBrush(SystemColors.Control))
+            using (var dark = new SolidBrush(NoFocusSplitContainer.SeamDark))
             {
-                g.FillRectangle(b, 0, y, grip, h);
-                g.FillRectangle(b, splitContainer.Right, y, grip, h);
+                g.FillRectangle(light, 0, y, grip, h);                          // 左让边浅底
+                // 左端胶囊弧: bbox (0,y,2R,h) 从 90° 扫 180° (底→左尖→顶), CloseFigure
+                // 用弦 (x=R 处竖线) 封口 = 半椭圆; R..grip 之间再补全高矩形接容器直边段
+                using (var p = new System.Drawing.Drawing2D.GraphicsPath())
+                {
+                    p.AddArc(0f, y, 2f * R, h, 90f, 180f);
+                    p.CloseFigure();
+                    g.FillPath(dark, p);
+                }
+                if (grip > R)
+                {
+                    // 弧的弦 (x=R) 正落在像素边界上, AA 模式下 FillRectangle 的边缘会
+                    // 半覆盖出一条浅缝 —— 矩形段用像素级填充 (关 SmoothingMode) 盖实
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+                    g.FillRectangle(dark, R, y, grip - R, h);
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                }
+
+                int rx = splitContainer.Right;
+                g.FillRectangle(light, rx, y, grip, h);                         // 右让边浅底
+                using (var p = new System.Drawing.Drawing2D.GraphicsPath())
+                {
+                    p.AddArc(rx + grip - 2f * R, y, 2f * R, h, 270f, 180f);     // 顶→右尖→底
+                    p.CloseFigure();
+                    g.FillPath(dark, p);
+                }
+                if (grip > R)
+                {
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+                    // +1: 右段的右边界 = 弦 (x=rx+grip-R), 弧的 AA 在弦列只有半覆盖,
+                    // 矩形多盖一列把它压成实色 (左段弦在首列, 天然被盖住, 不用 +1)
+                    g.FillRectangle(dark, rx, y, grip - R + 1, h);
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                }
             }
         }
 
@@ -925,68 +970,6 @@ namespace StereoSplitter
         {
             if (splitContainer == null) return;
             SetLogPanelVisible(splitContainer.Panel2Collapsed);
-        }
-
-        /// <summary>
-        /// 面板朝缝隙一侧的圆角 (用户参考图): 上面板 (Panel1) 下缘两角、下面板 (Panel2) 上缘
-        /// 两角, 各画一块"缝隙色补丁"盖出圆角轮廓 —— 补丁 = 方角块与四分之一圆盘之差。
-        /// <para>挂在面板自己的 Paint 上: 面板先铺底色, 补丁随后盖角; 子控件 (日志标题行、
-        /// 卡片) 晚于补丁绘制, 不会被圆角裁掉。半径取 <see cref="WindowCornerRadiusPx"/>
-        /// (8 物理像素) —— 与窗口的 Win11 系统圆角一致 (用户要求"圆角与窗口一致");
-        /// 面板 Paint 的坐标就是物理像素, 与窗口圆角同一把尺子, 不走 Dpi.S。</para>
-        /// </summary>
-        void PaintPanelCornerSeam(object sender, PaintEventArgs e)
-        {
-            if (splitContainer == null || splitContainer.Panel2Collapsed) return;
-            SplitterPanel sp = sender as SplitterPanel;
-            if (sp == null) return;
-            bool bottom = sp == splitContainer.Panel1;      // Panel1 = 下缘两角, Panel2 = 上缘两角
-            float W = sp.Width, H = sp.Height, R = WindowCornerRadiusPx;
-            if (W < R * 2 || H < R) return;
-            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using (var b = new SolidBrush(splitContainer.BackColor))
-            {
-                // 四块补丁的公共结构: 两条沿面板边缘的直线 + 一段四分之一圆弧 (圆心在面板内
-                // 部距角 R 处, 弧朝角外鼓) —— 先走线到弧的起点, 弧画回来即闭合。
-                for (int side = 0; side < 2; side++)        // 0 = 左角, 1 = 右角
-                {
-                    bool right = side == 1;
-                    using (var path = new System.Drawing.Drawing2D.GraphicsPath())
-                    {
-                        if (bottom)
-                        {
-                            if (!right)   // 左下: (0,H-R)→(0,H)→(R,H)→弧回
-                            {
-                                path.AddLine(0f, H - R, 0f, H);
-                                path.AddLine(0f, H, R, H);
-                                path.AddArc(0f, H - 2 * R, 2 * R, 2 * R, 90f, 90f);
-                            }
-                            else          // 右下: (W-R,H)→(W,H)→(W,H-R)→弧回
-                            {
-                                path.AddLine(W - R, H, W, H);
-                                path.AddLine(W, H, W, H - R);
-                                path.AddArc(W - 2 * R, H - 2 * R, 2 * R, 2 * R, 0f, 90f);
-                            }
-                        }
-                        else
-                        {
-                            if (!right)   // 左上: (R,0)→(0,0)→(0,R)→弧回
-                            {
-                                path.AddLine(R, 0f, 0f, 0f);
-                                path.AddLine(0f, 0f, 0f, R);
-                                path.AddArc(0f, 0f, 2 * R, 2 * R, 180f, 90f);
-                            }
-                            else          // 右上: (W,R)→(W,0)→(W-R,0)→弧回
-                            {
-                                path.AddLine(W, R, W, 0f);
-                                path.AddLine(W, 0f, W - R, 0f);
-                                path.AddArc(W - 2 * R, 0f, 2 * R, 2 * R, 270f, 90f);
-                            }
-                        }
-                        e.Graphics.FillPath(b, path);
-                    }
-                }
-            }
         }
 
         void InvalidateSplitterBleed()
@@ -1176,13 +1159,6 @@ namespace StereoSplitter
         [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
         static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
-        /// <summary>
-        /// 窗口的圆角半径 (物理像素): Win11 系统圆角固定 8 物理像素、**不随 DPI 缩放**
-        /// (ApplyWindowFrame 里 DWMWA_WINDOW_CORNER_PREFERENCE=2 交给系统画的就是它)。
-        /// 面板角补丁 (PaintPanelCornerSeam) 直接拿它用 —— 面板 Paint 的坐标本身就是
-        /// 物理像素 (bounds 全是 Dpi.S 过的设备值), 所以两边同一把尺子, 圆角才一致。
-        /// </summary>
-        const float WindowCornerRadiusPx = 8f;
 
         // —— 第 998 行起: 窗口几何的三处接管 ——
         [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]

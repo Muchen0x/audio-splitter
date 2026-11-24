@@ -1240,18 +1240,25 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 分隔条: 深色缝隙 + 缝隙正中的悬浮圆角条 (用户参考图)。
-        /// <para>Back色 = 缝隙 (深 #191919), 由 base.OnPaint 铺; 这里再叠一枚胶囊圆角条
-        /// —— 高 3 设计px、宽约 30% 容器宽、水平居中、色 #8C8C8C, 两端全圆
-        /// (半径 = 半高)。缝隙与条的配色直接取自用户给的参考图; 条高由 4 收到 3
-        /// (用户反馈"太粗" —— 150% 缩放下 6 物理像素比系统滚动条拇指条还粗)。</para>
+        /// 分隔条: 浅色底上悬一条通到窗口两缘的深色胶囊带 (用户要求"滑条的圆角要抵住窗口
+        /// 边, 与上下面板组成一个完整圆滑的圆角矩形")。
+        /// <para>BackColor = 浅色 (与面板同支) —— 窗口左右让边 (ResizeBorder) 里的两段由
+        /// MainForm.PaintSplitterBleed 画: 那里露出浅色、再补上胶囊的端部弧, 圆角端正好
+        /// 落在窗口边缘。容器内这一段两侧都是全高直边 (弧只在让边里, 见那边注释), 所以
+        /// 这里只画矩形深带 + 中央把手圆角条。深带色 <see cref="SeamDark"/>。</para>
         /// <para>日志面板整体收起 (Panel2Collapsed) 时 SplitterRectangle 为空, 自然不画。</para>
         /// </summary>
+        internal static readonly Color SeamDark = Color.FromArgb(25, 25, 25);
+
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
             Rectangle sr = SplitterRectangle;
             if (sr.Height <= 0 || sr.Width <= 0) return;
+            // 深色滑带: 容器内这一段是全宽全高直边 (端部弧在左右让边里补)
+            using (var b = new SolidBrush(SeamDark))
+                e.Graphics.FillRectangle(b, 0, sr.Top, Width, sr.Height);
+            // 中央把手圆角条 (参考图): 高 3 设计px、宽约 30% 容器宽、水平居中、两端全圆
             float bh = Dpi.S(3);
             float bw = Width * 0.3f;
             float bx = (Width - bw) / 2f;
