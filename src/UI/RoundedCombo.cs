@@ -42,10 +42,10 @@ namespace StereoSplitter
         internal static readonly Color RowSelected = Color.FromArgb(226, 228, 232);
 
         // 以下都是 96 DPI 的设计值, 访问时按系统缩放换算 (见 Dpi)。
-        /// <summary>本体圆角。比卡片的 8 小一号 —— 控件矮, 同半径会显得过圆。</summary>
+        /// <summary>本体圆角, 与输出卡片、弹层同半径 (6)。</summary>
         static int CornerRadius { get { return Dpi.S(6); } }
         /// <summary>弹层圆角, 与输出卡片/设置分组卡一致。</summary>
-        internal static int PopupRadius { get { return Dpi.S(8); } }
+        internal static int PopupRadius { get { return Dpi.S(6); } }
         /// <summary>文字左内缩。与卡片里其它控件的 8px 对齐。</summary>
         internal static int TextPadX { get { return Dpi.S(8); } }
         /// <summary>右侧给箭头留的宽度 (internal: 量测工具要靠它算文字可用宽度)。</summary>
@@ -664,8 +664,11 @@ namespace StereoSplitter
     /// </summary>
     sealed class ComboPopup : ToolStripDropDown
     {
-        /// <summary>弹层边框: 与下拉本体同一套黑色细边 (用户指定), 白底 + 圆角投影衬托着不显重。</summary>
-        static readonly Color BorderColor = Color.Black;
+        /// <summary>
+        /// 弹层边框色: 直接取输出卡片的那一个 (用户要求"弹层窗口改成和输出卡片一样的框")。
+        /// 颜色、圆角、线宽三者一起对齐 —— 只改颜色会像个蓝灰色的黑框, 比原来更怪。
+        /// </summary>
+        static readonly Color BorderColor = OutputCardControl.BorderColor;
 
         internal readonly ComboRowList List;
 
@@ -809,10 +812,10 @@ namespace StereoSplitter
 
         /// <summary>
         /// 把窗口本身裁成圆角: 不这么做的话浮层的四个角会露出方角。
-        /// <para><b>Region 要比可见内容外扩 2px</b>: Region 是像素级硬裁, 没有抗锯齿, 贴着边界
-        /// 的像素还可能整格被丢掉。外扩 1px 只够盖住描边本身, 描边外侧那条白底反而被吃掉,
-        /// 圆角处于是露出下层窗口、像裂了一道缝; 外扩 2px 才留得下一圈完整白边, 裁切的台阶
-        /// 落在白底之外 (见 <see cref="PopupRenderer"/> 的铺白)。</para>
+        /// <para><b>Region 要比描边外缘再外扩 1px</b>: Region 是像素级硬裁, 没有抗锯齿,
+        /// 裁剪边界正好压在弧线上时, 弧外侧那半个抗锯齿像素会被整格丢掉, 转角看着就断了。
+        /// 外扩这 1px 由 <see cref="PopupRenderer"/> 铺白填掉, 台阶因此落在白底之外;
+        /// 再往外扩会让圆角外侧显出一圈比背景更白的弧, 反而更脏。</para>
         /// </summary>
         void ShapeRound()
         {
@@ -870,11 +873,12 @@ namespace StereoSplitter
             /// <summary>超采样倍率。4 倍已经能把 45° 处的覆盖率差压到看不见, 再高只是变慢。</summary>
             const int Ss = 4;
 
-            /// <summary>描边宽度 (设计像素)。1.2 在 125% 下约 1.5 物理像素, 是"细边"与"能抗锯齿"的折中。</summary>
-            const float PenW = 1.2f;
-
-            // 边框半径与线宽都是物理像素: Graphics 不吃 DPI 缩放, 只有形状需要自己算。
-            static float PenPhysical { get { return Dpi.F(PenW); } }
+            /// <summary>
+            /// 描边宽度 (物理像素)。刻意**不**过 DPI 缩放: 输出卡片那条边就是固定的
+            /// <c>new Pen(BorderColor)</c> = 1 物理像素, 要"一样的框"就得同宽。
+            /// 走 Dpi.F 会变成 1.25px, 边框比卡片粗一圈。
+            /// </summary>
+            const float PenW = 1f;
 
             protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
             {
@@ -893,13 +897,14 @@ namespace StereoSplitter
                     using (var b = new SolidBrush(Color.White))
                         big.FillRectangle(b, 0, 0, w * Ss, h * Ss);
 
-                    // 半像素对齐: 笔心落在像素中心时, 直边才是纯黑而不是两条 50% 灰。
-                    // 半径同步减掉 0.5, 圆心才与 Region 的圆心重合, 弧线离裁剪边处处等距。
-                    const float Inset = 0.5f;
+                    // 外缘贴 0 而不是 0.5: 环带从画布第一列开始, 1 倍图的第一格就是满覆盖的
+                    // 边框色 —— 与输出卡片那条 1px 边的观感一致。留 0.5 会让线摊到两格各半,
+                    // 浅灰被白底一冲就变成两条更淡的灰线 (实测 229/216)。
+                    const float Inset = 0f;
                     float radius = (RoundedCombo.PopupRadius - Inset) * Ss;
                     // 笔宽取到超采样网格的整数倍: 非整数时一条边会摊到 3 格、另一条只摊 2 格,
                     // 同一条路径的四条边立刻粗细不一 (这正是 100%/150% 缩放下的老问题)。
-                    float pw = Math.Max(1f, (float)Math.Round(PenPhysical * Ss));
+                    float pw = Math.Max(1f, (float)Math.Round(PenW * Ss));
                     float left = Inset * Ss, top = Inset * Ss;
                     float rw = w * Ss - Inset * 2 * Ss, rh = h * Ss - Inset * 2 * Ss;
                     // 描边用"两条路径相减再填充"而不是 DrawPath: 实测 DrawPath 在横竖两个方向

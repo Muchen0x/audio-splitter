@@ -81,7 +81,8 @@ namespace StereoSplitter
             CardGap = (int)Math.Round(4 * f);
         }
 
-        static readonly Color BorderColor = Color.FromArgb(203, 208, 216);
+        /// <summary>卡片边框色。下拉弹层也用这一个, 两处必须一致 (用户要求"弹层和卡片一样的框")。</summary>
+        internal static readonly Color BorderColor = Color.FromArgb(203, 208, 216);
         static readonly Color RowLabelColor = Color.FromArgb(120, 126, 136);
         static int CornerRadius { get { return Dpi.S(6); } }
         static int RowTop = 58;                 // 多声道首行 y (按 DPI 缩放在 ScaleForDpi 里)
