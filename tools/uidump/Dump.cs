@@ -724,6 +724,65 @@ namespace StereoSplitter
                 return;
             }
 
+            // 行内声道下拉的弹层: 验证「不使用」这条的文案, 以及它在 92 设计像素宽的弹层里
+            // 放不放得下 (去掉全角括号就是为了这个 —— 括号本身吃掉近 20px)。
+            if (args.Length >= 1 && args[0] == "rowpopup")
+            {
+                string path = args.Length >= 2 ? args[1] : "rowpopup.png";
+
+                var sf = new MainForm();
+                sf.StartPosition = FormStartPosition.Manual;
+                sf.Location = new Point(40, 40);
+                sf.Size = new Size(700, 800);
+                sf.TopMost = true;
+                sf.Show();
+                sf.Activate();
+                Pump();
+
+                OutputCardControl card = null;
+                var cardList = Field(sf, "cards") as System.Collections.IList;
+                if (cardList != null)
+                    foreach (object o in cardList)
+                    {
+                        var c = o as OutputCardControl;
+                        if (c != null && c.Model.Multi) { card = c; break; }
+                    }
+                if (card == null) { Console.Out.WriteLine("ROWPOPUP no multi-channel card"); sf.Close(); return; }
+
+                RoundedCombo combo = null;
+                foreach (Control ch in card.Controls)
+                {
+                    var rc = ch as RoundedCombo;
+                    if (rc != null && rc != card.cmbDevice && rc != card.cmbChannel) { combo = rc; break; }
+                }
+                if (combo == null) { Console.Out.WriteLine("ROWPOPUP no row combo"); sf.Close(); return; }
+
+                var items = new System.Text.StringBuilder();
+                for (int i = 0; i < combo.Items.Count; i++)
+                    items.Append(i == 0 ? "" : " | ").Append(combo.Items[i]);
+                Console.Out.WriteLine("ROWPOPUP combo=" + combo.Width + "x" + combo.Height + " items=" + items);
+
+                typeof(RoundedCombo)
+                    .GetMethod("OpenDropDown", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .Invoke(combo, null);
+                Pump();
+                ToolStrip ts = Field(combo, "popup") as ToolStrip;
+                if (ts == null || !ts.Visible) { Console.Out.WriteLine("ROWPOPUP popup=closed"); sf.Close(); return; }
+
+                Rectangle r = ts.Bounds;
+                r.Inflate(8, 8);
+                r.Intersect(Screen.FromControl(sf).Bounds);
+                using (var bmp = new Bitmap(r.Width, r.Height))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                        g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+                    bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                }
+                Console.Out.WriteLine("ROWPOPUP at=" + ts.Bounds + " -> " + path);
+                sf.Close();
+                return;
+            }
+
             // 滚动复现: 卡片列表滚动后延迟框出现"重影"(文字/箭头被画两次)。
             // 用 BufferedFlowPanel + 8 张真卡片模拟, 逐步滚动并逐张截图, 看是哪一步开始糊。
             if (args.Length >= 1 && args[0] == "scroll")

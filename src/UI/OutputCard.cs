@@ -65,7 +65,7 @@ namespace StereoSplitter
         // 或排成错误的列数; 常量没法在运行时改。
         public static int CardHeight { get; private set; } = 62;   // 单声道卡片高度
         public static int CardWidth { get; private set; } = 500;
-        public static int RowHeight { get; private set; } = 28;    // 多声道每行高度 (行内下拉 26 + 2 行距)
+        public static int RowHeight { get; private set; } = 24;    // 多声道每行高度 (行内下拉 22 + 2 行距)
 
         /// <summary>卡片之间的竖向间隙 (与 MainForm 里卡片的 Margin.Bottom 对应)。</summary>
         public static int CardGap { get; private set; } = 4;
@@ -76,7 +76,7 @@ namespace StereoSplitter
             CardHeight = (int)Math.Round(62 * f);
             RowTop = (int)Math.Round(64 * f);
             CardWidth = (int)Math.Round(500 * f);
-            RowHeight = (int)Math.Round(28 * f);
+            RowHeight = (int)Math.Round(24 * f);
             CardGap = (int)Math.Round(4 * f);
         }
 
@@ -97,10 +97,10 @@ namespace StereoSplitter
         /// <summary>
         /// 多声道行内下拉的高度 (设计像素)。比第一行的 30 矮一档 —— 用户要求"这两个下拉框高度缩小一点"。
         /// <para>多声道时一屏要竖排 N 个下拉 + 各自的滑条, 30 高的下拉把每行撑得很胖, 两三行就占掉
-        /// 半张屏; 行内下拉只承载"这个物理声道接哪个逻辑声道", 内容比第一行少, 缩到 26 刚好。
+        /// 半张屏; 行内下拉只承载"这个物理声道接哪个逻辑声道", 一行里也只有几个字, 22 就够。
         /// 与第一行的设备/声道下拉不一致是刻意的, 两者不在同一行, 不会并排比较。</para>
         /// </summary>
-        internal static int RowComboHeight { get { return Dpi.S(26); } }
+        internal static int RowComboHeight { get { return Dpi.S(22); } }
 
         public OutputCardControl(OutputCardModel model)
         {
@@ -357,7 +357,7 @@ namespace StereoSplitter
             rows.RemoveAt(index);
         }
 
-        /// <summary>行内声道下拉: 规格声道 + 「(不使用)」。</summary>
+        /// <summary>行内声道下拉: 规格声道 + 「不使用」。</summary>
         void FillSlotChannels(SlotRow r, IList<KeyValuePair<string, string>> channels)
         {
             syncing = true;
@@ -379,7 +379,12 @@ namespace StereoSplitter
             finally { syncing = false; }
         }
 
-        public const string UnusedText = "（不使用）";
+        /// <summary>
+        /// 行内下拉里表示「这个物理声道不接任何逻辑声道」的条目。
+        /// <para>不带全角括号: 下拉本体窄, 「（不使用）」光括号就吃掉近 20px; 而且这一条在列表里
+        /// 本来就和声道名长得不一样 (不是名字, 是一个状态), 不需要再靠括号区分。</para>
+        /// </summary>
+        public const string UnusedText = "不使用";
 
         /// <summary>
         /// 按当前宽度摆放全部子控件。
@@ -416,7 +421,7 @@ namespace StereoSplitter
 
             // 多声道行: [声道▾] [滑条] n%
             // 行首的 "p0" 序号标签已去掉, 下拉直接贴到 8 (与第一行的设备下拉同列)。
-            // 行内下拉 26 高而滑条/标签 20 高, 后两者按"在下拉里居中"偏移 3, 于是
+            // 行内下拉 22 高而滑条/标签 20 高, 后两者按"在下拉里居中"偏移 1, 于是
             // 每行的文字中心、轨道线中心都落在下拉的垂直中线上。
             int comboH = RowComboHeight;
             for (int i = 0; i < rows.Count; i++)
