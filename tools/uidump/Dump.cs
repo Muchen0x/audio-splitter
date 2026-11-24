@@ -48,36 +48,48 @@ namespace StereoSplitter
 
                 MethodInfo scMethod = mf.GetType().GetMethod("SettingsControls", BindingFlags.Instance | BindingFlags.NonPublic);
                 var arr = (Control[])scMethod.Invoke(mf, null);
-                using (var sf = new SettingsForm(arr))
+                using (var fy = new SettingsFlyout(arr))
                 {
-                    sf.Show();
+                    fy.Show(new Point(80, 60));
                     for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
 
+                    // 弹层实拍 (实屏 CopyFromScreen: DrawToBitmap 拍不到顶层弹层的内容)
+                    using (var bmp = new Bitmap(fy.Width, fy.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(fy.PointToScreen(Point.Empty), Point.Empty, fy.Size);
+                        bmp.Save("flyout-live.png", System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    Console.Out.WriteLine("FLYOUT-SHOT -> flyout-live.png");
+
+                    Control content = fy.Content;
                     var sb2 = new StringBuilder();
-                    sb2.AppendLine("SETTINGS client=" + sf.ClientSize);
-                    foreach (Control c in sf.Controls)
+                    sb2.AppendLine("SETTINGS content=" + content.ClientSize + " popup=" + fy.Size
+                        + " visible=" + fy.Visible);
+                    foreach (Control c in content.Controls)
                     {
                         sb2.AppendLine("  " + c.GetType().Name + " '" + Trim(c.Text) + "' bounds=" + c.Bounds
-                            + (c.Right > sf.ClientSize.Width ? "  <<< OVERFLOW " + (c.Right - sf.ClientSize.Width) : "")
-                            + (c.Bottom > sf.ClientSize.Height ? "  <<< OVERFLOW-B " + (c.Bottom - sf.ClientSize.Height) : ""));
+                            + (c.Right > content.ClientSize.Width ? "  <<< OVERFLOW " + (c.Right - content.ClientSize.Width) : "")
+                            + (c.Bottom > content.ClientSize.Height ? "  <<< OVERFLOW-B " + (c.Bottom - content.ClientSize.Height) : ""));
                         foreach (Control k in c.Controls)
                             sb2.AppendLine("      " + k.GetType().Name + " '" + Trim(k.Text) + "' bounds=" + k.Bounds
                                 + (k.Right > c.Width ? "  <<< CLIPPED " + (k.Right - c.Width) : "")
                                 + (k.Bottom > c.Height ? "  <<< CLIPPED-B " + (k.Bottom - c.Height) : ""));
                         if (c is SoftCard) DumpOverlaps(c, "card", sb2);
                     }
-                    DumpOverlaps(sf, "form", sb2);
-                    DumpTextFit(sf, "form", sb2);
+                    DumpOverlaps(content, "content", sb2);
+                    DumpTextFit(content, "content", sb2);
                     Console.Out.Write(sb2.ToString());
 
                     // 借用期间故意改一下延迟档位: 归还时必须被还原成借用前的值,
-                    // 否则"打开设置页 → 关掉 → 档位莫名其妙变了"这类问题看不出来
+                    // 否则"打开设置弹层 → 关掉 → 档位莫名其妙变了"这类问题看不出来
                     int nItems = Math.Max(1, ItemCountOf(cmb));
                     SetSel(cmb, (SelOf(cmb) + 1) % nItems);
                     Application.DoEvents();
                     Console.Out.WriteLine("DISTURB idx=" + SelOf(cmb) + " (借用期间改值, 归还后应回到 " + idx0 + ")");
 
-                    sf.ReturnControls();
+                    fy.ReturnControls();
+                    fy.Close();
                 }
                 for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
 
@@ -1194,23 +1206,21 @@ namespace StereoSplitter
                 st("before");
                 strip("before");
 
-                // 在模态循环里做一次: 抓屏 → 读样式 → 关掉设置页
-                var timer = new System.Windows.Forms.Timer { Interval = 1500 };
-                timer.Tick += (s0, e0) =>
-                {
-                    timer.Stop();
-                    strip("modal");
-                    st("modal");
-                    Console.Out.Flush();
-                    foreach (Form dlgForm in Application.OpenForms)
-                        if (dlgForm is SettingsForm) { dlgForm.Close(); break; }
-                };
-                timer.Start();
-
+                // 设置页已改为"更多"弹层 (非模态): OpenSettings 立刻返回, 这里按开 → 抓 → 关推进
                 MethodInfo openM = mf.GetType().GetMethod("OpenSettings",
                     BindingFlags.Instance | BindingFlags.NonPublic);
-                openM.Invoke(mf, null);      // 阻塞到设置页关闭
+                openM.Invoke(mf, null);
+                Pump(); Pump(); Pump();
 
+                var flyout = (ToolStripDropDown)Field(mf, "settingsFlyout");
+                Console.Out.WriteLine("DLG flyout visible=" + (flyout != null && flyout.Visible)
+                    + " size=" + (flyout == null ? Rectangle.Empty.Size : flyout.Size));
+
+                strip("flyout");
+                st("flyout");
+                Console.Out.Flush();
+
+                if (flyout != null && flyout.Visible) flyout.Close();
                 Pump(); Pump();
                 strip("after");
                 st("after");

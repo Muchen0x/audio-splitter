@@ -858,7 +858,7 @@ namespace StereoSplitter
         // ==================== 设置页 ====================
 
         /// <summary>
-        /// 交给设置页摆放的控件, 顺序与 <see cref="SettingsForm"/> 的取用顺序严格一致:
+        /// 交给设置弹层摆放的控件, 顺序与 <see cref="SettingsFlyout"/> 的取用顺序严格一致:
         /// 0 缓冲档位标签 / 1 缓冲档位下拉 / 2 自动时钟校正 / 3 捕获消音 / 4 关闭进托盘 / 5 延迟校准。
         /// </summary>
         internal Control[] SettingsControls()
@@ -876,39 +876,45 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 齿轮按钮的提示: 把已迁走的两项状态摘要出来, 主界面不必再为它们各占一行。
-        /// 状态变化 (改档位 / 开关校正) 与设置页关闭时都会刷新。
+        /// 「更多」图标的提示: 把已迁走的两项状态摘要出来, 主界面不必再为它们各占一行。
+        /// 状态变化 (改档位 / 开关校正) 与弹层收起时都会刷新。
         /// </summary>
         void RefreshSettingsTip()
         {
             if (btnSettings == null || tipTop == null) return;
             tipTop.SetToolTip(btnSettings,
-                "设置\n" +
+                "更多\n" +
                 "缓冲档位: " + LatencyProfileShort() + "\n" +
                 "自动时钟校正: " + (driftMode == 0 ? "关" : "开") + "\n" +
                 "关闭时收进托盘: " + (chkMinimizeToTray.Checked ? "开" : "关"));
         }
 
         /// <summary>
-        /// 打开设置页。控件是"借出去再收回来"的: 搬移期间把 loadingSettings 临时置真,
-        /// 避免控件换父容器 (句柄重建) 时触发 SelectedIndexChanged/CheckedChanged 把中间态写进 ini,
-        /// 也避免 chkDrift 的事件在搬移途中去调引擎。
+        /// 打开/收起"更多"弹层。控件是"借出去再收回来"的 (见 <see cref="SettingsFlyout"/>):
+        /// 搬移期间把 loadingSettings 临时置真, 避免控件换父容器 (句柄重建) 时触发
+        /// SelectedIndexChanged/CheckedChanged 把中间态写进 ini, 也避免 chkDrift 的事件
+        /// 在搬移途中去调引擎。
+        /// <para>弹层是 AutoClose 的: 点弹层外/Esc 收起, Closed 事件里归还控件并释放。
+        /// "弹层开着再点图标想收起"有个竞态 —— AutoClose 会先收掉弹层再触发本体的 Click,
+        /// 没有那道时间闸就会"关掉又立刻打开" (与 RoundedCombo 同一套对策)。</para>
         /// </summary>
         void OpenSettings()
         {
-            if (settingsForm != null && !settingsForm.IsDisposed)
+            if (settingsFlyout != null)
             {
-                settingsForm.Activate();
+                if (settingsFlyout.Visible) settingsFlyout.Close();
                 return;
             }
+            // 刚被 AutoClose 收起的 250ms 内不再打开: 这次点击是"想收起", 不是"想打开"
+            if (lastFlyoutAutoCloseMs > 0 && NowMs() - lastFlyoutAutoCloseMs < 250) return;
 
             bool prevLoading = loadingSettings;
-            SettingsForm f = null;
+            SettingsFlyout f = null;
             loadingSettings = true;          // 搬入阶段: 不落盘、不产生副作用
             try
             {
-                f = new SettingsForm(SettingsControls());
-                settingsForm = f;
+                f = new SettingsFlyout(SettingsControls());
+                settingsFlyout = f;
             }
             finally
             {
@@ -916,27 +922,46 @@ namespace StereoSplitter
             }
             if (f == null) return;
 
-            try
+            f.Closed += (s, e) =>
             {
-                // 模态: 设置页打开期间主界面不可操作, 不会出现"设置页还在、主窗口已开始分流"的错配。
-                // 运行中可切的项 (时钟校正/消音) 在这里改完关闭即可, 与原来点一下按钮的效果相同。
-                f.ShowDialog(this);
-            }
-            finally
-            {
-                loadingSettings = true;      // 搬回阶段同样不许落盘
-                try { f.ReturnControls(); }  // 幂等: 窗体关闭时已归还过一次
+                // 归还控件期间同样不许落盘 (控件换父容器, 句柄重建会重放状态事件)
+                loadingSettings = true;
+                try { f.ReturnControls(); }
                 finally
                 {
-                    settingsForm = null;
-                    loadingSettings = prevLoading;
-                    // R-02/R-10: 原来只把引用置 null, 窗体自己没人 Dispose —— 每开一次设置页
-                    // 就漏一个窗体 (含它 new 的三个 Font 与子控件 GDI 句柄)。必须放在
-                    // ReturnControls() 之后: 那一步才把借出去的控件搬回主窗体。
-                    try { if (!f.IsDisposed) f.Dispose(); } catch { }
+                    settingsFlyout = null;
+                    loadingSettings = false;
+                    RefreshSettingsTip();
+                    lastFlyoutAutoCloseMs = f.LastAutoCloseMs;
+                    // 释放延后一拍: 此刻还在 Closed 事件里, 立刻 Dispose 有可能打乱消息循环
+                    try { BeginInvoke((Action)(() => { try { if (!f.IsDisposed) f.Dispose(); } catch { } })); }
+                    catch { try { f.Dispose(); } catch { } }
                 }
-                RefreshSettingsTip();
+            };
+
+            // 锚在图标正下方, 右缘与图标右缘对齐; 顶出屏幕时往回收
+            Point anchor = PointToScreen(new Point(btnSettings.Right - f.Width, btnSettings.Bottom + Dpi.S(4)));
+            Rectangle wa = Screen.FromControl(this).WorkingArea;
+            if (anchor.X < wa.Left) anchor.X = wa.Left;
+            if (anchor.Y + f.Height > wa.Bottom) anchor.Y = Math.Max(wa.Top, btnSettings.Top - f.Height - Dpi.S(4));
+            try { f.Show(anchor); }
+            catch
+            {
+                // 弹出失败 (极少见): 归还控件并复位, 别留下一个借走一半的状态
+                loadingSettings = true;
+                try { f.ReturnControls(); } finally { settingsFlyout = null; loadingSettings = prevLoading; }
+                try { f.Dispose(); } catch { }
             }
+        }
+
+        /// <summary>弹层最近一次自动收起的时刻 (NowMs 基准); 0 = 没有。</summary>
+        long lastFlyoutAutoCloseMs;
+
+        /// <summary>与 RoundedCombo/GearButton 同一套: Stopwatch 基准, 不受系统校时影响。</summary>
+        static long NowMs()
+        {
+            return (long)(System.Diagnostics.Stopwatch.GetTimestamp() * 1000.0
+                / System.Diagnostics.Stopwatch.Frequency);
         }
 
         // ==================== 延迟校准 (麦克风互相关) ====================
@@ -948,6 +973,9 @@ namespace StereoSplitter
         /// </summary>
         void OpenLatencyCalibration()
         {
+            // 校准是模态窗口: 先收起弹层 (它还借着几个控件), 否则弹层悬在校准窗后面
+            if (settingsFlyout != null && settingsFlyout.Visible) settingsFlyout.Close();
+
             if (state == AppState.Starting)
             {
                 MessageBox.Show(this,

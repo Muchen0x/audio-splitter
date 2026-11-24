@@ -71,7 +71,7 @@ namespace StereoSplitter
 
         // ---- 设置页的入口与选项 ----
         // 这几个控件由主界面创建 (事件绑定 / ApplyUiLock / LoadSettings 读写全在这里), 但**不放进
-        // 主面板**, 而是打开设置页时交给 SettingsForm 摆进去、关闭时搬回来 (见 SettingsForm)。
+        // 主面板**, 而是打开"更多"弹层时交给 SettingsFlyout 摆进去、关闭时搬回来 (见 SettingsFlyout)。
         // 声明成 internal 是为了让设置页能直接拿到它们, 不必再维护一份"控件清单"。
         internal Button btnCalibrate;      // 运行中可用: 校准期间临时静音分流, 不拆链路
         internal Label lblLatency;
@@ -90,7 +90,7 @@ namespace StereoSplitter
         Icon titleBarIcon;                 // 标题栏左侧的小图标 (16px), 由窗体图标缩放而来
         /// <summary>标题栏高度 (设计像素)。实际高度用 <c>Padding.Top</c> —— 它已被 ScaleForm 缩放。</summary>
         const int TitleBarDesignHeight = 32;
-        SettingsForm settingsForm;         // 打开中的设置页 (null = 未打开)
+        SettingsFlyout settingsFlyout;     // 打开中的"更多"弹层 (null = 未打开)
         ToolTip tipTop;                    // 顶部控件提示 (需要随状态刷新设置按钮的文案)
         Infrastructure.SessionLog sessionLog;
         SplitContainer splitContainer;
@@ -383,18 +383,18 @@ namespace StereoSplitter
             };
             btnRefresh.Click += (s2, e2) => OnRefreshClick();
             captureShell = new ComboButtonShell(cmbDefault, btnRefresh);
-            // 设置入口: 从主面板右上角移到标题栏, 放在最小化左边 (用户指定)。
-            // GlyphScale: 标题栏里它与 10px 级的系统窗口键并排, 按原尺寸画的齿轮会大出一圈。
+            // 「更多」入口: 原设置齿轮换成三条横线图标 (用户指定), 点开弹出下拉式弹层,
+            // 原设置页的选项全部移入弹层 (见 SettingsFlyout)。放在最小化左边。
+            // GlyphScale 不再参与 (More 图形自带标题栏尺寸), 字段保留给螺母等其它实例用。
             btnSettings = new GearButton
             {
-                Glyph = ButtonGlyph.Nut,
+                Glyph = ButtonGlyph.More,
                 Size = new Size(26, 26),
-                GlyphScale = 0.62f,
                 TabStop = true
             };
             btnSettings.Click += (s2, e2) => OpenSettings();
 
-            // 自绘标题栏的三个窗口键: 自右向左 [×][□][—], 设置齿轮在最小化左边。
+            // 自绘标题栏的三个窗口键: 自右向左 [×][□][—] | [☰], 「更多」在最小化左边。
             // (系统标题栏里塞不进自定义控件, 所以这一组只能自己画)
             btnMin = new CaptionButton(CaptionGlyph.Minimize) { AccessibleName = "最小化" };
             btnMin.Click += (s2, e2) => WindowState = FormWindowState.Minimized;
@@ -405,7 +405,7 @@ namespace StereoSplitter
 
             // 消音 / 缓冲档位 / 时钟校正 / 关闭行为 / 延迟校准 都已移入设置页:
             // 控件照旧在这里创建 (事件与持久化路径全留在 MainForm), 但不加入主面板,
-            // 由 SettingsForm 打开时搬入、关闭时搬回。位置只是占位, 搬入时会被重设。
+            // 由 SettingsFlyout 打开时搬入、关闭时搬回。位置只是占位, 搬入时会被重设。
             chkMuteCapture = new NoCueCheckBox { Text = "消音", AutoSize = true };
             lblLatency = new Label { Text = "延迟档位:", AutoSize = true };
             cmbLatency = new RoundedCombo { Width = 200, Height = 24, ItemHeight = 24, MaxDropDownItems = 8 };
@@ -519,7 +519,7 @@ namespace StereoSplitter
             // 该下拉决定"预缓冲深度 + WASAPI 输出缓冲"整套组合, 直接影响稳态延迟, 不是启动耗时。
             // 选项里的总预估 = 捕获(约10ms) + 内部缓冲目标(driftTarget) + 输出缓冲, 不含 USB/DAC/声波;
             // 数字由 LatencyProfiles 现算, 改档位参数时文案自动跟随。
-            // 控件本身摆在设置页 (见 SettingsForm), 这里只把选项填进去。
+            // 控件本身摆在"更多"弹层 (见 SettingsFlyout), 这里只把选项填进去。
             string[] latNames = { "标准", "低延迟", "极低", "超低", "极限" };
             string[] latWarn = { "", "", ", 易断音", ", 易断音", ", 频繁断音" };
             for (int i = 0; i < LatencyProfiles.Length; i++)
@@ -589,7 +589,7 @@ namespace StereoSplitter
             txtLog.ContextMenuStrip = cmsLog;
 
             // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
-            // 都在设置页里 (控件由本类持有, 由 SettingsForm 搬入搬出)。
+            // 都在"更多"弹层里 (控件由本类持有, 由 SettingsFlyout 搬入搬出)。
             splitContainer.Panel1.Controls.AddRange(new Control[] { captureShell, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, lblRunState, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterShell, lblWaterSec, btnClearLog, txtLog });
 
@@ -860,9 +860,10 @@ namespace StereoSplitter
         // 画底与标题、摆四个键、把"拖窗口 / 双击最大化 / 边缘缩放"还给系统。
 
         /// <summary>
-        /// 按客户区宽度摆标题栏的键, 自右向左: [×] [□] [—] [⚙]。
-        /// <para>设置齿轮在最小化**左边** (用户指定)。系统标题栏里塞不进自定义控件, 这也是必须自绘
-        /// 标题栏的原因之一。</para>
+        /// 按客户区宽度摆标题栏的键, 自右向左: [×] [□] [—] | [☰]。
+        /// <para>「更多」图标 (原设置齿轮, 用户指定替换) 在最小化**左边**, 它与窗口键组之间
+        /// 画一条竖线分隔 (用户指定) —— 功能键与系统键是两类东西。系统标题栏里塞不进
+        /// 自定义控件, 这也是必须自绘标题栏的原因之一。</para>
         /// </summary>
         void LayoutCaption()
         {
@@ -872,11 +873,11 @@ namespace StereoSplitter
             if (h <= 0) return;
             int w = ClientSize.Width;
             int bw = Dpi.S(46);                  // 与系统窗口键同宽 (46@96dpi)
-            int sw = Dpi.S(26);                  // 齿轮
-            int gap = Dpi.S(6);                  // 齿轮与最小化之间的缝
+            int sw = Dpi.S(26);                  // 「更多」图标
+            int gap = Dpi.S(14);                 // 图标与最小化之间的缝, 正中画竖线分隔 (原 6px 无分隔线)
 
             // 整组从右往左排, 左端用 max(0) 兜底: 窗口被拖到比这组键还窄时, 键退成贴左,
-            // 至少齿轮与最小化还在窗内 (拖动、缩放、关闭都还能用), 而不是整组飘到窗口外。
+            // 至少图标与最小化还在窗内 (拖动、缩放、关闭都还能用), 而不是整组飘到窗口外。
             int need = sw + gap + bw * 3;
             int left = Math.Max(0, w - need);
 
@@ -905,12 +906,22 @@ namespace StereoSplitter
                 x += isz + Dpi.S(8);
             }
 
-            // 文字止于最左边的那个键 (齿轮) 之前: 窗口拉窄时标题先省略, 不会钻到按钮底下
+            // 文字止于最左边的那个键 (更多图标) 之前: 窗口拉窄时标题先省略, 不会钻到按钮底下
             int limit = btnSettings != null ? btnSettings.Left - Dpi.S(8) : ClientSize.Width - Dpi.S(8);
             var rect = new Rectangle(x, 0, Math.Max(0, limit - x), h);
             TextRenderer.DrawText(g, Text, Font, rect, Color.FromArgb(32, 32, 32),
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter
                 | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
+            // 「更多」图标与窗口键组之间的竖线分隔 (用户指定): 画在两者之间那道缝的正中。
+            // 高度取标题栏的约四成, 上下都不顶到边 —— 是"分隔符"不是"分栏线"。
+            if (btnSettings != null && btnMin != null && btnSettings.Right < btnMin.Left)
+            {
+                int dx = (btnSettings.Right + btnMin.Left) / 2;
+                int dh = Dpi.S(14);
+                using (var pen = new Pen(Color.FromArgb(203, 203, 200), 1f))
+                    g.DrawLine(pen, dx, (h - dh) / 2, dx, (h + dh) / 2);
+            }
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -2463,12 +2474,12 @@ namespace StereoSplitter
                 trayIcon.Dispose();
                 trayIcon = null;
             }
-            // R-10 补: 设置页是模态打开的, 正常路径上已经关掉; 但 AppState 切换失败等
-            // 异常路径可能留下一个未释放的实例 (它自己也有 Timer 与 ToolTip)。
-            if (settingsForm != null)
+            // R-10 补: "更多"弹层正常路径上已被关闭; 但 AppState 切换失败等
+            // 异常路径可能留下一个未释放的实例 (Dispose 里会先归还借去的控件)。
+            if (settingsFlyout != null)
             {
-                try { if (!settingsForm.IsDisposed) settingsForm.Dispose(); } catch { }
-                settingsForm = null;
+                try { if (!settingsFlyout.IsDisposed) settingsFlyout.Dispose(); } catch { }
+                settingsFlyout = null;
             }
             // R-10 补: 顶部 ToolTip 持有一个 TOOLTIPS_CLASS 原生窗口 (与 R-02 同一类资源)
             if (tipTop != null)

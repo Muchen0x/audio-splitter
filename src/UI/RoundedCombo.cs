@@ -972,7 +972,7 @@ namespace StereoSplitter
 
         /// <summary>
         /// 纯白底 + 细黑描边, 顶掉 ToolStripProfessionalRenderer 的渐变与方框边框。
-        ///
+        /// (internal: 设置弹层 SettingsFlyout 复用同一套"白底 + 圆角描边"画法)
         /// <para><b>为什么要 4 倍超采样</b>: 直接以 1px 画圆角, 弧线是斜着切过像素栅格的 ——
         /// 45° 附近一格只被覆盖一半, 相邻格还会整格漏空, 于是弧线上出现一串深浅跳变的点:
         /// 看起来既"不顺滑"又"比直边细"。这不是笔宽没调好, 是 1 倍分辨率下圆弧采样点不够。
@@ -985,7 +985,7 @@ namespace StereoSplitter
         /// <para>这里刻意不画投影 (用户要求): 窗口 Region 就是圆角, 任何"往外一层"的阴影
         /// 都落在裁剪区外、根本看不见。</para>
         /// </summary>
-        sealed class PopupRenderer : ToolStripProfessionalRenderer
+        internal sealed class PopupRenderer : ToolStripProfessionalRenderer
         {
             /// <summary>超采样倍率。4 倍已经能把 45° 处的覆盖率差压到看不见, 再高只是变慢。</summary>
             const int Ss = 4;

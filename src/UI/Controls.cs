@@ -153,7 +153,7 @@ namespace StereoSplitter
     }
 
     /// <summary><see cref="RoundButton"/> 可以画的自绘符号 (不依赖字体)。</summary>
-    enum ButtonGlyph { None, Plus, Nut, SquarePlus, Cross, Refresh, TriangleDown, TriangleRight }
+    enum ButtonGlyph { None, Plus, Nut, SquarePlus, Cross, Refresh, TriangleDown, TriangleRight, More }
 
     /// <summary>
     /// 自绘圆角矩形按钮。
@@ -1643,6 +1643,23 @@ namespace StereoSplitter
                     // 旗标是被斜边(过圆心)切开的直角三角形, 直角顶在 (889,459)-(889,125)。
                     // 22px 下: 半径 7.18、笔宽 2.05、旗标顶点见 DrawRefresh。
                     DrawRefresh(g, cx, cy, Math.Min(Width, Height) / 22f, icon);
+                    break;
+
+                case ButtonGlyph.More:
+                    // 「更多」: 三条横线 (用户指定, 替换原设置齿轮)。线条几何**不过 GlyphScale**:
+                    // 这枚图形只在标题栏用 (26px 热区), 直接按"与旁边 10px 级窗口键同一视觉重量"
+                    // 定尺寸 —— 线长 ±6.5、行距 4.5、笔宽 1.8, 与 SquarePlus 的线条语言一致。
+                    // 不走 GlyphScale 是因为 0.62 的系数是给螺母的原图比例配的, 套上来只剩 8px。
+                    using (var p = new Pen(icon, 1.8f))
+                    {
+                        p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                        p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                        for (int i = -1; i <= 1; i++)
+                        {
+                            float y = cy + i * 4.5f;   // 按下下沉已含在 cy 里, 这里不再加
+                            g.DrawLine(p, cx - 6.5f, y, cx + 6.5f, y);
+                        }
+                    }
                     break;
             }
 
