@@ -51,7 +51,7 @@ namespace StereoSplitter
         /// <summary>右侧给箭头留的宽度 (internal: 量测工具要靠它算文字可用宽度)。</summary>
         internal static int ArrowZone { get { return Dpi.S(22); } }
         /// <summary>弹层上下留白 (视觉上让第一行不贴边)。</summary>
-        static int PopupPadY { get { return Dpi.S(4); } }
+        internal static int PopupPadY { get { return Dpi.S(4); } }
         /// <summary>自动收起后多久内不允许再展开 (毫秒)。见 <see cref="OpenDropDown"/> 的说明。</summary>
         const int AutoCloseGuardMs = 300;
 
@@ -590,7 +590,7 @@ namespace StereoSplitter
             int rows = Math.Max(1, Math.Min(Items.Count, MaxDropDownItems));
             int w = Math.Max(Width, DropDownWidth);
 
-            int h = rows * ItemHeight + PopupPadY * 2 + 2;                 // +2 = 上下各 1px 边框
+            int h = rows * ItemHeight + PopupPadY * 2;
             return new Size(w, h);
         }
 
@@ -686,15 +686,19 @@ namespace StereoSplitter
             Size = size;
             Renderer = new PopupRenderer();
 
+            int padX = Dpi.S(2), padY = RoundedCombo.PopupPadY;
+
             // 列表直接回查 owner.Items, 不再保存一份文字副本: 自绘列表用 "行号 = (y / 行高) + 首行"
             // 定位, 不依赖 ListBox 的 IndexFromPoint (那份副本一旦忘填, 表现就是"能展开但点哪行都没反应")。
             List = new ComboRowList(owner)
             {
-                Size = new Size(size.Width - 2, size.Height - 8 - 2)    // 左右各 1px 边框 + 上下各 4px 留白
+                // 左右各让出 2px: 只让 1px 的话列表面板会压住边框内侧那半个像素,
+                // 左右两条边就只剩 0.5px 宽 (实测), 而上下留了 4px 所以看着更粗 —— 四边不齐。
+                Size = new Size(size.Width - padX * 2, size.Height - padY * 2)
             };
             var host = new ToolStripControlHost(List)
             {
-                Margin = new Padding(1, 4, 1, 4),
+                Margin = new Padding(padX, padY, padX, padY),
                 Padding = Padding.Empty,
                 AutoSize = false,
                 Size = List.Size
@@ -813,7 +817,7 @@ namespace StereoSplitter
         void ShapeRound()
         {
             if (Width <= 0 || Height <= 0) return;
-            const int Bleed = 2;
+            const int Bleed = 1;
             using (var path = UiDraw.RoundRect(
                 new Rectangle(-Bleed, -Bleed, Width + Bleed * 2, Height + Bleed * 2),
                 RoundedCombo.PopupRadius + Bleed))
@@ -847,63 +851,154 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 纯白底 + 1px 黑描边, 顶掉 ToolStripProfessionalRenderer 的渐变与方框边框。
-        /// <para>这里刻意不画投影 (用户要求): 没有外扩边距可画, 而窗口 Region 已经是圆角,
-        /// 任何"往外一层"的阴影都会落在裁剪区外、根本看不见。</para>
-        /// <para>背景直接铺满整个客户区: 圆角由 Region 裁, 铺满即成圆角白底; 而 Region 为了保住
-        /// 描边的抗锯齿多外扩了 1px, 那一条也靠这次铺白填掉, 不会露出窗口底色。</para>
+        /// 纯白底 + 细黑描边, 顶掉 ToolStripProfessionalRenderer 的渐变与方框边框。
+        ///
+        /// <para><b>为什么要 4 倍超采样</b>: 直接以 1px 画圆角, 弧线是斜着切过像素栅格的 ——
+        /// 45° 附近一格只被覆盖一半, 相邻格还会整格漏空, 于是弧线上出现一串深浅跳变的点:
+        /// 看起来既"不顺滑"又"比直边细"。这不是笔宽没调好, 是 1 倍分辨率下圆弧采样点不够。
+        /// 放到 4 倍上画同一条弧, 采样点变成 16 倍, 缩回 1 倍时覆盖率被平摊到相邻像素上,
+        /// 弧线与直边就得到同样的视觉厚度, 过渡也连续了。</para>
+        ///
+        /// <para>背景与边框都在这里画 (边框覆写留空): 超采样必须一次成型, 分成两次绘制会
+        /// 缩两张图再叠, 接缝处反而更脏。</para>
+        ///
+        /// <para>这里刻意不画投影 (用户要求): 窗口 Region 就是圆角, 任何"往外一层"的阴影
+        /// 都落在裁剪区外、根本看不见。</para>
         /// </summary>
         sealed class PopupRenderer : ToolStripProfessionalRenderer
         {
+            /// <summary>超采样倍率。4 倍已经能把 45° 处的覆盖率差压到看不见, 再高只是变慢。</summary>
+            const int Ss = 4;
+
+            /// <summary>描边宽度 (设计像素)。1.2 在 125% 下约 1.5 物理像素, 是"细边"与"能抗锯齿"的折中。</summary>
+            const float PenW = 1.2f;
+
+            // 边框半径与线宽都是物理像素: Graphics 不吃 DPI 缩放, 只有形状需要自己算。
+            static float PenPhysical { get { return Dpi.F(PenW); } }
+
             protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
             {
                 ToolStrip ts = e.ToolStrip;
-                using (var b = new SolidBrush(Color.White))
-                    e.Graphics.FillRectangle(b, ts.ClientRectangle);
-            }
-
-            protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
-            {
-                ToolStrip ts = e.ToolStrip;
                 Graphics g = e.Graphics;
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                // 半像素对齐: 1px 笔心落在像素中心才是纯黑, 整数边界会被 AA 拆成两条 50% 灰。
-                // 半径同步减 0.5: 圆心才与 Region 的圆心重合, 弧线到裁剪边界的间距处处相等。
-                // (ToolStrip 的 Padding 必须为 0, 否则绘制 clip 收缩到内边距里, 这条边画不出来)
-                const float Inset = 0.5f;
-                float radius = RoundedCombo.PopupRadius - Inset;
-                float right = ts.Width - Inset, bottom = ts.Height - Inset;
+                int w = ts.Width, h = ts.Height;
+                if (w <= 0 || h <= 0) return;
 
-                // 四角补底: 1px 的圆弧是斜着切过像素栅格的, 每一格只被覆盖一半左右, 相邻两格
-                // 之间还会整格漏空 —— 一整条圆角在 1 倍下就断成"虚线", 看着像圆角有裂缝。
-                // 先用 2px 的笔**只沿四段弧**重描一遍 (直边一点不动, 仍是严格 1px), 空隙被填实,
-                // 弧线才连成一条线。代价是四个转角比直边厚一点点 —— 比起"转角断开", 这点厚度
-                // 在 1 倍下几乎看不出来, 而断开是一眼就能看见的。
-                float d = radius * 2f;
-                using (var arcPen = new Pen(BorderColor, Dpi.F(1.6f)))
+                using (var bmp = new Bitmap(w * Ss, h * Ss,
+                    System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+                using (var big = Graphics.FromImage(bmp))
                 {
-                    DrawArc(g, arcPen, Inset, Inset, d, 180f);                 // 左上
-                    DrawArc(g, arcPen, right - d, Inset, d, 270f);             // 右上
-                    DrawArc(g, arcPen, right - d, bottom - d, d, 0f);          // 右下
-                    DrawArc(g, arcPen, Inset, bottom - d, d, 90f);             // 左下
-                }
+                    big.SmoothingMode = SmoothingMode.AntiAlias;
+                    big.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    // 白底铺满整张图: Region 已是圆角, 圆角外的白会被裁掉, 不留方角
+                    using (var b = new SolidBrush(Color.White))
+                        big.FillRectangle(b, 0, 0, w * Ss, h * Ss);
 
-                using (var path = UiDraw.RoundRect(
-                    new RectangleF(Inset, Inset, ts.Width - Inset * 2, ts.Height - Inset * 2),
-                    radius))
-                using (var pen = new Pen(BorderColor))
-                    g.DrawPath(pen, path);
+                    // 半像素对齐: 笔心落在像素中心时, 直边才是纯黑而不是两条 50% 灰。
+                    // 半径同步减掉 0.5, 圆心才与 Region 的圆心重合, 弧线离裁剪边处处等距。
+                    const float Inset = 0.5f;
+                    float radius = (RoundedCombo.PopupRadius - Inset) * Ss;
+                    // 笔宽取到超采样网格的整数倍: 非整数时一条边会摊到 3 格、另一条只摊 2 格,
+                    // 同一条路径的四条边立刻粗细不一 (这正是 100%/150% 缩放下的老问题)。
+                    float pw = Math.Max(1f, (float)Math.Round(PenPhysical * Ss));
+                    float left = Inset * Ss, top = Inset * Ss;
+                    float rw = w * Ss - Inset * 2 * Ss, rh = h * Ss - Inset * 2 * Ss;
+                    // 描边用"两条路径相减再填充"而不是 DrawPath: 实测 DrawPath 在横竖两个方向
+                    // 上的实际覆盖不同 (同一支 1.5px 的笔, 横线量 1.25px、竖线只量到 1.00px),
+                    // 四条边于是粗细不一。填充走的是扫描线覆盖, 内缘外缘都是精确的几何边界,
+                    // 两个方向用同一套算法。
+                    using (var b = new SolidBrush(BorderColor))
+                    {
+                        if (rw > pw * 2 && rh > pw * 2)
+                        {
+                            using (var ring = new GraphicsPath(FillMode.Alternate))
+                            {
+                                using (var outer = UiDraw.RoundRect(
+                                    new RectangleF(left, top, rw, rh), radius))
+                                using (var inner = UiDraw.RoundRect(
+                                    new RectangleF(left + pw, top + pw, rw - pw * 2, rh - pw * 2),
+                                    radius - pw))
+                                {
+                                    ring.AddPath(outer, false);
+                                    ring.AddPath(inner, false);
+                                }
+                                big.FillPath(b, ring);
+                            }
+                        }
+                        else
+                        {
+                            // 弹层窄到放不下两条边时退化成实心块 (正常尺寸走不到这里)
+                            using (var solid = UiDraw.RoundRect(
+                                new RectangleF(left, top, rw, rh), radius))
+                                big.FillPath(b, solid);
+                        }
+                    }
+
+                    // 缩图不用 GDI+ 的 DrawImage: 双三次在横竖两个方向上的滤波不对称,
+                    // 实测同一根线横着量 1.26px、竖着量 1.00px —— 四边粗细立刻不齐。
+                    // 自己按 4×4 做盒式平均, 四个方向用的是同一套权重, 像素覆盖严格守恒。
+                    using (var small = Downsample(bmp, w, h))
+                    {
+                        // 1:1 贴图, 不做任何重采样。改用 DrawImage(rect) 时 GDI+ 会按插值模式
+                        // 重采样一遍, 边缘那一列被"取邻居"取掉, 左右两条边凭空少 1 像素 ——
+                        // 表现为横向只有纵向一半粗。DrawImageUnscaled 不经过取样器。
+                        // SourceCopy: 连 alpha 一起写成不透明。分层窗口里用默认的 SourceOver 画,
+                        // 目标表面的 alpha 抬不满, 边缘合成后会发灰。
+                        CompositingMode old = g.CompositingMode;
+                        g.CompositingMode = CompositingMode.SourceCopy;
+                        g.DrawImageUnscaled(small, 0, 0);
+                        g.CompositingMode = old;
+                    }
+                }
             }
 
-            static void DrawArc(Graphics g, Pen pen, float x, float y, float d, float start)
+            /// <summary>
+            /// 把 <see cref="Ss"/> 倍图按 4×4 盒式平均缩回 1 倍。
+            /// <para>这是"抗锯齿"的定义式实现: 一个输出像素的灰度 = 它覆盖的 16 个采样点的平均,
+            /// 所以线条的视觉厚度严格等于它的几何宽度, 任何角度都一样 —— 直边 1.5px, 圆角 45° 也
+            /// 是 1.5px。用 GDI+ 缩放拿不到这个保证 (它对横竖方向的滤波不同)。</para>
+            /// </summary>
+            static Bitmap Downsample(Bitmap big, int w, int h)
             {
-                using (var p = new GraphicsPath())
+                const System.Drawing.Imaging.PixelFormat Fmt = System.Drawing.Imaging.PixelFormat.Format24bppRgb;
+                var small = new Bitmap(w, h, Fmt);
+                System.Drawing.Imaging.BitmapData sd = null, dd = null;
+                try
                 {
-                    p.AddArc(x, y, d, d, start, 90f);
-                    g.DrawPath(pen, p);
+                    sd = big.LockBits(new Rectangle(0, 0, big.Width, big.Height),
+                        System.Drawing.Imaging.ImageLockMode.ReadOnly, Fmt);
+                    dd = small.LockBits(new Rectangle(0, 0, w, h),
+                        System.Drawing.Imaging.ImageLockMode.WriteOnly, Fmt);
+                    var src = new byte[sd.Stride * sd.Height];
+                    var dst = new byte[dd.Stride * h];
+                    System.Runtime.InteropServices.Marshal.Copy(sd.Scan0, src, 0, src.Length);
+
+                    int n = Ss * Ss;
+                    for (int y = 0; y < h; y++)
+                    for (int x = 0; x < w; x++)
+                    {
+                        int b = 0, g2 = 0, r = 0;
+                        for (int j = 0; j < Ss; j++)
+                        {
+                            int row = (y * Ss + j) * sd.Stride + x * Ss * 3;
+                            for (int i = 0; i < Ss; i++, row += 3)
+                            {
+                                b += src[row]; g2 += src[row + 1]; r += src[row + 2];
+                            }
+                        }
+                        int o = y * dd.Stride + x * 3;
+                        dst[o] = (byte)(b / n); dst[o + 1] = (byte)(g2 / n); dst[o + 2] = (byte)(r / n);
+                    }
+                    System.Runtime.InteropServices.Marshal.Copy(dst, 0, dd.Scan0, dst.Length);
                 }
+                finally
+                {
+                    if (sd != null) big.UnlockBits(sd);
+                    if (dd != null) small.UnlockBits(dd);
+                }
+                return small;
             }
+
+            protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { }
         }
     }
 
