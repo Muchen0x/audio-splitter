@@ -1122,6 +1122,26 @@ namespace StereoSplitter
             }
 
             protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { }
+
+            /// <summary>
+            /// 菜单项悬停垫 (用户要求: 子菜单的悬停效果要与"更多"弹层的菜单行一样)。
+            /// <para><b>为什么自己画</b>: 基类走 VisualStyles 的高亮是系统蓝 (#0078D7 描边 +
+            /// #B5D7F3 填充), 与全局悬停语言 (浅灰 242,243,245) 不符。这里与 MenuRow.HoverBg /
+            /// 下拉列表 RowHover 同一支浅灰, 整行圆角垫, 半径同 MenuRow 的 6×(行高/34) 比例。
+            /// <b>坐标是项内局部系</b>: 项渲染时 Graphics 已平移到项左上角, 用 Bounds.Y 会
+            /// 画到下一行去 (实测画空); 菜单行颜色不变 (深字配浅灰垫, 不走系统的高亮反白)。</para>
+            /// </summary>
+            protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+            {
+                ToolStripItem it = e.Item;
+                if (it == null || !it.Selected) return;
+                float pad = Dpi.S(2);                       // 垫四边离弹层描边留 2px, 不贴边
+                float radius = Math.Min(6f * it.Height / 34f, (it.Height - pad * 2) / 2f);
+                using (var path = UiDraw.RoundRect(
+                    new RectangleF(pad, pad, it.Width - pad * 2, it.Height - pad * 2), radius))
+                using (var brush = new SolidBrush(RoundedCombo.RowHover))
+                    e.Graphics.FillPath(brush, path);
+            }
         }
     }
 

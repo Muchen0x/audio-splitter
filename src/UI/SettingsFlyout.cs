@@ -424,6 +424,15 @@ namespace StereoSplitter
             }
             // 宽度交给 AutoSize (有图标栏时 ToolStrip 自己会留), 只保证不小于最小宽
             Size = new Size(Math.Max(PreferredSize.Width, Dpi.S(160)), PreferredSize.Height);
+
+            // 项拉通到弹层全宽: 否则每条只占自己的内容宽 (150/187/194/…), 悬停垫裹不到
+            // 整行, 与"更多"弹层的整行菜单行观感不一致 (用户要求两处悬停效果一样)
+            foreach (ToolStripItem it in Items)
+            {
+                int h = it.Height;
+                it.AutoSize = false;
+                it.Size = new Size(Size.Width, h);
+            }
         }
 
         /// <summary>勾选标记图标: 18×18 白底上画一支蓝对勾 (与启动钮/开关同一支蓝)。</summary>
