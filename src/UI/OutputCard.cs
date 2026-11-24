@@ -63,7 +63,7 @@ namespace StereoSplitter
         // 以下尺寸按 96 DPI 的设计值给出, 实际值由 ScaleForDpi 按系统缩放乘一次 (125% → ×1.25)。
         // 做成静态字段而非常量: 卡片宽度参与列数计算, 放大后若仍按设计值算, 卡片会比可视区宽
         // 或排成错误的列数; 常量没法在运行时改。
-        public static int CardHeight { get; private set; } = 58;   // 单声道卡片高度
+        public static int CardHeight { get; private set; } = 65;   // 单声道卡片高度 = 8+26+3+20+8
         public static int CardWidth { get; private set; } = 500;
         public static int RowHeight { get; private set; } = 24;    // 多声道每行高度 (行内下拉 22 + 2 行距)
 
@@ -73,17 +73,47 @@ namespace StereoSplitter
         /// <summary>按 DPI 缩放卡片尺寸 (由 <see cref="Dpi.Init"/> 调一次)。100% 时保持原值。</summary>
         internal static void ScaleForDpi(float f)
         {
-            CardHeight = (int)Math.Round(58 * f);
-            RowTop = (int)Math.Round(60 * f);
+            // 高度按**同一批已经取整的零件**加出来, 而不是拿设计值再乘一次:
+            // 音量行里的滑条/百分比是 20 物理像素的字面量 (不随 DPI 放大), 拿 20*f 去算卡高,
+            // 底部就会凭空多出 5px 的空白 —— 四周留白立刻不等。这里由 Dpi.S 逐件取整再相加,
+            // 与 LayoutControls 摆出来的位置逐像素一致 (Dpi.Init 在调本方法前已定好 factor)。
+            CardHeight = CardPad + RowControlHeight + RowGapY + VolumeRowHeight + CardPad;
+            RowTop = CardPad + RowControlHeight + RowGapY + VolumeRowHeight + RowGapY;
             CardWidth = (int)Math.Round(500 * f);
             RowHeight = (int)Math.Round(24 * f);
             CardGap = (int)Math.Round(4 * f);
         }
 
+        /// <summary>音量行的高度: 滑条与百分比标签都是 20 物理像素 (字面量, 见 LayoutControls 的说明)。</summary>
+        internal const int VolumeRowHeight = 20;
+
         /// <summary>卡片边框色。下拉框本体 / 弹层 / 延迟壳也用这一个, 全界面同一套框。</summary>
         internal static readonly Color BorderColor = Color.FromArgb(203, 208, 216);
         static int CornerRadius { get { return Dpi.S(6); } }
-        static int RowTop = 60;                 // 多声道首行 y (按 DPI 缩放在 ScaleForDpi 里)
+        static int RowTop = 60;                 // 多声道首行 y = 8+26+3+20+3 (由 ScaleForDpi 重算)
+
+        /// <summary>
+        /// 卡片四周的留白 (设计像素)。上下左右**同一个值** —— 用户要求"四周留白统一为相同宽度"。
+        /// <para>此前各边不同: 左 8 / 上 5 / 下 4 / 右 6(靠 × 的内缩)。卡片一多、竖着排下来,
+        /// 上下偏紧、左右偏宽的那点差别会连成一条不齐的"边", 很显眼。</para>
+        /// <para>取 8 而不是取中间值: 左侧 8 已经被设备下拉、喇叭图标、行内下拉共用,
+        /// 行内各列之间的间隙也是 8, 保持这个刻度最省事, 也不会让内容整体左移。</para>
+        /// </summary>
+        internal static int CardPad { get { return Dpi.S(8); } }
+
+        /// <summary>第一行与第二行之间、以及音量行与多声道首行之间的竖向间距 (设计像素)。</summary>
+        internal static int RowGapY { get { return Dpi.S(3); } }
+
+        /// <summary>
+        /// 卡片在给定多声道行数下的总高度。单/多声道共用一套：多声道行是接在"音量行"下方的，
+        /// 所以底边留白同样等于 <see cref="CardPad"/>。
+        /// <para>MainForm 推卡片高度时也调这里 (卡片还没建出来的时候要能算出高度), 两处公式必须同源。</para>
+        /// </summary>
+        public static int HeightFor(int rows)
+        {
+            if (rows <= 0) return CardHeight;
+            return RowTop + (rows - 1) * RowHeight + RowComboHeight + CardPad;
+        }
 
         /// <summary>
         /// 卡片第一行控件高度 (设计像素): 设备下拉 / 声道下拉 / 延迟壳三者同高、同顶同底。
@@ -284,7 +314,7 @@ namespace StereoSplitter
             while (rows.Count < want) AddRow(rows.Count);
             foreach (var r in rows) FillSlotChannels(r, channels);
 
-            int h = CardHeight + (rows.Count > 0 ? 4 + rows.Count * RowHeight : 0);
+            int h = HeightFor(rows.Count);
             if (Height != h)
             {
                 // FlowLayoutPanel 按控件高度排列, 改高度后必须重排
@@ -398,29 +428,32 @@ namespace StereoSplitter
         void LayoutControls()
         {
             int w = Width;
-            // 第一行三个控件同高 (RowControlHeight): 设备下拉 / 声道下拉 / 延迟壳底边对齐,
-            // 顶端统一 5; 「×」20 高, 在 26 高的这一行里垂直居中。
-            int row1 = Dpi.S(5);
+            int pad = CardPad;                  // 四周统一留白
+            // 第一行三个控件同高 (RowControlHeight): 设备下拉 / 声道下拉 / 延迟壳顶边都落在 pad 上,
+            // 高度相同所以底边也齐。
+            int row1 = pad;
             int ctrlH = RowControlHeight;
 
             // 第一行右起排: [×] ← [延迟圆角壳(字样+数字框+箭头+ms 单位)] ← [声道], 设备下拉占满左侧。
-            btnRemove.Location = new Point(w - Dpi.S(6) - btnRemove.Width,
-                row1 + (ctrlH - btnRemove.Height) / 2);
+            // 「×」钉在卡片**最右上角**: 右缘 = 卡片右缘 - pad, 顶边 = pad (用户指定"水平靠右、垂直靠上")。
+            // 它 20 高、第一行 26 高, 顶对齐后比那一行的中线高 3px —— 是有意的, 靠上比居中更像"关闭"。
+            btnRemove.Location = new Point(w - pad - btnRemove.Width, pad);
             nudShell.Location = new Point(btnRemove.Left - Dpi.S(8) - nudShell.Width, row1);
             cmbChannel.Location = new Point(nudShell.Left - Dpi.S(8) - cmbChannel.Width, row1);
-            cmbDevice.Location = new Point(Dpi.S(8), row1);
+            cmbDevice.Location = new Point(pad, row1);
             cmbDevice.Width = Math.Max(Dpi.S(90), cmbChannel.Left - Dpi.S(14));
 
             // 第二行: 喇叭(静音开关) → 滑条(拉满可用宽度) → 百分比。
             // 喇叭 22 高放在 row2-1 处, 中心正好落在滑条轨道线上 (滑条 20 高, 轨道画在垂直中心);
-            // 左缘 8 与第一行的设备下拉同列。
-            // 单声道卡片高 58 = 上边距5 + 第一行26 + 间隔3 + 第二行20 + 下边距4, 下方不再留空。
-            int row2 = Dpi.S(34);
-            btnMute.Location = new Point(Dpi.S(8), row2 - Dpi.S(1));
+            // 左缘与第一行的设备下拉同列。
+            // 单声道卡片高 = 上 pad + 第一行 + 间距 + 音量行 + 下 pad (与 ScaleForDpi 同一套零件)。
+            int row2 = row1 + ctrlH + RowGapY;
+            btnMute.Location = new Point(pad, row2 - Dpi.S(1));
             int volX = btnMute.Right + Dpi.S(6);
             volTrack.Location = new Point(volX, row2);
-            // 右起只剩 [百分比][8]: 静音勾选框已并入行首的喇叭图标, 空出的宽度全给滑条
-            volTrack.Width = Math.Max(Dpi.S(120), w - volX - (Dpi.S(8) + lblVol.Width + Dpi.S(10)));
+            // 右侧只留 pad: 百分比右缘与第一行的「×」右缘落在同一条竖线上。
+            // 公式里那个 8 是滑条与百分比之间的间隙 —— 百分比不是紧贴滑条, 少减它会直接顶出卡片右缘。
+            volTrack.Width = Math.Max(Dpi.S(120), w - volX - (Dpi.S(8) + lblVol.Width + pad));
             lblVol.Location = new Point(volTrack.Right + Dpi.S(8), row2);
 
             // 多声道行: [声道▾] [滑条] n%
@@ -438,7 +471,7 @@ namespace StereoSplitter
                 r.Cmb.Location = new Point(Dpi.S(8), y);
                 int rowVolX = r.Cmb.Right + Dpi.S(8);
                 r.Vol.Location = new Point(rowVolX, y + mid);
-                r.Vol.Width = Math.Max(Dpi.S(100), w - rowVolX - (Dpi.S(8) + r.Lbl.Width + Dpi.S(10)));
+                r.Vol.Width = Math.Max(Dpi.S(100), w - rowVolX - (Dpi.S(8) + r.Lbl.Width + pad));
                 r.Lbl.Location = new Point(r.Vol.Right + Dpi.S(8), y + mid);
             }
         }

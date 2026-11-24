@@ -608,8 +608,7 @@ namespace StereoSplitter
         {
             if (cards != null && i < cards.Count) return cards[i].Height;
             if (models != null && i < models.Count)
-                return OutputCardControl.CardHeight +
-                    (models[i].Multi ? 4 + Math.Max(1, models[i].Slots.Count) * OutputCardControl.RowHeight : 0);
+                return OutputCardControl.HeightFor(models[i].Multi ? Math.Max(1, models[i].Slots.Count) : 0);
             return OutputCardControl.CardHeight;
         }
 
