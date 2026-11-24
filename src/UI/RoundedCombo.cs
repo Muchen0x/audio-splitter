@@ -25,9 +25,11 @@ namespace StereoSplitter
     /// </summary>
     class RoundedCombo : Control
     {
-        // ---------- 配色: 与 OutputCard / SoftCard 同一套边框色, 强调色与 VolumeSlider 同值 ----------
-        static readonly Color BorderNormal = Color.FromArgb(203, 208, 216);
-        static readonly Color BorderHot = Color.FromArgb(168, 176, 188);
+        // ---------- 配色 ----------
+        /// <summary>常态边框: 黑色细边 (用户指定)。黑色已是最深, 悬停/展开的反馈只能靠笔宽。</summary>
+        static readonly Color BorderNormal = Color.Black;
+        /// <summary>禁用态边框: 淡灰 —— 禁用控件用黑边会看着仍可点。</summary>
+        static readonly Color BorderDisabled = Color.FromArgb(203, 208, 216);
         static readonly Color BorderActive = Color.FromArgb(0, 120, 215);
         static readonly Color TextNormal = Color.FromArgb(32, 32, 32);
         static readonly Color DisabledBack = Color.FromArgb(244, 245, 247);
@@ -220,21 +222,30 @@ namespace StereoSplitter
                     g.FillRectangle(b, ClientRectangle);
             }
 
-            // 展开/hover 用"加深的灰", 蓝色只留给键盘焦点。
-            // 鼠标点一下就变蓝、收起后蓝还挂在那儿, 看起来就是"焦点框残留在框上" (见 keyboardFocusCues)。
-            Color border = !Enabled ? BorderNormal
+            // 边框: 黑色细边 (用户指定)。展开/hover 用"同一黑色加粗到 1.5px"做反馈 ——
+            // 黑色已经是最深, 没法像浅灰那样靠加深区分; 蓝色只留给键盘焦点
+            // (鼠标点一下就变蓝、收起后蓝还挂在框上, 看起来就是"焦点框残留",
+            //  见 keyboardFocusCues 的说明)。
+            Color border = !Enabled ? BorderDisabled
                          : (Focused && keyboardFocusCues) ? BorderActive
-                         : (open || hot) ? BorderHot
                          : BorderNormal;
+            bool strong = Enabled && (open || hot);
 
+            // 填充始终铺满: 若边框态用内缩矩形, hover 时四周会露出 1px 父容器底色
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
             using (var path = UiDraw.RoundRect(rect, CornerRadius))
             {
                 using (var fill = new SolidBrush(Enabled ? Color.White : DisabledBack))
                     g.FillPath(fill, path);
-                using (var pen = new Pen(border))
-                    g.DrawPath(pen, path);
             }
+
+            // 加粗时路径内缩 1px, 否则 1.5px 笔的一半落在客户区外被裁掉, 反而看不出变粗
+            var borderRect = strong && Width > 4 && Height > 4
+                ? new Rectangle(1, 1, Width - 3, Height - 3)
+                : rect;
+            using (var path = UiDraw.RoundRect(borderRect, CornerRadius))
+            using (var pen = new Pen(border, strong ? 1.5f : 1f))
+                g.DrawPath(pen, path);
 
             int tw = Math.Max(0, Width - TextPadX - ArrowZone);
             string text = Text;
