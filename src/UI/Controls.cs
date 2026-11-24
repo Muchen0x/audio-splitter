@@ -410,8 +410,9 @@ namespace StereoSplitter
             base.OnEnabledChanged(e);
         }
 
-        /// <summary>按比例混色（不做 alpha 混合，免得底色透出来）。t=0 返回 a，t=1 返回 b。</summary>
-        static Color Blend(Color a, Color b, float t)
+        /// <summary>按比例混色（不做 alpha 混合，免得底色透出来）。t=0 返回 a，t=1 返回 b。
+        /// <para>internal: <see cref="StartButton"/> 的动效渐变与墨色对齐要用同一套混色算术。</para></summary>
+        internal static Color Blend(Color a, Color b, float t)
         {
             if (t <= 0f) return a;
             if (t >= 1f) return b;

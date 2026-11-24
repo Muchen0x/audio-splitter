@@ -60,7 +60,7 @@ namespace StereoSplitter
         Label lblVolMaster, lblVolGain;
         // 顶部固定行需要用到的控件 (自适应重排时要改它们的坐标/宽度)
         Label lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
-        RoundButton btnStart;        // 自绘圆角 + 四态配色 (默认 / 启动中 / 运行中 / 正在停止)
+        StartButton btnStart;        // 自绘圆角 + 四态配色 + 动效 (换色渐变 / 过渡态转环 / 运行中呼吸点)
         GearButton btnRefresh;       // 刷新设备 (圆环箭头图标): 运行中置灰, 链路级
         ComboButtonShell captureShell;  // 捕获设备下拉 + 刷新按钮合成的一组 (一个圆角壳)
         RoundButton btnAddOutput;    // 「添加设备」文字按钮; 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
@@ -426,36 +426,35 @@ namespace StereoSplitter
             volMaster = new VolumeSlider { Location = new Point(78, 86), Width = 300, Minimum = 0, Maximum = 100, Value = 100, SmallChange = 5, LargeChange = 5 };
             lblVolMaster = new Label { Text = "100%", AutoSize = false, Width = 46, Height = 20, TextAlign = ContentAlignment.MiddleLeft };
 
-            // 主操作行 + 规格行。
+            // 主操作 + 规格行。
             // 「规格:」标签已删 —— 下拉里显示的就是规格, 再挂一个"规格:"是重复标注; 空出来的
             // 横向空间让给右对齐的下拉。
-            // 行序 (上面还有捕获行 y10~38、增益 y52、主音量 y86 三行, 位置由各自的块硬编码):
-            //   y=114: [开始分流]   独占一行, 水平居中 (LayoutTopRows 按面板宽度算)
-            //   y=153: [规格下拉]   ……   [声道标注]   ……   [＋]
+            // 行序 (上面还有捕获行 y6~32、增益 y52、主音量 y86 三行, 位置由各自的块硬编码):
+            //   y=6:   [捕获下拉|刷新] …… [开始分流]   同一行 (用户指定):
+            //          主按钮贴右缘, 壳吃掉它左边的剩余宽度; 两者同高同顶边, 对齐由 LayoutTopRows 定
+            //   y=114: [规格下拉]   ……   [声道标注]   ……   [＋]
             //          三者同一行: 规格贴左 (当行首读), 加号贴右, 标注在两者之间居中
             //          (标注居中范围由 CenterSpecBadges 按两侧控件的位置收窄)
-            //   y=187: 卡片区
+            //   y=148: 卡片区 (比主按钮独占一行时高出一截 —— 那一行让给了捕获行)
             //
             // 规格下拉与加号同为 76×30 圆角 6。宽度 76 不是随手取的: 下拉本体文字区 =
             // 宽 - 8 (左内缩) - 22 (箭头区), 而「立体声」在 9pt 下要 44px —— 60 宽只剩 30px,
             // 三个字会全被省略成"立…"。44 + 8 + 22 = 74 是下限, 取 76 留两像素。
             // 改小之前先跑 `uidump`, 看 COMBO[...] 行里的 selW / textRoom。
-            // 主按钮走描边样式: 白底 + 彩色边框 + 彩色文字。四态的区分只靠这一个颜色
-            // (见 UpdateStartButton), 所以换状态时改 BorderColor/TextColor 就够。
-            btnStart = new RoundButton
+            // 主按钮走图标样式 (用户指定): 与刷新齿轮同一套无边框图标交互, 图形随状态切换
+            // 并带动效 (见 StartButton) —— ▶ 可以开始 / 转环进行中 / ■+呼吸光环 运行中。
+            // 语义靠悬停提示与日志承载; 高度 26 = RowControlHeight 设计值,
+            // 运行期 LayoutTopRows 会用捕获壳的实际高度对齐。
+            btnStart = new StartButton
             {
                 Text = "开始分流",
-                Location = new Point(15, 114),
-                Width = 130,
-                Height = 35,
-                Outline = true,
-                FillColor = Color.White,
-                BorderColor = Color.FromArgb(0x00, 0x78, 0xD7),
-                TextColor = Color.FromArgb(0x00, 0x78, 0xD7)
+                Location = new Point(505, 6),
+                Size = new Size(26, 26),
+                TabStop = true
             };
             cmbSpec = new RoundedCombo
             {
-                Location = new Point(15, 153),
+                Location = new Point(15, 114),
                 Width = 76,
                 Height = 30,
                 ItemHeight = 24,
@@ -469,7 +468,7 @@ namespace StereoSplitter
             btnAddOutput = new RoundButton
             {
                 Text = "添加设备",
-                Location = new Point(482, 153),
+                Location = new Point(482, 114),
                 Size = new Size(cmbSpec.Width, cmbSpec.Height),
                 Outline = true,
                 FillColor = Color.White,
@@ -482,7 +481,7 @@ namespace StereoSplitter
             //  原来给 20 就比 9pt 的字框(17) 加 Margin.Top(5) 小, 文字底部被裁一条)
             flwSpecChannels = new FlowLayoutPanel
             {
-                Location = new Point(166, 155),
+                Location = new Point(166, 116),
                 Size = new Size(310, 26),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
@@ -495,7 +494,7 @@ namespace StereoSplitter
             // (见 ComputeCardGrid), 所以窗口变宽是"多一列", 而不是把单张卡片拉成一根长条。
             cardHost = new BufferedFlowPanel
             {
-                Location = new Point(15, 187),
+                Location = new Point(15, 148),
                 Size = new Size(559, 166),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = true,
@@ -591,6 +590,7 @@ namespace StereoSplitter
             tipTop = new ToolTip();
             tipTop.SetToolTip(cmbDefault, "把哪台虚拟声卡的输出抓过来。\n运行中不可改（要重开捕获端点），需先停止分流。");
             tipTop.SetToolTip(btnRefresh, "重新枚举输出设备（插拔 USB/DAC 后用）。\n运行中不可刷新（会改动卡片与链路），需先停止分流。");
+            tipTop.SetToolTip(btnStart, "开始分流（运行中点击 = 停止）。\n图形即状态: ▶ 可以开始 · 转环 进行中 · ■ 呼吸 运行中。");
             tipTop.SetToolTip(cmbSpec, "可用的逻辑声道清单（单声道…5.1）。\n运行中不可改（会改变矩阵与每路声道数），需先停止分流。");
             tipTop.SetToolTip(btnAddOutput, "新增一张输出卡片（一台设备）：先选设备和负责声道，确认后添加。\n运行中不可加卡（会改变链路），需先停止分流。");
             tipTop.SetToolTip(icoGain, "总增益（100% = 原样，>100% 放大）。\n作用在采样层，与「主音量」是两条独立的滑条。\n运行中可调。");
@@ -1218,16 +1218,16 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 「开始分流」按钮的文案与配色。四个状态各一套，靠描边色直接读出链路在干什么：
+        /// 「开始分流」图标按钮的图形与配色。四个状态各一套 (图形与文字色一起读出链路在干什么)：
         /// <list type="bullet">
-        /// <item>默认 (Ready/Stopped/Failed): 蓝 +「开始分流」—— 可以开始</item>
-        /// <item>启动中 (Starting): 蓝灰 +「启动中…」—— 正在建链路，不可点</item>
-        /// <item>运行中 (Running): 红 +「停止分流」—— 点击即停止</item>
-        /// <item>正在停止 (Stopping): 浅红 +「正在停止…」—— 正在拆链路，不可点</item>
+        /// <item>默认 (Ready/Stopped/Failed): 蓝 ▶ —— 可以开始</item>
+        /// <item>启动中 (Starting): 蓝灰转环 —— 正在建链路，不可点</item>
+        /// <item>运行中 (Running): 红 ■ + 呼吸光环 —— 点击即停止</item>
+        /// <item>正在停止 (Stopping): 浅红转环 —— 正在拆链路，不可点</item>
         /// </list>
-        /// <para>按钮是描边样式 (白底 + 彩色边框 + 彩色字), 所以状态只用**一个**颜色表达:
-        /// 边框与文字同色, 改状态就改这一个值。过渡态被 <see cref="ApplyUiLock"/> 置为不可点,
-        /// <see cref="RoundButton"/> 会自动把边与字一起混白 30% —— 那正是"变淡 = 不可点"的效果。</para>
+        /// <para>Text 仍随状态更新: 控件不再画文字, 但屏幕阅读器 / 探针 / 无障碍语义靠它。
+        /// 颜色过渡由 <see cref="StartButton.BeginTint"/> 做 220ms 渐变; 过渡态被
+        /// <see cref="ApplyUiLock"/> 置为不可点, 图标自动混白 30% —— "变淡 = 不可点"。</para>
         /// </summary>
         void UpdateStartButton(AppState s)
         {
@@ -1237,32 +1237,34 @@ namespace StereoSplitter
                     btnStart.Text = "启动中…";
                     // 比默认蓝更深更灰: 过渡态会被自动淡化 30%, 基准色太浅的话淡完就快看不见了
                     SetStartTint(Color.FromArgb(0x47, 0x68, 0x8C));
+                    btnStart.Mode = StartButtonMode.Working;
                     break;
                 case AppState.Stopping:
                     btnStart.Text = "正在停止…";
                     // 比运行中的红浅一档: 运行中全饱和 + 可点, 停止中淡化 + 不可点, 两者叠加后
-                    // 明度差已经够大, 不必再靠"底/字反转"来区分
+                    // 明度差已经够大, 不必再换图形语言
                     SetStartTint(Color.FromArgb(0xB4, 0x50, 0x4A));
+                    btnStart.Mode = StartButtonMode.Working;
                     break;
                 case AppState.Running:
                     btnStart.Text = "停止分流";
                     SetStartTint(Color.FromArgb(0xC4, 0x2B, 0x1C));
+                    btnStart.Mode = StartButtonMode.Pulse;
                     break;
                 default:
                     btnStart.Text = "开始分流";
                     SetStartTint(Color.FromArgb(0x00, 0x78, 0xD7));
+                    btnStart.Mode = StartButtonMode.Idle;
                     break;
             }
             btnStart.Invalidate();
         }
 
-        /// <summary>描边按钮的唯一着色入口: 边框与文字同色, 底色恒为白。</summary>
+        /// <summary>图标按钮的唯一着色入口: 图标色与悬停垫色同源 (<see cref="StartButton"/>),
+        /// 由 BeginTint 渐变过去 (220ms) —— 状态切换的反馈多一层"颜色在流动"的动效。</summary>
         void SetStartTint(Color c)
         {
-            btnStart.BorderColor = c;
-            btnStart.TextColor = c;
-            btnStart.FillColor = Color.White;
-            btnStart.FillDisabled = Color.Empty;   // 描边样式没有"禁用底色", 淡化交给 Outline 逻辑
+            btnStart.BeginTint(c);
         }
 
         /// <summary>

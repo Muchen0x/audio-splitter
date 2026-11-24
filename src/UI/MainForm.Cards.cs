@@ -484,14 +484,16 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 顶部四行 (捕获 / 开始分流 / 规格 / 声道标注) 的自适应布局。
+        /// 顶部三行 (捕获+开始分流 / 规格 / 声道标注) 与卡片区宽度的自适应布局。
         /// <para>原本是按 600 宽硬编码的固定坐标 (刷新设备右缘 489、添加输出 574),
         /// 窗口缩到 500 宽 (客户区约 484) 时右侧控件会被挤出客户区截断。
         /// 这里改为「右侧控件贴面板右缘、中间下拉吃掉剩余宽度」, 任意宽度都不越界。</para>
         /// <para>缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准 已迁入设置页,
         /// 不再参与这里的布局。</para>
-        /// <para>设置齿轮也已搬去标题栏 (见 MainForm.LayoutCaption) —— 第一行不再有它,
-        /// 捕获壳直接铺到右缘。</para>
+        /// <para>设置齿轮也已搬去标题栏 (见 MainForm.LayoutCaption) —— 第一行不再有它。</para>
+        /// <para>「开始分流」搬进第一行 (用户指定): 贴右缘, 与捕获壳同高同顶边 ——
+        /// "选好设备 → 点开始"是同一个动作链, 放一行读起来顺。壳吃掉按钮左边的剩余宽度,
+        /// 窄窗口时保底 160 设计像素。</para>
         /// </summary>
         void LayoutTopRows()
         {
@@ -508,25 +510,23 @@ namespace StereoSplitter
             int leftEdge = Dpi.S(15);               // 与其它行左缘一致
             int gap = Dpi.S(8);
 
-            // —— 第 1 行: [捕获下拉 | 刷新] 一个圆角壳, 一直铺到右缘 ——
-            // 「捕获:」标签与右端的设置齿轮都已不在这一行 (前者删了, 后者搬去标题栏),
-            // 壳独占整行宽度, 与下方「立体声」行左缘对齐。
+            // —— 第 1 行: [捕获下拉 | 刷新] 圆角壳 + 右缘的 [开始分流], 同一行同高 ——
+            // 主按钮先定位 (它是壳宽度的基准): 贴右缘、顶边与壳一致、高度取 RowControlHeight
+            // (与卡片行控件同一支高度, 构造期那个 26 设计值已被 DPI 放大, 这里用运行期实值对齐)。
+            btnStart.Top = Dpi.S(6);
+            btnStart.Height = OutputCardControl.RowControlHeight;
+            btnStart.Left = Math.Max(leftEdge, panelW - rightEdge - btnStart.Width);
             captureShell.Left = leftEdge;
-            captureShell.Height = OutputCardControl.RowControlHeight;
             captureShell.Top = Dpi.S(6);
-            captureShell.Width = Math.Max(Dpi.S(160), panelW - rightEdge - captureShell.Left);
+            captureShell.Height = OutputCardControl.RowControlHeight;
+            captureShell.Width = Math.Max(Dpi.S(160), btnStart.Left - gap - captureShell.Left);
 
-            // —— 第 2 行: [开始分流] 独占一行, 水平居中 ——
-            // 它是这一屏唯一的主操作, 居中比贴左更稳: 窗口拉宽时不会飘到角落里去。
-            // 宽度固定 130, 窄窗口也放得下 (panelW 最小约 340 → 居中后两侧各留 105)。
-            btnStart.Left = Math.Max(leftEdge, (panelW - btnStart.Width) / 2);
-
-            // —— 第 3 行: [规格下拉] 贴左, [添加设备] 贴右 ——
+            // —— 第 2 行: [规格下拉] 贴左, [添加设备] 贴右 ——
             // 规格标签已删, 下拉自己说明是什么: 它当行首读起来才顺, 空出来的右端留给「添加设备」。
             cmbSpec.Left = leftEdge;
             btnAddOutput.Left = Math.Max(cmbSpec.Right + gap, panelW - rightEdge - btnAddOutput.Width);
 
-            // —— 第 4 行 (声道名 + 角标): 单独一行水平居中 ——
+            // —— 第 3 行 (声道名 + 角标): 单独一行水平居中 ——
             CenterSpecBadges();
 
             // —— 卡片区: 宽高都跟面板走 ——

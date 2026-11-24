@@ -549,7 +549,7 @@ namespace StereoSplitter
                 for (int i = 0; i < 15; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
 
                 MethodInfo setState = typeof(MainForm).GetMethod("SetAppState", BindingFlags.Instance | BindingFlags.NonPublic);
-                RoundButton btn = Field(sf2, "btnStart") as RoundButton;
+                StartButton btn = Field(sf2, "btnStart") as StartButton;
                 if (setState == null || btn == null) { Console.Out.WriteLine("STATES unavailable"); return; }
 
                 string path = args.Length >= 2 ? args[1] : "states.png";
@@ -567,10 +567,12 @@ namespace StereoSplitter
                     for (int i = 0; i < states.Length; i++)
                     {
                         setState.Invoke(sf2, new object[] { states[i] });
-                        Application.DoEvents();
+                        // 换色渐变要 220ms 才落位: 等它走完再抓, 断言的是终态而不是半路色
+                        for (int k = 0; k < 20; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
                         Console.Out.WriteLine("STATE " + AppStateMachine.Text(states[i])
                             + " text='" + btn.Text + "' enabled=" + btn.Enabled
-                            + " fill=" + btn.FillColor.Name + " fillDisabled=" + btn.FillDisabled.Name);
+                            + " mode=" + btn.Mode
+                            + " tint=" + btn.Tint.R + "," + btn.Tint.G + "," + btn.Tint.B);
                         using (var one = new Bitmap(bw, bh))
                         {
                             // 先铺白: RoundButton 用 Region 裁了圆角, 四个角不在绘制区内,
@@ -580,6 +582,22 @@ namespace StereoSplitter
                             g.DrawImage(one, padX + i * (bw + gap), padX);
                         }
                     }
+
+                    // 动效在动 (不是静止贴图) 的证据: 同一状态隔 350ms 抓两帧, 图形区必须不同
+                    setState.Invoke(sf2, new object[] { AppState.Starting });
+                    for (int k = 0; k < 20; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
+                    byte[, ,] f1 = ButtonGlyphZone(btn);
+                    for (int k = 0; k < 24; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
+                    byte[, ,] f2 = ButtonGlyphZone(btn);
+                    Console.Out.WriteLine("ANIM working diff=" + ZoneDiff(f1, f2) + " (0=静止贴图, >0=转环在转)");
+
+                    setState.Invoke(sf2, new object[] { AppState.Running });
+                    for (int k = 0; k < 20; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
+                    byte[, ,] f3 = ButtonGlyphZone(btn);
+                    for (int k = 0; k < 24; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
+                    byte[, ,] f4 = ButtonGlyphZone(btn);
+                    Console.Out.WriteLine("ANIM pulse   diff=" + ZoneDiff(f3, f4) + " (0=静止贴图, >0=呼吸点在动)");
+
                     bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
                 }
                 Console.Out.WriteLine("STATES -> " + path);
@@ -2431,6 +2449,34 @@ namespace StereoSplitter
                 t = t.BaseType;
             }
             return null;
+        }
+
+        /// <summary>抓按钮左侧图形区 (动效画的那一带) 的灰度快照, 供两帧差分。</summary>
+        static byte[, ,] ButtonGlyphZone(Control btn)
+        {
+            int w = btn.Width, h = btn.Height;
+            var zone = new byte[w, h, 3];
+            using (var bmp = new Bitmap(w, h))
+            {
+                btn.DrawToBitmap(bmp, new Rectangle(0, 0, w, h));
+                for (int y = 0; y < h; y++)
+                    for (int x = 0; x < Math.Min(w, 46); x++)
+                    {
+                        Color c = bmp.GetPixel(x, y);
+                        zone[x, y, 0] = c.R; zone[x, y, 1] = c.G; zone[x, y, 2] = c.B;
+                    }
+            }
+            return zone;
+        }
+
+        /// <summary>两帧灰度快照的平均差。静止贴图恒 0; 有动画的帧间必然 > 0。</summary>
+        static double ZoneDiff(byte[, ,] a, byte[, ,] b)
+        {
+            long sum = 0; int n = 0;
+            for (int x = 0; x < a.GetLength(0); x++)
+                for (int y = 0; y < a.GetLength(1); y++)
+                    for (int c = 0; c < 3; c++) { sum += Math.Abs(a[x, y, c] - b[x, y, c]); n++; }
+            return n == 0 ? 0 : (double)sum / n;
         }
         /// <summary>读 GearButton 的私有 spinAngle (度), 取整 —— 判"在转 / 已归位"用。</summary>
         static int SpinAngle(object btn)
