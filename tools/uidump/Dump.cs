@@ -748,16 +748,16 @@ namespace StereoSplitter
                     byte[, ,] f5 = ButtonGlyphZone(btn);
                     for (int k = 0; k < 24; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
                     byte[, ,] f6 = ButtonGlyphZone(btn);
-                    Console.Out.WriteLine("ANIM idle    diff=" + ZoneDiff(f5, f6) + " (0=静止贴图, >0=▶呼吸在动)");
+                    Console.Out.WriteLine("ANIM idle    diff=" + ZoneDiff(f5, f6) + " (0=静止贴图, >0=三角光环在呼吸)");
 
-                    // 刷新按钮的呼吸与 ▶ 同参数: 同样隔 360ms 必须在动
+                    // 刷新按钮无动效 (用户明确撤掉): 常态隔 360ms 必须是静止贴图 (点击转圈另有 spin 探针)
                     var refBtn = Field(sf2, "btnRefresh") as GearButton;
                     if (refBtn != null && refBtn.Enabled)
                     {
                         byte[, ,] r1 = ButtonGlyphZone(refBtn);
                         for (int k = 0; k < 24; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
                         byte[, ,] r2 = ButtonGlyphZone(refBtn);
-                        Console.Out.WriteLine("ANIM refresh diff=" + ZoneDiff(r1, r2) + " (0=静止贴图, >0=刷新呼吸在动)");
+                        Console.Out.WriteLine("ANIM refresh diff=" + ZoneDiff(r1, r2) + " (>0=意外在动, 应≈0)");
                     }
 
                     // 规格行实拍 (运行中): 状态字替换声道标注后的样子

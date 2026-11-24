@@ -375,12 +375,11 @@ namespace StereoSplitter
             // 「刷新设备」: 圆环箭头图标按钮 (用户指定图形), 无边框 —— 与开始按钮同一套。
             // 点一下重新枚举设备 (插拔 USB/DAC 后用); 点开下拉不再自动刷新 (用户要求撤掉)。
             // 点击后图标转满一圈 (StartSpin): 枚举是同步跑的, 没有这个反馈就像点了没反应。
-            // 呼吸动效与开始按钮同一套参数 (节奏/幅度), 见 GearButton.Breath。
+            // 刷新本身没有呼吸动效 (用户明确撤掉): 动是"这次点击生效了"的反馈, 静是常态。
             btnRefresh = new GearButton
             {
                 Glyph = ButtonGlyph.Refresh,
-                Size = new Size(30, 30),
-                Breath = true
+                Size = new Size(30, 30)
             };
             btnRefresh.Click += (s2, e2) => OnRefreshClick();
             // 「更多」入口: 原设置齿轮换成三条横线图标 (用户指定), 点开弹出下拉式弹层,
@@ -434,8 +433,8 @@ namespace StereoSplitter
             // 横向空间让给右对齐的下拉。
             // 行序 (上面还有捕获行 y6~32、增益 y52、主音量 y86 三行, 位置由各自的块硬编码):
             //   y=6:   [刷新] …… [捕获下拉] …… [开始分流]   同一行 (用户指定):
-            //          下拉水平居中, 刷新贴左 (30 设计像素, 与开始按钮同尺寸), 开始贴右;
-            //          三者间距对称, 位置由 LayoutTopRows 定
+            //          刷新贴左 (30 设计像素, 与开始按钮同尺寸), 开始贴右,
+            //          下拉吃掉两者之间的全部空地 (最宽且自适应), 两侧缝等宽
             //   y=114: [规格下拉]   ……   [声道标注]   ……   [＋]
             //          三者同一行: 规格贴左 (当行首读), 加号贴右, 标注在两者之间居中
             //          (标注居中范围由 CenterSpecBadges 按两侧控件的位置收窄)
@@ -600,7 +599,7 @@ namespace StereoSplitter
             tipTop = new ToolTip();
             tipTop.SetToolTip(cmbDefault, "把哪台虚拟声卡的输出抓过来。\n运行中不可改（要重开捕获端点），需先停止分流。");
             tipTop.SetToolTip(btnRefresh, "重新枚举输出设备（插拔 USB/DAC 后用）。\n运行中不可刷新（会改动卡片与链路），需先停止分流。");
-            tipTop.SetToolTip(btnStart, "开始分流（运行中点击 = 停止）。\n图形即状态: ▶ 可以开始 · 转环 进行中 · ■ 呼吸 运行中。");
+            tipTop.SetToolTip(btnStart, "开始分流（运行中点击 = 停止）。\n图形即状态: ▶+三角光环 可以开始 · 转环 进行中 · ■+光环呼吸 运行中。");
             tipTop.SetToolTip(cmbSpec, "可用的逻辑声道清单（单声道…5.1）。\n运行中不可改（会改变矩阵与每路声道数），需先停止分流。");
             tipTop.SetToolTip(btnAddOutput, "新增一张输出卡片（一台设备）：先选设备和负责声道，确认后添加。\n运行中不可加卡（会改变链路），需先停止分流。");
             tipTop.SetToolTip(icoGain, "总增益（100% = 原样，>100% 放大）。\n作用在采样层，与「主音量」是两条独立的滑条。\n运行中可调。");

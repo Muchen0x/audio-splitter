@@ -1400,52 +1400,6 @@ namespace StereoSplitter
         /// <summary>图标此刻是否在转。</summary>
         public bool IsSpinning { get { return spinTimer != null && spinTimer.Enabled; } }
 
-        // —— 呼吸动效: 与开始按钮的 ▶ 三角同一套参数 (StartButton.Breath*), 用户指定两颗
-        // 按钮统一呼吸、节奏幅度一致 —— 参数与波形都取自 StartButton, 共用全局钟严格同相。
-        // opt-in: GearButton 还服务齿轮/加号/× 等中性图标, 呼吸只给刷新按钮开。
-        bool breath;
-        System.Windows.Forms.Timer breathTimer;
-
-        /// <summary>图标是否随 1.4s 余弦波呼吸 (缩放 +9% 峰值、alpha -55 谷值)。转圈的那一圈暂停。</summary>
-        public bool Breath
-        {
-            get { return breath; }
-            set
-            {
-                if (breath == value) return;
-                breath = value;
-                UpdateBreathTimer();
-                Invalidate();
-            }
-        }
-
-        void UpdateBreathTimer()
-        {
-            bool need = breath && Enabled;
-            if (need)
-            {
-                if (breathTimer == null)
-                {
-                    breathTimer = new System.Windows.Forms.Timer { Interval = 16 };
-                    breathTimer.Tick += (s, e) =>
-                    {
-                        if (!breath || !Enabled) { breathTimer.Stop(); return; }
-                        Invalidate();    // 转圈时 Spin 自己在 Invalidate, 这里多刷几帧无害
-                    };
-                }
-                breathTimer.Start();
-            }
-            else if (breathTimer != null) breathTimer.Stop();
-        }
-
-        /// <summary>呼吸此刻的波形值 (0..1..0); 不呼吸时恒 0。</summary>
-        float BreathNow()
-        {
-            return breath && Enabled && !(glyph == ButtonGlyph.Refresh && spinAngle != 0f)
-                ? StartButton.BreathWave()
-                : 0f;
-        }
-
         /// <summary>鼠标是否停在按钮上 (壳据此把整组的框一起加深)。</summary>
         internal bool IsHot { get { return hot; } }
 
@@ -1506,20 +1460,11 @@ namespace StereoSplitter
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
+            if (disposing && spinTimer != null)
             {
-                if (spinTimer != null)
-                {
-                    spinTimer.Stop();
-                    spinTimer.Dispose();
-                    spinTimer = null;
-                }
-                if (breathTimer != null)
-                {
-                    breathTimer.Stop();
-                    breathTimer.Dispose();
-                    breathTimer = null;
-                }
+                spinTimer.Stop();
+                spinTimer.Dispose();
+                spinTimer = null;
             }
             base.Dispose(disposing);
         }
@@ -1610,12 +1555,7 @@ namespace StereoSplitter
             base.OnMouseDown(e);
         }
         protected override void OnMouseUp(MouseEventArgs e) { if (down) { down = false; Invalidate(); } base.OnMouseUp(e); }
-        protected override void OnEnabledChanged(EventArgs e)
-        {
-            if (!Enabled) { hot = false; down = false; }
-            UpdateBreathTimer();     // 置灰停呼吸, 恢复启用接着呼吸
-            Invalidate(); base.OnEnabledChanged(e);
-        }
+        protected override void OnEnabledChanged(EventArgs e) { if (!Enabled) { hot = false; down = false; } Invalidate(); base.OnEnabledChanged(e); }
 
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -1636,12 +1576,6 @@ namespace StereoSplitter
             float cy = (Height - 1) / 2f + (down ? 1f : 0f);
             Color icon = Enabled ? ((hot || down) ? IconActive : IconColor) : Color.FromArgb(170, 170, 170);
 
-            // 呼吸: 缩放 + 透明度一起起伏, 参数与开始按钮的 ▶ 完全一致 (见 StartButton.Breath*)。
-            // 转圈的那一圈里暂停 (两个动效叠加会糊), 停转后从全局钟的当前相位接着呼吸。
-            float breathW = BreathNow();
-            if (breathW > 0f)
-                icon = Color.FromArgb(255 - (int)(StartButton.BreathAlphaAmp * breathW), icon);
-
             // 刷新时整圈绕着按钮中心转: 只转 Refresh 一个图形 (螺母/× 转起来没有语义)
             bool spun = glyph == ButtonGlyph.Refresh && spinAngle != 0f;
             System.Drawing.Drawing2D.GraphicsState spinState = null;
@@ -1650,15 +1584,6 @@ namespace StereoSplitter
                 spinState = g.Save();
                 g.TranslateTransform(cx, cy);
                 g.RotateTransform(spinAngle);
-                g.TranslateTransform(-cx, -cy);
-            }
-            System.Drawing.Drawing2D.GraphicsState breathState = null;
-            if (breathW > 0f)
-            {
-                float k = 1f + StartButton.BreathScaleAmp * breathW;
-                breathState = g.Save();
-                g.TranslateTransform(cx, cy);
-                g.ScaleTransform(k, k);
                 g.TranslateTransform(-cx, -cy);
             }
 
@@ -1738,7 +1663,6 @@ namespace StereoSplitter
                     break;
             }
 
-            if (breathState != null) g.Restore(breathState);
             if (spun) g.Restore(spinState);
 
             // 键盘焦点: 一圈蓝色细框 (与下拉框的焦点色同一支蓝)。只在键盘进来时画 ——

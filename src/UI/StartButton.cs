@@ -20,8 +20,8 @@ namespace StereoSplitter
     /// 「开始分流」图标按钮：与刷新齿轮同一套图标交互 (无边框、悬停浮圆角垫、键盘空格可点)，
     /// 图形随链路状态切换、全程带动效。
     ///
-    /// <para><b>形态与图形</b>：<see cref="StartButtonMode.Idle"/> = 播放三角 ▶ (蓝) **带呼吸**
-    /// (缩放+透明度 1.4s 余弦起伏, 与刷新按钮同相 —— 用户指定"统一三角形呼吸");
+    /// <para><b>形态与图形</b>：<see cref="StartButtonMode.Idle"/> = 播放三角 ▶ (蓝) + **三角形
+    /// 呼吸光环** (与运行态同一套呼吸参数, 外形跟图标走 —— 用户指定; 刷新按钮无动效);
     /// <see cref="StartButtonMode.Working"/> = 240° 圆弧匀速转圈 (启动中 / 正在停止 ——
     /// 与刷新齿轮同一套"时间驱动角度"的画法, 界面卡顿不丢角度, 转满一圈的角度连续所以
     /// 停下来不跳)；<see cref="StartButtonMode.Pulse"/> = 停止方块 ■ + 1.4s 周期的呼吸光环
@@ -53,22 +53,6 @@ namespace StereoSplitter
         internal const int TintMs = 220;
         const int SpinPeriodMs = 900;
         const int PulsePeriodMs = 1400;
-
-        // —— 呼吸动效 (与刷新按钮共用同一套参数, 见 GearButton.Breath) ——
-        // 用户指定: 刷新与开始两颗按钮统一"三角形呼吸", 节奏/幅度/风格一致 ——
-        // 共用全局时钟 (NowMs 取相位), 两颗按钮严格同相, 一起起伏才读作一组。
-        /// <summary>呼吸周期 (ms)。与运行中光环同一支钟 (1.4s): 界面里只有这一种呼吸节奏。</summary>
-        internal const int BreathPeriodMs = PulsePeriodMs;
-        /// <summary>呼吸幅度: 图标缩放峰值 +9%、alpha 谷值 -55 —— 微澜, 不是蹦跳。</summary>
-        internal const float BreathScaleAmp = 0.09f;
-        internal const int BreathAlphaAmp = 55;
-
-        /// <summary>呼吸波形 0..1..0 (余弦半波, 首尾衔接无跳变)。</summary>
-        internal static float BreathWave()
-        {
-            float phase = (NowMs() % BreathPeriodMs) / (float)BreathPeriodMs;
-            return 0.5f - 0.5f * (float)Math.Cos(phase * 2.0 * Math.PI);
-        }
 
         /// <summary>当前动效形态。换形态时重置相位并保证动画钟在跑。</summary>
         public StartButtonMode Mode
@@ -237,6 +221,7 @@ namespace StereoSplitter
                     DrawStop(g, cx, cy, ink);
                     break;
                 default:
+                    DrawBreathTriHalo(g, cx, cy, ink);
                     DrawPlay(g, cx, cy, ink);
                     break;
             }
@@ -281,24 +266,53 @@ namespace StereoSplitter
         /// </summary>
         void DrawBreathHalo(Graphics g, float cx, float cy, Color ink)
         {
-            float phase = ((NowMs() - modeStartMs) % PulsePeriodMs) / (float)PulsePeriodMs;
-            float w = 0.5f - 0.5f * (float)Math.Cos(phase * 2.0 * Math.PI);   // 0..1..0
+            float w = PulseWave();
             float r = Dpi.F(10.2f + 2.0f * w);
             int alpha = (int)(40 + 50 * w);
             using (var p = new Pen(Color.FromArgb(alpha, ink), Dpi.F(1.6f)))
                 g.DrawEllipse(p, cx - r, cy - r, r * 2f, r * 2f);
         }
 
+        /// <summary>呼吸波形 0..1..0 (余弦半波, 首尾衔接无跳变), 相位从进入当前形态起算。</summary>
+        float PulseWave()
+        {
+            float phase = ((NowMs() - modeStartMs) % PulsePeriodMs) / (float)PulsePeriodMs;
+            return 0.5f - 0.5f * (float)Math.Cos(phase * 2.0 * Math.PI);
+        }
+
         /// <summary>
-        /// 播放三角: 圆角三边形 (圆角用加宽线描一遍路径得到, 与卡片图标同一手法)。
-        /// <para>Idle 态不再是静止贴图 (用户指定"三角形呼吸"): 缩放与透明度随 1.4s 余弦波
-        /// 一起起伏, 与刷新按钮的呼吸严格同相 (共用全局钟, 见 <see cref="BreathWave"/>)。</para>
+        /// 常态的**三角形**呼吸光环 (用户指定: 开始态要有与停止态一样的动效, 但形状跟图标走):
+        /// 轮廓与 ▶ 同形状同朝向, 半径与不透明度按 <see cref="DrawBreathHalo"/> 同一套参数起伏
+        /// (1.4s 周期 / 半径 +2.0 / alpha 40..90) —— 界面里只有这一种呼吸节奏, 只是外形随状态换。
+        /// </summary>
+        void DrawBreathTriHalo(Graphics g, float cx, float cy, Color ink)
+        {
+            float w = PulseWave();
+            float s = Dpi.F(10.2f + 2.0f * w);
+            int alpha = (int)(40 + 50 * w);
+            // 与 ▶ 同样的视觉居中偏移 (0.72): 光环与图标同形状, 大小呼吸时才不会"晃中心"
+            float x0 = cx - s * 0.72f, x2 = cx + s;
+            using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+            {
+                path.AddPolygon(new PointF[]
+                {
+                    new PointF(x0, cy - s), new PointF(x2, cy), new PointF(x0, cy + s)
+                });
+                using (var p = new Pen(Color.FromArgb(alpha, ink), Dpi.F(1.6f))
+                {
+                    LineJoin = System.Drawing.Drawing2D.LineJoin.Round
+                })
+                    g.DrawPath(p, path);
+            }
+        }
+
+        /// <summary>
+        /// 播放三角: 圆角三边形 (圆角用加宽线描一遍路径得到, 与卡片图标同一手法)。本体静态 ——
+        /// 呼吸由背后的三角光环承担 (见 <see cref="DrawBreathTriHalo"/>), 与运行态同一语言。
         /// </summary>
         void DrawPlay(Graphics g, float cx, float cy, Color ink)
         {
-            float w = BreathWave();
-            float s = Dpi.F(8.2f) * (1f + BreathScaleAmp * w);   // 半边长: 30 按钮里 ≈20px 高的三角
-            ink = Color.FromArgb(255 - (int)(BreathAlphaAmp * w), ink);
+            float s = Dpi.F(8.2f);                          // 半边长: 30 按钮里 ≈20px 高的三角
             // 视觉居中: 三角形的几何重心比外接框中心偏右, 左移半像素才不歪
             float x0 = cx - s * 0.72f, y0 = cy - s, x1 = cx - s * 0.72f, y1 = cy + s, x2 = cx + s;
             using (var path = new System.Drawing.Drawing2D.GraphicsPath())

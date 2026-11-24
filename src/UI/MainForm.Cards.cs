@@ -492,8 +492,8 @@ namespace StereoSplitter
         /// 不再参与这里的布局。</para>
         /// <para>设置齿轮也已搬去标题栏 (见 MainForm.LayoutCaption) —— 第一行不再有它。</para>
         /// <para>「开始分流」搬进第一行 (用户指定)。第一行现为三个独立控件 (用户指定拆开组合壳):
-        /// 刷新按钮贴左、设备下拉水平居中、开始按钮贴右 —— 刷新与开始同尺寸 (30 设计像素),
-        /// 下拉在两者之间居中, 左右间距对称 (多出来的空地平摊成两段相等的缝)。</para>
+        /// 刷新按钮贴左、开始按钮贴右 (两者同尺寸 30 设计像素), 设备下拉吃掉两者之间的
+        /// 全部空地 —— 不影响旁边按钮的前提下最宽、随窗口自适应 (用户指定), 两侧各留一道等宽的缝。</para>
         /// </summary>
         void LayoutTopRows()
         {
@@ -512,8 +512,8 @@ namespace StereoSplitter
 
             // —— 第 1 行: [刷新] [捕获下拉] [开始分流] 三个独立控件 ——
             // 两个按钮同尺寸 (30 设计像素, 比行高 26 大一圈: 图标是这一行的主操作, 大一号才压得住),
-            // 各自贴左右缘并垂直居中于行; 下拉在两者的内缘之间水平居中 (间距对称),
-            // 宽度不够时先缩下拉, 缩到下限还挤不下就让间距归零 —— 不允许互相压住。
+            // 各自贴左右缘并垂直居中于行; 下拉**吃掉两按钮之间的全部空地** (用户指定:
+            // 不影响旁边两个按钮的前提下最宽、自适应), 左右各留一道等宽的缝 → 自然居中、间距对称。
             int rowTop = Dpi.S(6);
             int rowH = OutputCardControl.RowControlHeight;
             btnRefresh.Left = leftEdge;
@@ -521,14 +521,9 @@ namespace StereoSplitter
             btnStart.Top = rowTop + (rowH - btnStart.Height) / 2;
             btnStart.Left = Math.Max(btnRefresh.Right + gap, panelW - rightEdge - btnStart.Width);
 
-            int innerL = btnRefresh.Right + gap;
-            int innerR = btnStart.Left - gap;
-            int space = Math.Max(0, innerR - innerL);
-            int cmbW = cmbDefault.Width;
-            int minCmbW = Dpi.S(120);            // 与壳时代相同的保底: 再窄设备名就全成省略号了
-            if (cmbW > space) cmbW = Math.Max(minCmbW, space);
+            int cmbW = Math.Max(Dpi.S(40), btnStart.Left - gap - (btnRefresh.Right + gap));
             if (cmbDefault.Width != cmbW) cmbDefault.Width = cmbW;
-            cmbDefault.Left = innerL + Math.Max(0, space - cmbW) / 2;
+            cmbDefault.Left = btnRefresh.Right + gap;   // 两侧缝都是 gap → 居中且对称
             cmbDefault.Top = rowTop + (rowH - cmbDefault.Height) / 2;
 
             // —— 第 2 行: [规格下拉] 贴左, [添加设备] 贴右, 中间空地归「声道标注」或「运行状态字」 ——
