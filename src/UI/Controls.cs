@@ -1002,16 +1002,16 @@ namespace StereoSplitter
             // 数字框窗口比文字区宽出一条 SpinStrip: 基类布局会把编辑框压到「客户区-按钮宽」,
             // 与它抢 bounds 是打不赢的 (非托管侧直接摆回来, 实测拉锯到 StackOverflow) ——
             // 干脆把这条宽度算进窗口: 编辑框正好铺到文字右缘; 剩下那条 SpinStrip 是被藏掉的
-            // 原生按钮占的空白, 看不见也点不到
+            // 原生按钮占的宽度, 由 PlaceInner 裁剪掉, 看不见也点不到
             PlaceInner(x, numberW + SpinStrip, h, innerH);
             int unitX = x + numberW + GapNumUnit;
             if (unit != null)
             {
                 unit.Location = new Point(unitX, (h - unit.PreferredHeight) / 2);
                 unitX += unit.PreferredWidth;
-                // 单位标签与数字框的窗口有一角重叠 (数字框窗口比文字区宽出一条按钮条),
-                // 必须让标签在 z 序之上, 数字框重绘才盖不到它 (配合 NoWheelNumeric
-                // 的 WS_CLIPSIBLINGS)
+                // 数字框已裁到文字区, 与单位标签不再重叠; 这里仍把标签提到 z 序最上,
+                // 万一将来裁剪条件变了也不会被数字框盖掉半截 (配合 NoWheelNumeric 的
+                // WS_CLIPSIBLINGS)
                 unit.BringToFront();
             }
             arrowX = unitX + GapUnitArrow;
@@ -1030,15 +1030,19 @@ namespace StereoSplitter
         {
             int y = (shellH - innerH) / 2;
             Inner.SetBounds(x, y, w, innerH);
-            // 数字框是白底的原生窗口, 会整块盖在外壳上: 壳高 24 而数字框高 23 时
-            // (与声道下拉等高的那一版), y=0 正好压住外壳的顶边框, 底边框也被压掉 1px ——
-            // 边框在数字这一段"断"成缺口, 旁边又露出半截线头, 看着像重影/残线。
-            // 用 Region 把数字框的上下各 1px 裁掉, 让两条边框露出来; 裁掉的只是白边,
-            // 文字 (居中, 约 12px 高) 不受影响, 落在那两行上的点击交给外壳。
+            // 裁剪两条边:
+            // 1) 上下各 1px —— 数字框是白底的原生窗口, 壳高 24 而数字框高 23 时 y=0 正好压住
+            //    外壳的顶边框, 底边框也被压掉 1px, 边框在数字这一段"断"成缺口、旁边露半截线头;
+            //    裁掉后两条边框完整, 文字 (居中, 约 12px 高) 不受影响。
+            // 2) 右侧 SpinStrip —— 数字框窗口 = 文字区 + 16px (见 Recalc, 那条宽度是为绕开
+            //    基类布局才留的), 16px 里本该是原生上下按钮, 现在被单位标签盖住大半, 只在
+            //    数字与单位之间露出一条 2px 的缝。原生按钮偶尔被基类重新显示并画上主题
+            //    高亮边框, 露出的那条缝就变成一块蓝色残影 (滚动卡片后最容易被看见)。
+            //    把窗口裁到文字区为止, 那条宽度彻底不画, 露出的是外壳白底。
+            int cropTop = y == 0 ? 1 : 0;
             Region old = Inner.Region;
-            Inner.Region = y == 0
-                ? new Region(new Rectangle(0, 1, w, Math.Max(1, innerH - 2)))
-                : null;
+            Inner.Region = new Region(new Rectangle(0, cropTop,
+                Math.Max(1, w - SpinStrip), Math.Max(1, innerH - cropTop * 2)));
             if (old != null) old.Dispose();
             EnforceSpinHidden();
         }

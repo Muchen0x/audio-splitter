@@ -827,6 +827,103 @@ namespace StereoSplitter
                 return;
             }
 
+            // 蓝色块定位: 反复滚动卡片, 每滚一次扫一遍屏幕上的"强调蓝"像素;
+            // 命中就抓图, 同时打印焦点控件链与数字框的选择范围
+                                    if (args.Length >= 1 && args[0] == "blueprobe")
+            {
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(40, 40);
+                mf.Size = new Size(640, 620);
+                mf.TopMost = true;
+                mf.Show();
+                mf.Activate();
+                for (int i = 0; i < 16; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+
+                var chost = Field(mf, "cardHost") as Control;
+                foreach (Control c in chost.Controls)
+                {
+                    var oc0 = c as OutputCardControl;
+                    if (oc0 == null) continue;
+                    Cursor.Position = oc0.nudShell.PointToScreen(new Point(oc0.nudShell.Width / 2, oc0.nudShell.Height / 2));
+                    break;
+                }
+                Application.DoEvents();
+
+                for (int step = 0; step < 30; step++)
+                {
+                    int delta = step % 8 < 4 ? -120 : 120;
+                    IntPtr lpx = (IntPtr)((Math.Max(0, Cursor.Position.Y) << 16) | Math.Max(0, Cursor.Position.X));
+                    SendMessage(chost.Handle, 0x020A, (IntPtr)((delta & 0xFFFF) << 16), lpx);
+                    for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+
+                    foreach (Control c in chost.Controls)
+                    {
+                        var oc = c as OutputCardControl;
+                        if (oc == null || !oc.Visible) continue;
+                        Rectangle r = new Rectangle(oc.nudShell.PointToScreen(Point.Empty), oc.nudShell.Size);
+                        if (!new Rectangle(mf.Location, mf.Size).Contains(r)) continue;
+                        using (var bmp = new Bitmap(r.Width, r.Height))
+                        {
+                            using (var g = Graphics.FromImage(bmp))
+                                g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+                            Point bp = Point.Empty; int bn = 0;
+                            for (int by = 0; by < bmp.Height; by++)
+                                for (int bx = 0; bx < bmp.Width; bx++)
+                                {
+                                    Color cc = bmp.GetPixel(bx, by);
+                                    if (cc.R < 60 && cc.B > 190) { bn++; if (bp.IsEmpty) bp = new Point(bx, by); }
+                                }
+                            if (bn > 0)
+                            {
+                                bmp.Save("hit-" + step + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                                Point sp = new Point(r.Left + bp.X, r.Top + bp.Y);
+                                Console.Out.WriteLine("step=" + step + " blue=" + bn + " atShell=" + bp
+                                    + " screen=" + sp + " win=" + WindowInfo(WindowFromPoint(sp)));
+                            }
+                        }
+                        break;
+                    }
+                }
+                mf.Close();
+                return;
+            }
+
+            // 抓一张完整可见卡片上的延迟壳 (放大看排版/边框)
+            if (args.Length >= 1 && args[0] == "shellshot")
+            {
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(40, 40);
+                mf.Size = new Size(640, 620);
+                mf.TopMost = true;
+                mf.Show();
+                mf.Activate();
+                for (int i = 0; i < 16; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+                Cursor.Position = new Point(mf.Left + 4, mf.Top + 4);
+                for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                var chost = Field(mf, "cardHost") as Control;
+                int idx = 0;
+                foreach (Control c in chost.Controls)
+                {
+                    var oc = c as OutputCardControl;
+                    if (oc == null) continue;
+                    Rectangle r = new Rectangle(oc.nudShell.PointToScreen(Point.Empty), oc.nudShell.Size);
+                    if (!new Rectangle(mf.Location, mf.Size).Contains(r)) continue;
+                    using (var bmp = new Bitmap(r.Width, r.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+                        bmp.Save("shot-" + idx + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    Console.Out.WriteLine("shot-" + idx + " " + r + " value=" + oc.nudDelay.Value
+                        + " shellW=" + oc.nudShell.Width);
+                    if (++idx >= 3) break;
+                }
+                mf.Close();
+                return;
+            }
+
             var f = new MainForm();
             int w, h;
             if (args.Length >= 2 && int.TryParse(args[0], out w) && int.TryParse(args[1], out h))
@@ -1250,6 +1347,84 @@ namespace StereoSplitter
                     Console.Out.WriteLine(tag + " x=" + x + sb);
                 }
             }
+        }
+
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr GetFocus();
+
+        /// <summary>当前键盘焦点所在的控件链 (从最内层控件往上, 打印类型名)。</summary>
+        static string FocusChain()
+        {
+            IntPtr h = GetFocus();
+            if (h == IntPtr.Zero) return "(none)";
+            Control c = Control.FromChildHandle(h);
+            var sb = new StringBuilder();
+            for (Control p = c; p != null; p = p.Parent)
+            {
+                sb.Append(p.GetType().Name);
+                if (p is UpDownBase)
+                {
+                    foreach (Control k in p.Controls)
+                    {
+                        var tb = k as TextBox;
+                        if (tb != null)
+                            sb.Append("[sel=" + tb.SelectionStart + "+" + tb.SelectionLength
+                                + " foc=" + tb.Focused + "]");
+                    }
+                }
+                sb.Append(" < ");
+            }
+            return sb.ToString();
+        }
+
+
+        /// <summary>把点集按 8 邻域聚成连通块, 返回外接矩形 (哈希网格泛洪, O(n))。</summary>
+        static List<Rectangle> Clusters(List<Point> pts, int tol)
+        {
+            var res = new List<Rectangle>();
+            var set = new HashSet<Point>(pts);
+            var q = new Queue<Point>();
+            while (set.Count > 0)
+            {
+                Point seed = default(Point);
+                foreach (Point k in set) { seed = k; break; }
+                int minX = seed.X, minY = seed.Y, maxX = minX, maxY = minY;
+                set.Remove(seed); q.Enqueue(seed);
+                while (q.Count > 0)
+                {
+                    Point cur = q.Dequeue();
+                    if (cur.X < minX) minX = cur.X;
+                    if (cur.Y < minY) minY = cur.Y;
+                    if (cur.X > maxX) maxX = cur.X;
+                    if (cur.Y > maxY) maxY = cur.Y;
+                    for (int dx = -tol; dx <= tol; dx++)
+                        for (int dy = -tol; dy <= tol; dy++)
+                        {
+                            var nb = new Point(cur.X + dx, cur.Y + dy);
+                            if (set.Remove(nb)) q.Enqueue(nb);
+                        }
+                }
+                res.Add(new Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1));
+            }
+            return res;
+        }
+
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr WindowFromPoint(Point p);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+        static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+        /// <summary>打印窗口句柄的类名 + 对应控件类型 (定位"是谁画上去的")。</summary>
+        static string WindowInfo(IntPtr h)
+        {
+            if (h == IntPtr.Zero) return "(null)";
+            var sb = new StringBuilder(256);
+            GetClassName(h, sb, sb.Capacity);
+            Control c = Control.FromChildHandle(h);
+            return sb + " / " + (c == null ? "(no control)" : c.GetType().Name);
         }
 
         static object Field(object o, string name)
