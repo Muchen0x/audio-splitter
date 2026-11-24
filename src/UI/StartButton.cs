@@ -137,7 +137,7 @@ namespace StereoSplitter
                 | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor
                 | ControlStyles.ResizeRedraw, true);
             BackColor = Color.Transparent;
-            Size = new Size(26, 26);
+            Size = new Size(30, 30);
             Cursor = Cursors.Hand;
         }
 
@@ -242,9 +242,9 @@ namespace StereoSplitter
         /// </summary>
         void DrawSpinner(Graphics g, float cx, float cy, Color ink)
         {
-            float r = Dpi.F(6.2f);
+            float r = Dpi.F(8.8f);
             float angle = 360f * ((NowMs() - modeStartMs) % SpinPeriodMs) / (float)SpinPeriodMs;
-            using (var p = new Pen(ink, Dpi.F(2.2f)))
+            using (var p = new Pen(ink, Dpi.F(2.6f)))
             {
                 p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
                 p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
@@ -260,16 +260,16 @@ namespace StereoSplitter
         {
             float phase = ((NowMs() - modeStartMs) % PulsePeriodMs) / (float)PulsePeriodMs;
             float w = 0.5f - 0.5f * (float)Math.Cos(phase * 2.0 * Math.PI);   // 0..1..0
-            float r = Dpi.F(7.6f + 1.6f * w);
+            float r = Dpi.F(10.2f + 2.0f * w);
             int alpha = (int)(40 + 50 * w);
-            using (var p = new Pen(Color.FromArgb(alpha, ink), Dpi.F(1.4f)))
+            using (var p = new Pen(Color.FromArgb(alpha, ink), Dpi.F(1.6f)))
                 g.DrawEllipse(p, cx - r, cy - r, r * 2f, r * 2f);
         }
 
         /// <summary>播放三角: 圆角三边形 (圆角用加宽线描一遍路径得到, 与卡片图标同一手法)。</summary>
         void DrawPlay(Graphics g, float cx, float cy, Color ink)
         {
-            float s = Dpi.F(5.4f);                          // 半边长: 26 按钮里 ≈11px 高的三角
+            float s = Dpi.F(8.2f);                          // 半边长: 30 按钮里 ≈20px 高的三角
             // 视觉居中: 三角形的几何重心比外接框中心偏右, 左移半像素才不歪
             float x0 = cx - s * 0.72f, y0 = cy - s, x1 = cx - s * 0.72f, y1 = cy + s, x2 = cx + s;
             using (var path = new System.Drawing.Drawing2D.GraphicsPath())
@@ -291,8 +291,8 @@ namespace StereoSplitter
         /// <summary>停止方块: 圆角 2 的实心小方, 与播放三角同一视觉重量。</summary>
         void DrawStop(Graphics g, float cx, float cy, Color ink)
         {
-            float s = Dpi.F(4.2f);
-            using (var path = UiDraw.RoundRect(new RectangleF(cx - s, cy - s, s * 2f, s * 2f), Dpi.F(1.6f)))
+            float s = Dpi.F(6.4f);
+            using (var path = UiDraw.RoundRect(new RectangleF(cx - s, cy - s, s * 2f, s * 2f), Dpi.F(2.4f)))
             using (var b = new SolidBrush(ink))
                 g.FillPath(b, path);
         }

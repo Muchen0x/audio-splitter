@@ -510,11 +510,11 @@ namespace StereoSplitter
             int leftEdge = Dpi.S(15);               // 与其它行左缘一致
             int gap = Dpi.S(8);
 
-            // —— 第 1 行: [捕获下拉 | 刷新] 圆角壳 + 右缘的 [开始分流], 同一行同高 ——
-            // 主按钮先定位 (它是壳宽度的基准): 贴右缘、顶边与壳一致、高度取 RowControlHeight
-            // (与卡片行控件同一支高度, 构造期那个 26 设计值已被 DPI 放大, 这里用运行期实值对齐)。
-            btnStart.Top = Dpi.S(6);
-            btnStart.Height = OutputCardControl.RowControlHeight;
+            // —— 第 1 行: [捕获下拉 | 刷新] 圆角壳 + 右缘的 [开始分流], 同一行 ——
+            // 主按钮先定位 (它是壳宽度的基准): 贴右缘、**垂直居中于行** —— 按钮本体 30 设计
+            // 像素, 比行高 (26) 大一圈: 图标是这一行的主操作, 大一号才压得住; 壳保持行高,
+            // 悬停垫各自完整, 视觉上仍是一条线。
+            btnStart.Top = Dpi.S(6) + (OutputCardControl.RowControlHeight - btnStart.Height) / 2;
             btnStart.Left = Math.Max(leftEdge, panelW - rightEdge - btnStart.Width);
             captureShell.Left = leftEdge;
             captureShell.Top = Dpi.S(6);

@@ -443,13 +443,13 @@ namespace StereoSplitter
             // 改小之前先跑 `uidump`, 看 COMBO[...] 行里的 selW / textRoom。
             // 主按钮走图标样式 (用户指定): 与刷新齿轮同一套无边框图标交互, 图形随状态切换
             // 并带动效 (见 StartButton) —— ▶ 可以开始 / 转环进行中 / ■+呼吸光环 运行中。
-            // 语义靠悬停提示与日志承载; 高度 26 = RowControlHeight 设计值,
-            // 运行期 LayoutTopRows 会用捕获壳的实际高度对齐。
+            // 本体 30 设计像素, 比行高 (26) 大一圈, LayoutTopRows 里垂直居中于行;
+            // 语义由悬停提示与日志承载。
             btnStart = new StartButton
             {
                 Text = "开始分流",
-                Location = new Point(505, 6),
-                Size = new Size(26, 26),
+                Location = new Point(500, 4),
+                Size = new Size(30, 30),
                 TabStop = true
             };
             cmbSpec = new RoundedCombo
