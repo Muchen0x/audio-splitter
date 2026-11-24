@@ -1397,7 +1397,8 @@ namespace StereoSplitter
         }
 
         /// <summary>缓冲水位单行简版: 双输出取「调节 L/R」「最低 L/R」两组; 多输出
-        /// (设备编号格式) 取前两台的 调节/最低; 欠载时补一笔。解析失败退回截断 ——
+        /// (设备编号格式) 每台都列出 调节/最低 —— 用户要求"全显示, 放不下靠滚动",
+        /// 不再把第三台往后的折成 "+N台"。欠载时补一笔。解析失败退回截断 ——
         /// 日志里永远有全文。</summary>
         static string BriefWater(string body)
         {
@@ -1414,14 +1415,17 @@ namespace StereoSplitter
                         s += " 欠载" + u.Groups[1].Value + "/" + u.Groups[2].Value;
                     return s;
                 }
-                // 多输出: "[4] 66/29ms +496ppm 电平0.6% | [5] …" → 取前两台的调节/最低
+                // 多输出: "[4] 66/29ms +496ppm 电平0.6% | [5] …" → 每台都列 调节/最低,
+                // 超宽交给 RunNoteLabel 跑马灯 (不折台数)
                 var dv = System.Text.RegularExpressions.Regex.Matches(body, @"(\S+) (\d+)/(\d+)ms");
-                if (dv.Count >= 2)
-                    return dv[0].Groups[1].Value + " " + dv[0].Groups[2].Value + "/" + dv[0].Groups[3].Value + "ms"
-                         + " " + dv[1].Groups[1].Value + " " + dv[1].Groups[2].Value + "/" + dv[1].Groups[3].Value + "ms"
-                         + (dv.Count > 2 ? " +" + (dv.Count - 2) + "台" : "");
-                if (dv.Count == 1)
-                    return dv[0].Groups[1].Value + " " + dv[0].Groups[2].Value + "/" + dv[0].Groups[3].Value + "ms";
+                if (dv.Count >= 1)
+                {
+                    var parts = new string[dv.Count];
+                    for (int i = 0; i < dv.Count; i++)
+                        parts[i] = dv[i].Groups[1].Value + " " + dv[i].Groups[2].Value
+                                 + "/" + dv[i].Groups[3].Value + "ms";
+                    return string.Join(" ", parts);
+                }
                 if (ms.Count >= 2)
                     return "调节 " + ms[0].Groups[1].Value + "/" + ms[1].Groups[1].Value + "ms";
             }
