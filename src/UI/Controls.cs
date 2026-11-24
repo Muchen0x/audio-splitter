@@ -900,10 +900,10 @@ namespace StereoSplitter
         static readonly Color TextDisabled = Color.FromArgb(150, 154, 160);
         const int CornerRadius = 6;
         const int PadX = 7;          // 文字距左缘 (与 RoundedCombo.TextPadX 对齐)
-        const int GapCapInner = 4;   // 文字与数字框的间隔
-        const int GapNumUnit = 3;    // 数字与单位的间隔
+        const int GapCapInner = 2;   // 文字与数字区的间隔 (与数字-单位间隔一致, 用户指定)
+        const int GapNumUnit = 2;    // 数字区与单位的间隔
         const int GapUnitArrow = 4;  // 单位与箭头区的间隔
-        const int NumPad = 4;        // 数字文字两侧的余量 (光标/边距)
+        const int NumPad = 2;        // 数字文字两侧的余量 (光标/边距)
         const int ArrowW = 20;       // 上下箭头区宽度
         const int SpinStrip = 16;    // 数字框内部给 (已藏) 原生按钮留的条宽, 见 Recalc
 
@@ -914,6 +914,14 @@ namespace StereoSplitter
         int hoverDir, pressedDir;    // 箭头的悬停/按下状态 (1=上, -1=下, 0=不在箭头上)
         int arrowX;                  // 箭头区左缘 (客户区坐标, Recalc 时定)
 
+        /// <summary>
+        /// 外壳的固定高度 (0 = 自动, 数字框高 + 2)。数字框高度由字体决定 (9pt → 23, 壳 25),
+        /// 旁边的圆角下拉 (如声道框) 是固定 24 —— 壳比它高 1px, 顶边/底边对不齐。
+        /// 调用方设成与相邻下拉一致的高度 (OutputCard 设 cmbChannel.Height), Recalc 照它排,
+        /// 数字框在壳内垂直居中。
+        /// </summary>
+        public int FixedHeight;
+
         public RoundNumericShell(NoWheelNumeric inner) : this(inner, null, null) { }
 
         public RoundNumericShell(NoWheelNumeric inner, string captionText) : this(inner, captionText, null) { }
@@ -921,9 +929,10 @@ namespace StereoSplitter
         public RoundNumericShell(NoWheelNumeric inner, string captionText, string unitText)
         {
             Inner = inner;
-            // 数字右对齐: 默认 Left 时数字贴左缘, 与右边的上下箭头/单位隔出一大段空白,
-            // 单位看起来不像跟数字是一组。贴右之后整组读作 [延迟 …… 0⇅ms]。
-            inner.TextAlign = HorizontalAlignment.Right;
+            // 数字居中: 数字区按最大值固定宽度, 若右对齐则位数少时 (如 50) 左侧空出一大截,
+            // 「延迟→数字」的间距远大于「数字→ms」; 居中让余白均分两侧, 两段间距天然相等
+            // (用户指定「文字与数字的间距和数字与单位的一致」)。
+            inner.TextAlign = HorizontalAlignment.Center;
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
                 | ControlStyles.ResizeRedraw, true);
             inner.BackColor = Color.White;
@@ -973,30 +982,32 @@ namespace StereoSplitter
         /// <summary>
         /// 按内容重排: 外壳尺寸、文字/数字框/单位/箭头区的位置一次到位。
     /// <para>顺序 (用户指定): [文字][数字][单位][上下箭头], 彼此紧靠 ——
-    /// 数字区宽度按最大值固定量出 (用户指定「固定长度」), 无论当前值是几位数都不伸缩,
-    /// 数字右对齐后正好贴住单位。</para>
+    /// 数字区宽度按最大值固定量出 (用户指定「固定长度」), 无论当前值是几位数都不伸缩;
+    /// 数字在区域内居中, 余白均分两侧, 文字-数字与数字-单位两段间距保持一致。</para>
         /// </summary>
         void Recalc()
         {
             if (IsDisposed) return;
             int innerH = Inner.Height;
+            // 外壳高度: 调用方指定 (与相邻圆角下拉对齐) 则照它, 否则数字框高 + 2
+            int h = FixedHeight > 0 ? FixedHeight : innerH + 2;
             int x = 1;
             if (caption != null)
             {
-                caption.Location = new Point(PadX, (Height - caption.PreferredHeight) / 2);
+                caption.Location = new Point(PadX, (h - caption.PreferredHeight) / 2);
                 x = PadX + caption.PreferredWidth + GapCapInner;
             }
             // 固定宽度: 按最大值量 (如延迟 0..2000 → 按 "2000" 量), 当前值是几位数都一样宽
             int numberW = TextRenderer.MeasureText(Inner.Maximum.ToString("0"), Inner.Font).Width + NumPad;
             // 数字框窗口比文字区宽出一条 SpinStrip: 基类布局会把编辑框压到「客户区-按钮宽」,
             // 与它抢 bounds 是打不赢的 (非托管侧直接摆回来, 实测拉锯到 StackOverflow) ——
-            // 干脆把这条宽度算进窗口: 编辑框正好铺到文字右缘, 数字右对齐后紧贴单位;
-            // 剩下那条 SpinStrip 是被藏掉的原生按钮占的空白, 看不见也点不到
-            PlaceInner(x, numberW + SpinStrip, innerH);
+            // 干脆把这条宽度算进窗口: 编辑框正好铺到文字右缘; 剩下那条 SpinStrip 是被藏掉的
+            // 原生按钮占的空白, 看不见也点不到
+            PlaceInner(x, numberW + SpinStrip, h, innerH);
             int unitX = x + numberW + GapNumUnit;
             if (unit != null)
             {
-                unit.Location = new Point(unitX, (Height - unit.PreferredHeight) / 2);
+                unit.Location = new Point(unitX, (h - unit.PreferredHeight) / 2);
                 unitX += unit.PreferredWidth;
                 // 单位标签与数字框的窗口有一角重叠 (数字框窗口比文字区宽出一条按钮条),
                 // 必须让标签在 z 序之上, 数字框重绘才盖不到它 (配合 NoWheelNumeric
@@ -1004,19 +1015,20 @@ namespace StereoSplitter
                 unit.BringToFront();
             }
             arrowX = unitX + GapUnitArrow;
-            Size = new Size(arrowX + ArrowW + 1, innerH + 2);
+            Size = new Size(arrowX + ArrowW + 1, h);
             Invalidate();
         }
 
         /// <summary>
-        /// 数字框定位到数字区。原生 UpDownButtons (数字框内部右侧那条立体按钮) 压成 0×0 藏掉:
+        /// 数字框定位到数字区, 在外壳高度 <paramref name="shellH"/> 内垂直居中。
+        /// 原生 UpDownButtons (数字框内部右侧那条立体按钮) 压成 0×0 藏掉:
         /// 它不藏, 就会一直占着数字框右缘, 箭头没法按「数字→单位→按钮」的顺序排到单位后面;
         /// 压成 0×0 后它收不到任何鼠标事件, 箭头改由外壳自绘 (见 OnPaint)。
         /// <para>NumericUpDown 在 Resize 时会重新摆它, 所以每次重排后都要再压一次。</para>
         /// </summary>
-        void PlaceInner(int x, int w, int h)
+        void PlaceInner(int x, int w, int shellH, int innerH)
         {
-            Inner.SetBounds(x, 1, w, h);
+            Inner.SetBounds(x, (shellH - innerH) / 2, w, innerH);
             Region old = Inner.Region;
             Inner.Region = null;
             if (old != null) old.Dispose();

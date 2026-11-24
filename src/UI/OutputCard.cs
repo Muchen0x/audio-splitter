@@ -115,6 +115,8 @@ namespace StereoSplitter
             // 描边画在壳身上, 数字框嵌 1px 内衬。壳的宽度在字体确定后会重算 (Recalc),
             // 布局按壳宽右起排, 所以壳变宽时要重跑一次布局。
             nudShell = new RoundNumericShell(nudDelay, "延迟", "ms");
+            // 壳高与旁边的声道圆角下拉取齐 (都是 24), 顶边/底边对齐 (用户指定)
+            nudShell.FixedHeight = cmbChannel.Height;
             nudShell.SizeChanged += (s, e) => LayoutControls();
             // 移除按钮: "×" 图标 (用户指定), 无边框, 悬停铺浅底; 摆在卡片最右上角 (见 LayoutControls)
             btnRemove = new GearButton
