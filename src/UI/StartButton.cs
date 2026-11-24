@@ -143,6 +143,15 @@ namespace StereoSplitter
             Cursor = Cursors.Hand;
         }
 
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            // 冷启动就是 Idle: Mode 赋值在 setter 里因"值没变"早退, 动画钟从没被启动过 ——
+            // 真机一打开三角光环就是静态的 (探针先切别的状态再回 Ready 才看得到呼吸, 测不出这条)。
+            // 句柄建好即开钟: Timer 要等消息泵转起来才 tick, 构造期开也没用, 这里正好。
+            if (Enabled) EnsureTimer().Start();
+        }
+
         // —— 交互模型与 GearButton 同一套: 悬停垫 / 按下位移 1px / 空格回车可点 ——
 
         protected override bool IsInputKey(Keys keyData)

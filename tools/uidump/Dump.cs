@@ -695,6 +695,13 @@ namespace StereoSplitter
                 Label runLbl = Field(sf2, "lblRunState") as Label;
                 if (setState == null || btn == null) { Console.Out.WriteLine("STATES unavailable"); return; }
 
+                // 冷启动断言: 什么都不切 (真机打开就是 Ready), 光环也必须在呼吸 ——
+                // 曾经 Mode 赋值因"值没变"早退导致动画钟从未启动, 只有切过状态才呼吸, 这条管住它
+                byte[, ,] c1 = ButtonGlyphZone(btn);
+                for (int k = 0; k < 24; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
+                byte[, ,] c2 = ButtonGlyphZone(btn);
+                Console.Out.WriteLine("ANIM coldstart diff=" + ZoneDiff(c1, c2) + " (0=钟没跑, >0=打开就在呼吸)");
+
                 string path = args.Length >= 2 ? args[1] : "states.png";
                 AppState[] states =
                 {
