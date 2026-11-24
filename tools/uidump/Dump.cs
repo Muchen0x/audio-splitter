@@ -795,6 +795,72 @@ namespace StereoSplitter
                 return;
             }
 
+            // 顶部捕获行: 下拉 + 刷新合成一组后的几何, 以及刷新动画的两态。
+            if (args.Length >= 1 && args[0] == "top")
+            {
+                var sf = new MainForm();
+                sf.StartPosition = FormStartPosition.Manual;
+                sf.Location = new Point(40, 40);
+                sf.Size = new Size(700, 800);
+                sf.TopMost = true;
+                sf.Show();
+                sf.Activate();
+                Pump();
+
+                var shell = Field(sf, "captureShell") as ComboButtonShell;
+                var refresh = Field(sf, "btnRefresh") as GearButton;
+                var settings = Field(sf, "btnSettings") as GearButton;
+                if (shell == null || refresh == null) { Console.Out.WriteLine("TOP no controls"); sf.Close(); return; }
+
+                RoundedCombo body = shell.Body;
+                Action<string> dump = tag =>
+                    Console.Out.WriteLine("TOP " + tag
+                        + " shell=" + shell.Bounds
+                        + " body=" + body.Bounds
+                        + " btn=" + refresh.Bounds
+                        + " gear=" + (settings == null ? "-" : settings.Bounds.ToString())
+                        + " enabled=" + body.Enabled + "/" + refresh.Enabled
+                        + " spinning=" + refresh.IsSpinning);
+
+                Action<string> shot = path =>
+                {
+                    for (int i = 0; i < 3; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    using (var bmp = new Bitmap(sf.Width, sf.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(sf.Location, Point.Empty, sf.Size);
+                        bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                };
+
+                dump("state0");
+                shot("top-shell.png");
+
+                // 窄窗口: 壳要缩、按钮要塞回车体, 不能压到齿轮
+                sf.Width = 470;
+                Pump();
+                dump("narrow");
+                shot("top-narrow.png");
+                sf.Width = 700;
+                Pump();
+
+                // 点击刷新: 立即查一次 (StartSpin 在 Click 里同步执行), 再泵一帧截"正在转"的图
+                MethodInfo click = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
+                click.Invoke(refresh, new object[] { EventArgs.Empty });
+                dump("spin-click");
+                shot("top-spin.png");
+                dump("spin-mid");
+
+                // 转够最短时长 (700ms) 后必须自己停: 一直转就成了"卡在刷新中"
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                while (sw.ElapsedMilliseconds < 2200) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
+                dump("spin-end");
+                shot("top-spin-end.png");
+
+                sf.Close();
+                return;
+            }
+
             // 跨卡片列对齐: 同一张卡 (宽度不变) 在单声道/多声道两种形态下,
             // 设备列/声道列/延迟壳列必须落在同一 x —— 折叠键挂在「×」下方、不占横向链,
             // 所以"有没有折叠键"不该让这三列移动一个像素。
@@ -858,19 +924,27 @@ namespace StereoSplitter
                 card.Model.Multi = true;
                 card.SetMulti(true, 2, chans);
                 Pump();
-                m("multi");
-                shot("cols-multi.png");
+                // 默认折叠 (用户要求): 多声道卡一建出来就是收起态, 高度按单声道算
+                m("multi-default rowsVisible=" + (card.RowsVisible ? "yes" : "no")
+                    + " glyph=" + card.btnRowsToggle.Glyph);
+                shot("cols-multi-default.png");
+
+                // 点一下展开: 行摊开 + 卡高按行数算; 三列对齐要在展开态比 (这时折叠键才可见)
+                MethodInfo click = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
+                click.Invoke(card.btnRowsToggle, new object[] { EventArgs.Empty });
+                Pump();
+                m("expanded rowsVisible=" + (card.RowsVisible ? "yes" : "no")
+                    + " glyph=" + card.btnRowsToggle.Glyph);
+                shot("cols-expanded.png");
 
                 // 同宽度下三列左缘逐列相等才算对齐: 直接给结论, 不靠人眼比数字
                 m("multi-fit=" + (card.nudShell.Right == card.btnRemove.Left - Dpi.S(5) ? "ok" : "BAD"));
 
-                // 展开态点一下: 行藏起来 + 卡高落到单声道那档; 再点回来必须复原
-                MethodInfo click = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
+                // 再点: 收回默认态; 再点一次必须又能展开 (二值, 不能卡在中间)
                 click.Invoke(card.btnRowsToggle, new object[] { EventArgs.Empty });
                 Pump();
                 m("collapsed rowsVisible=" + (card.RowsVisible ? "yes" : "no")
                     + " glyph=" + card.btnRowsToggle.Glyph);
-                shot("cols-collapsed.png");
 
                 click.Invoke(card.btnRowsToggle, new object[] { EventArgs.Empty });
                 Pump();

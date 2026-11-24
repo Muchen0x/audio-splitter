@@ -493,9 +493,9 @@ namespace StereoSplitter
         /// </summary>
         void LayoutTopRows()
         {
-            if (lblD == null || cmbDefault == null || btnAddOutput == null || btnSettings == null) return;
-            if (btnStart == null || cmbSpec == null || btnRefresh == null) return;
-            Control host = cmbDefault.Parent;
+            if (captureShell == null || btnAddOutput == null || btnSettings == null) return;
+            if (btnStart == null || cmbSpec == null) return;
+            Control host = captureShell.Parent;
             if (host == null) return;
 
             Size panelSize = host.ClientSize;
@@ -506,10 +506,14 @@ namespace StereoSplitter
             int leftEdge = Dpi.S(15);               // 与其它行左缘一致
             int gap = Dpi.S(8);
 
-            // —— 第 1 行: [捕获:] [下拉] [刷新(图标)] [设置(齿轮, 贴右)] ——
+            // —— 第 1 行: [捕获下拉 | 刷新] 一个圆角壳, [设置(齿轮, 贴右)] ——
+            // 「捕获:」标签已删, 壳直接顶到左缘; 壳高与卡片第一行控件同高 (RowControlHeight),
+            // 与设置齿轮垂直居中对齐。
             btnSettings.Left = panelW - rightEdge - btnSettings.Width;
-            btnRefresh.Left = btnSettings.Left - gap - btnRefresh.Width;
-            cmbDefault.Width = Math.Max(Dpi.S(60), btnRefresh.Left - gap - cmbDefault.Left);
+            captureShell.Left = leftEdge;
+            captureShell.Height = OutputCardControl.RowControlHeight;
+            captureShell.Top = btnSettings.Top + (btnSettings.Height - captureShell.Height) / 2;
+            captureShell.Width = Math.Max(Dpi.S(160), btnSettings.Left - gap - captureShell.Left);
 
             // —— 第 2 行: [开始分流] 独占一行, 水平居中 ——
             // 它是这一屏唯一的主操作, 居中比贴左更稳: 窗口拉宽时不会飘到角落里去。

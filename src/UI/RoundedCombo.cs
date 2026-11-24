@@ -74,6 +74,41 @@ namespace StereoSplitter
         /// 正好区分了"点进来"和"Tab 进来"两种来源, 不必在两条路径上各记一笔。</para>
         /// </summary>
         bool keyboardFocusCues = true;
+        bool embedded;
+
+        /// <summary>
+        /// 嵌在宿主壳里 (见 <see cref="ComboButtonShell"/>): 不画自己的白底和边框, 只画文字与箭头。
+        /// <para>壳负责圆角、描边、底色 —— 一个组里两套框叠在一起, 边缘会差出 1~2px 的双线。</para>
+        /// </summary>
+        public bool Embedded
+        {
+            get { return embedded; }
+            set
+            {
+                if (embedded == value) return;
+                embedded = value;
+                Invalidate();
+            }
+        }
+
+        /// <summary>
+        /// 本体的视觉状态 (悬停 / 展开 / 键盘焦点) 变了。
+        /// <para>嵌在壳里时, 边框由壳画, 壳不可能自己去盯子控件的 hot/open —— 由本体通知它重画。</para>
+        /// </summary>
+        internal event Action VisualStateChanged;
+        void NotifyVisual()
+        {
+            var h = VisualStateChanged;
+            if (h != null) h();
+        }
+
+        /// <summary>鼠标是否停在本体上 (壳据此决定描边深浅)。</summary>
+        internal bool IsHot { get { return hot; } }
+        /// <summary>弹层是否展开 (壳据此决定描边深浅)。</summary>
+        internal bool IsOpen { get { return open; } }
+        /// <summary>此刻是否该画焦点描边 (键盘进来才画, 见 keyboardFocusCues)。</summary>
+        internal bool ShowFocusCue { get { return Focused && keyboardFocusCues; } }
+
         /// <summary>
         /// 单调毫秒时钟。
         /// <para>不用 DateTime: 它会被系统校时改动; 也不用 Environment.TickCount64 —— net48 上没这个成员
@@ -290,7 +325,8 @@ namespace StereoSplitter
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
             // 圆角之外的那几个小角要补成父容器底色, 否则会露出本控件的白底方块
-            if (Parent != null)
+            // (嵌在壳里时不能铺: 铺的是壳的白底, 会把壳的圆角切出直角)
+            if (Parent != null && !embedded)
             {
                 using (var b = new SolidBrush(Parent.BackColor))
                     g.FillRectangle(b, ClientRectangle);
@@ -307,23 +343,26 @@ namespace StereoSplitter
             if (strong && border == BorderNormal) border = BorderHot;
 
             // 填充始终铺满: 若边框态用内缩矩形, hover 时四周会露出 1px 父容器底色
-            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (var path = UiDraw.RoundRect(rect, CornerRadius))
+            if (!embedded)
             {
-                using (var fill = new SolidBrush(Enabled ? Color.White : DisabledBack))
-                    g.FillPath(fill, path);
-            }
+                var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+                using (var path = UiDraw.RoundRect(rect, CornerRadius))
+                {
+                    using (var fill = new SolidBrush(Enabled ? Color.White : DisabledBack))
+                        g.FillPath(fill, path);
+                }
 
-            // 描边走**半像素对齐**路径: 笔心落在像素中心时 1px 正好盖住一整列, 是纯黑;
-            // 用整数边界会把 1px 拆成两条 50% 灰 (放大看就是"灰边、比 1px 粗")。
-            // 加粗时再多留一点余量, 免得 1.5px 的一半被客户区裁掉。
-            if (Width > 4 && Height > 4)
-            {
-                float inset = strong ? 0.75f : 0.5f;
-                using (var path = UiDraw.RoundRect(
-                    new RectangleF(inset, inset, Width - inset * 2, Height - inset * 2), CornerRadius))
-                using (var pen = new Pen(border, strong ? 1.5f : 1f))
-                    g.DrawPath(pen, path);
+                // 描边走**半像素对齐**路径: 笔心落在像素中心时 1px 正好盖住一整列, 是纯黑;
+                // 用整数边界会把 1px 拆成两条 50% 灰 (放大看就是"灰边、比 1px 粗")。
+                // 加粗时再多留一点余量, 免得 1.5px 的一半被客户区裁掉。
+                if (Width > 4 && Height > 4)
+                {
+                    float inset = strong ? 0.75f : 0.5f;
+                    using (var path = UiDraw.RoundRect(
+                        new RectangleF(inset, inset, Width - inset * 2, Height - inset * 2), CornerRadius))
+                    using (var pen = new Pen(border, strong ? 1.5f : 1f))
+                        g.DrawPath(pen, path);
+                }
             }
 
             int tw = Math.Max(0, Width - TextPadX - ArrowZone);
@@ -370,6 +409,7 @@ namespace StereoSplitter
         {
             hot = true;
             Invalidate();
+            NotifyVisual();
             base.OnMouseEnter(e);
         }
 
@@ -377,6 +417,7 @@ namespace StereoSplitter
         {
             hot = false;
             Invalidate();
+            NotifyVisual();
             base.OnMouseLeave(e);
         }
 
@@ -386,7 +427,7 @@ namespace StereoSplitter
             if (e.Button != MouseButtons.Left || !Enabled) return;
             // 这里不能只靠 OnGotFocus: 焦点已经在本控件上时 (先 Tab 进来再点鼠标) Focus() 是空操作,
             // 蓝框会一直挂着。鼠标路径一律把焦点提示关掉。
-            if (keyboardFocusCues) { keyboardFocusCues = false; Invalidate(); }
+            if (keyboardFocusCues) { keyboardFocusCues = false; Invalidate(); NotifyVisual(); }
             if (!Focused) Focus();
             ToggleDropDown();
         }
@@ -396,14 +437,16 @@ namespace StereoSplitter
             // 到这一刻左键还按着 → 是"点进来"的; 键已松开 → 是 Tab / 程序化进来的, 该给焦点提示
             keyboardFocusCues = Control.MouseButtons == MouseButtons.None;
             Invalidate();
+            NotifyVisual();
             base.OnGotFocus(e);
         }
 
-        protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+        protected override void OnLostFocus(EventArgs e) { Invalidate(); NotifyVisual(); base.OnLostFocus(e); }
         protected override void OnEnabledChanged(EventArgs e)
         {
             if (!Enabled) { hot = false; CloseDropDown(); }
             Invalidate();
+            NotifyVisual();
             base.OnEnabledChanged(e);
         }
 
@@ -588,6 +631,7 @@ namespace StereoSplitter
             popup = p;
             open = true;
             Invalidate();
+            NotifyVisual();
 
             // 展开时把高亮落在当前选中项上; 没选中过就落在第一行
             p.Highlight(selected >= 0 && selected < Items.Count ? selected : 0);
@@ -606,6 +650,7 @@ namespace StereoSplitter
                 popup = null;
                 open = false;
                 Invalidate();
+                NotifyVisual();
                 // 立刻重画: 边框要从"展开色"退回常态, 拖到下一拍才画的话, 收起瞬间会看到旧描边一闪
                 Update();
                 // 这次是"外部原因"收起的 (点别处 / 点本体 / Esc): 记下时刻, 让紧随其后的点击别再打开
@@ -630,6 +675,7 @@ namespace StereoSplitter
             popup = null;
             open = false;
             Invalidate();
+            NotifyVisual();
             Update();          // 同 OnPopupClosed: 描边当场退回常态, 不留一帧旧色
             try { p.Close(); } catch { }
         }

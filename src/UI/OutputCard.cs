@@ -33,12 +33,15 @@ namespace StereoSplitter
         public readonly GearButton btnRowsToggle;
 
         /// <summary>
-        /// 声道行已收起的设备 id (进程内视图状态)。
+        /// 用户主动**展开**过的设备 id (进程内视图状态)。
+        /// <para><b>默认是收起的</b> (用户要求): 多声道卡片的下面几行平时不摊开, 一屏能多放几张卡;
+        /// 要动用某一路的声道/音量时点一下「×」下方的三角再展开。所以这里记的是"例外" ——
+        /// 在集合里 = 用户要求过展开。</para>
         /// <para><b>为什么不放实例字段</b>: 卡片会随结构变化整批重建 (RebuildCards), 实例字段跟着丢,
-        /// 用户收起来切一下规格又全摊开。<b>为什么不写配置</b>: 这是看的方式, 不是设置内容, 不该
-        /// 跟着设置文件在机器之间跑。</para>
+        /// 用户展开来看一眼、切一下规格又全收回去。<b>为什么不写配置</b>: 这是看的方式, 不是设置内容,
+        /// 不该跟着设置文件在机器之间跑。</para>
         /// </summary>
-        static readonly HashSet<string> rowsCollapsed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        static readonly HashSet<string> rowsExpanded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// 这张卡片的多声道行是否收起 (只看显示: 行里的选择/音量/延迟全都照旧生效)。
@@ -46,13 +49,14 @@ namespace StereoSplitter
         /// </summary>
         bool RowsCollapsed
         {
-            get { return Model.Multi && rowsCollapsed.Contains(Model.DeviceId); }
+            get { return Model.Multi && !rowsExpanded.Contains(Model.DeviceId); }
             set
             {
                 bool now = value;
                 if (now == RowsCollapsed) return;
-                if (now) rowsCollapsed.Add(Model.DeviceId);
-                else rowsCollapsed.Remove(Model.DeviceId);
+                // 收起 = 回到默认状态 (从"例外表"里删掉), 展开才需要记一笔
+                if (now) rowsExpanded.Remove(Model.DeviceId);
+                else rowsExpanded.Add(Model.DeviceId);
                 ApplyRowsCollapse();
             }
         }

@@ -1385,6 +1385,90 @@ namespace StereoSplitter
         bool keyboardFocusCues = true;
         ButtonGlyph glyph = ButtonGlyph.Nut;
 
+        // —— 刷新图标的旋转 (刷新进行中的反馈) ——
+        System.Windows.Forms.Timer spinTimer;
+        float spinAngle;
+        long spinStartMs;
+        long spinStopAtMs;
+        /// <summary>每帧转多少度。16ms 一帧 × 10° ≈ 1.7 圈/秒: 再快看不清在转, 再慢像卡住。</summary>
+        const float SpinStepDeg = 10f;
+
+        /// <summary>图标此刻是否在转。</summary>
+        public bool IsSpinning { get { return spinTimer != null && spinTimer.Enabled; } }
+
+        /// <summary>鼠标是否停在按钮上 (壳据此把整组的框一起加深)。</summary>
+        internal bool IsHot { get { return hot; } }
+
+        /// <summary>
+        /// 悬停/按下状态变了。嵌在组里时 (见 <see cref="ComboButtonShell"/>), 组框要跟着一起变深浅 ——
+        /// 组里一半高亮一半不高亮, 看着像两个控件拼的, 正是要避免的。
+        /// </summary>
+        internal event Action VisualStateChanged;
+        void NotifyVisual()
+        {
+            var h = VisualStateChanged;
+            if (h != null) h();
+        }
+
+        /// <summary>
+        /// 让 Refresh 图标转起来 (刷新进行中的反馈)。
+        /// <para>用 Timer 而不是在点击处理里循环: 设备枚举是**同步**跑的, 循环里转界面画不出来。</para>
+        /// </summary>
+        public void StartSpin()
+        {
+            if (spinTimer == null)
+            {
+                spinTimer = new System.Windows.Forms.Timer { Interval = 16 };
+                spinTimer.Tick += (s, e) =>
+                {
+                    if (spinStopAtMs > 0 && NowMs() >= spinStopAtMs) { EndSpin(); return; }
+                    spinAngle = (spinAngle + SpinStepDeg) % 360f;
+                    Invalidate();
+                };
+            }
+            if (spinTimer.Enabled) { spinStopAtMs = 0; return; }   // 已在转: 保留当前角度, 只取消"该停了"
+            spinStartMs = NowMs();
+            spinStopAtMs = 0;
+            spinTimer.Start();
+        }
+
+        /// <summary>
+        /// 停止转动。<paramref name="minVisibleMs"/> 是**从 StartSpin 起算**的最短时长 ——
+        /// 设备枚举可能几十毫秒就结束, 真按"完事就停"去停, 用户只会看到图标闪一下, 不知道点到了没有。
+        /// </summary>
+        public void StopSpin(int minVisibleMs = 0)
+        {
+            if (spinTimer == null || !spinTimer.Enabled) return;
+            long deadline = spinStartMs + Math.Max(0, minVisibleMs);
+            if (NowMs() >= deadline) { EndSpin(); return; }
+            spinStopAtMs = deadline;
+        }
+
+        void EndSpin()
+        {
+            spinStopAtMs = 0;
+            spinAngle = 0f;
+            if (spinTimer != null) spinTimer.Stop();
+            Invalidate();
+        }
+
+        static long NowMs()
+        {
+            // 与 RoundedCombo.NowMs 同一套: Stopwatch 的基准是性能计数器, 不受系统校时影响
+            return (long)(Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && spinTimer != null)
+            {
+                spinTimer.Stop();
+                spinTimer.Dispose();
+                spinTimer = null;
+            }
+            base.Dispose(disposing);
+        }
+
         /// <summary>
         /// 贴到父容器边角时, 由父容器把自己的外框补画一遍。
         /// <para>子控件在父容器**之后**绘制: 按钮一旦压住父容器的边框, 那一段顶边/右边连同圆角弧
@@ -1447,8 +1531,8 @@ namespace StereoSplitter
             base.OnKeyUp(e);
         }
 
-        protected override void OnMouseEnter(EventArgs e) { hot = true; Invalidate(); base.OnMouseEnter(e); }
-        protected override void OnMouseLeave(EventArgs e) { hot = false; down = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseEnter(EventArgs e) { hot = true; Invalidate(); NotifyVisual(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hot = false; down = false; Invalidate(); NotifyVisual(); base.OnMouseLeave(e); }
 
         protected override void OnGotFocus(EventArgs e)
         {
@@ -1491,6 +1575,17 @@ namespace StereoSplitter
             float cx = (Width - 1) / 2f;
             float cy = (Height - 1) / 2f + (down ? 1f : 0f);
             Color icon = Enabled ? ((hot || down) ? IconActive : IconColor) : Color.FromArgb(170, 170, 170);
+
+            // 刷新时整圈绕着按钮中心转: 只转 Refresh 一个图形 (螺母/× 转起来没有语义)
+            bool spun = glyph == ButtonGlyph.Refresh && spinAngle != 0f;
+            System.Drawing.Drawing2D.GraphicsState spinState = null;
+            if (spun)
+            {
+                spinState = g.Save();
+                g.TranslateTransform(cx, cy);
+                g.RotateTransform(spinAngle);
+                g.TranslateTransform(-cx, -cy);
+            }
 
             switch (glyph)
             {
@@ -1548,6 +1643,8 @@ namespace StereoSplitter
                     DrawRefresh(g, cx, cy, Math.Min(Width, Height) / 22f, icon);
                     break;
             }
+
+            if (spun) g.Restore(spinState);
 
             // 键盘焦点: 一圈蓝色细框 (与下拉框的焦点色同一支蓝)。只在键盘进来时画 ——
             // 鼠标点一下就把蓝框挂在图标上, 看着像"没取消的选中态"
@@ -1625,6 +1722,142 @@ namespace StereoSplitter
             };
             using (var fill = new SolidBrush(icon))
                 g.FillPolygon(fill, flag);
+        }
+    }
+
+    /// <summary>
+    /// 「输入控件 + 图标按钮」合成**一个**圆角组: 捕获设备下拉 + 刷新。
+    /// <para>合成一组的理由: 两者是同一件事的两半 —— "选哪台设备"、"重新枚举一遍"。
+    /// 各自带一圈框并排站着, 中间那道 8px 缝会把它们读成两个不相干的控件; 收进一个壳里,
+    /// 一条边、一个圆角、一条分隔线, 才看得出是一个组合。</para>
+    /// <para>壳负责: 圆角(6) / 白底 / 描边(与卡片同一支浅灰 <see cref="OutputCardControl.BorderColor"/>)
+    /// / 悬停与展开时的加深 / 键盘焦点的蓝框。内嵌下拉只画文字和箭头 (见 RoundedCombo.Embedded),
+    /// 否则两层框叠着, 边缘会差 1~2px 成双线。</para>
+    /// <para>壳不可能自己去盯子控件的 hot/open, 所以下拉在状态变化时发
+    /// <see cref="RoundedCombo.VisualStateChanged"/>, 壳收到就重画自己的框。</para>
+    /// </summary>
+    class ComboButtonShell : Control
+    {
+        static Color BorderNormal { get { return OutputCardControl.BorderColor; } }
+        /// <summary>悬停/展开: 与下拉框本体同一支加深色。</summary>
+        static readonly Color BorderHot = Color.FromArgb(146, 153, 164);
+        /// <summary>禁用: 与下拉框本体同一支淡色。</summary>
+        static readonly Color BorderDisabled = Color.FromArgb(226, 230, 235);
+        /// <summary>键盘焦点: 与下拉框/按钮同一支蓝。</summary>
+        static readonly Color BorderActive = Color.FromArgb(0, 120, 215);
+        static readonly Color DisabledBack = Color.FromArgb(244, 245, 247);
+        /// <summary>本体与壳内边缘的呼吸 (1~2px): 内嵌控件铺满会压住壳的圆角弧。</summary>
+        static int Inset { get { return Dpi.S(2); } }
+        /// <summary>右侧图标区宽度 (含与下拉之间的分隔线)。</summary>
+        static int ActionZone { get { return Dpi.S(30); } }
+        static int CornerRadius { get { return Dpi.S(6); } }
+
+        readonly RoundedCombo body;
+        readonly GearButton action;
+
+        public ComboButtonShell(RoundedCombo body, GearButton action)
+        {
+            if (body == null) throw new ArgumentNullException("body");
+            if (action == null) throw new ArgumentNullException("action");
+            this.body = body;
+            this.action = action;
+
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            BackColor = Color.White;
+
+            // 内嵌下拉不再画自己的框和底 (壳统一负责)
+            body.Embedded = true;
+            body.VisualStateChanged += OnBodyVisualChanged;
+            // 图标按钮的悬停也让整组的框一起加深: 组里一半高亮一半不, 会读成两个控件
+            action.VisualStateChanged += OnBodyVisualChanged;
+
+            Controls.Add(body);
+            Controls.Add(action);
+            LayoutChildren();
+        }
+
+        /// <summary>内嵌的下拉本体 (外部照旧读它的 Items/SelectedIndex)。</summary>
+        public RoundedCombo Body { get { return body; } }
+        /// <summary>右侧的图标按钮。</summary>
+        public GearButton ActionButton { get { return action; } }
+
+        void OnBodyVisualChanged()
+        {
+            // 下拉本体从壳里探出来时 (弹层展开) 也要重画: 框的深浅跟着 hot/open 走
+            Invalidate();
+        }
+
+        void LayoutChildren()
+        {
+            int h = Height;
+            int zone = ActionZone;
+            body.SetBounds(Inset, Inset,
+                Math.Max(Dpi.S(40), Width - zone - Inset * 2), Math.Max(Dpi.S(18), h - Inset * 2));
+
+            // 图标按钮放在右侧区域内居中, 与壳的上下边各留一点 (和左侧下拉同一条中线)
+            int side = Math.Max(Dpi.S(20), h - Dpi.S(6));
+            action.Size = new Size(side, side);
+            action.Location = new Point(Width - zone + (zone - side) / 2, (h - side) / 2);
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            LayoutChildren();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+
+            // 圆角之外补父容器底色 (否则四个角会露出本控件的白方块)
+            Color outside = Parent != null ? Parent.BackColor : BackColor;
+            using (var b = new SolidBrush(outside)) g.FillRectangle(b, ClientRectangle);
+
+            bool enabled = body.Enabled;
+            bool strong = enabled && (body.IsHot || body.IsOpen || action.IsHot);
+            Color border = !enabled ? BorderDisabled
+                         : body.ShowFocusCue ? BorderActive
+                         : strong ? BorderHot
+                         : BorderNormal;
+
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (var path = UiDraw.RoundRect(rect, CornerRadius))
+            {
+                using (var fill = new SolidBrush(enabled ? BackColor : DisabledBack))
+                    g.FillPath(fill, path);
+            }
+
+            // 分隔线: 下拉与刷新之间的那条 1px 竖线, 上下各留一点 (不贴到圆角上)
+            int sepX = Width - ActionZone;
+            int sepPad = Dpi.S(6);
+            if (sepX > 0 && Height > sepPad * 2)
+            {
+                using (var pen = new Pen(border))
+                    g.DrawLine(pen, sepX + 0.5f, sepPad, sepX + 0.5f, Height - sepPad);
+            }
+
+            if (Width > 4 && Height > 4)
+            {
+                float inset = strong ? 0.75f : 0.5f;
+                using (var path = UiDraw.RoundRect(
+                    new RectangleF(inset, inset, Width - inset * 2, Height - inset * 2), CornerRadius))
+                using (var pen = new Pen(border, strong ? 1.5f : 1f))
+                    g.DrawPath(pen, path);
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (body != null) body.VisualStateChanged -= OnBodyVisualChanged;
+                if (action != null) action.VisualStateChanged -= OnBodyVisualChanged;
+            }
+            base.Dispose(disposing);
         }
     }
 

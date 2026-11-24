@@ -48,12 +48,14 @@ namespace StereoSplitter
         System.Windows.Forms.Timer watchTimer;   // 看门狗: 2 秒一看输出线程活性
         System.Windows.Forms.Timer delayHotTimer; // 延迟热改的合并窗口 (数字框逐位输入只跳一次)
         System.Windows.Forms.Timer powerTimer;   // 唤醒后延迟重建 (端点恢复要几百毫秒)
+        System.Windows.Forms.Timer refreshKickTimer;   // 刷新: 先让图标转 0.35s, 再开始同步枚举
         VolumeSlider volMaster, volGain;
         Label lblVolMaster, lblVolGain;
         // 顶部固定行需要用到的控件 (自适应重排时要改它们的坐标/宽度)
-        Label lblD, lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
+        Label lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
         RoundButton btnStart;        // 自绘圆角 + 四态配色 (默认 / 启动中 / 运行中 / 正在停止)
         GearButton btnRefresh;       // 刷新设备 (圆环箭头图标): 运行中置灰, 链路级
+        ComboButtonShell captureShell;  // 捕获设备下拉 + 刷新按钮合成的一组 (一个圆角壳)
         RoundButton btnAddOutput;    // 「添加设备」文字按钮; 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
         Button btnClearLog;
 
@@ -327,25 +329,28 @@ namespace StereoSplitter
             splitContainer.SizeChanged += (s, e) => KeepContentOnShrink();
             Controls.Add(splitContainer);
 
-            lblD = new Label { Text = "捕获:", Location = new Point(15, 15), AutoSize = true };
+            // 捕获行: 原来行首有「捕获:」标签, 已删 (用户要求) —— 这一行只有"选哪台设备被抓取"
+            // 一件事, 下拉里的设备名自己说明是什么, 再挂一个标签是重复标注。
+            // 下拉与刷新合成一组: 同一个圆角壳里左边选设备、右边重新枚举, 中间一条分隔线
+            // (见 Controls.cs 的 ComboButtonShell)。壳的尺寸/位置由 LayoutTopRows 定。
             cmbDefault = new RoundedCombo
             {
-                Location = new Point(65, 10),
                 Width = 250,
                 Height = 28,
                 // 不设 DropDownWidth: 弹层宽度与本体一致 (设备名过长靠行内省略号收尾)
                 ItemHeight = 24,
                 MaxDropDownItems = 12
             };
-            // 「刷新设备」: 圆环箭头图标按钮 (用户指定图形), 无边框 —— 与设置齿轮同一行同一套。
+            // 「刷新设备」: 圆环箭头图标按钮 (用户指定图形), 无边框 —— 与设置齿轮同一套。
             // 点一下重新枚举设备 (插拔 USB/DAC 后用); 点开下拉不再自动刷新 (用户要求撤掉)。
+            // 点击后图标转圈 (StartSpin/StopSpin): 枚举是同步跑的, 没有这个反馈就像点了没反应。
             btnRefresh = new GearButton
             {
                 Glyph = ButtonGlyph.Refresh,
-                Location = new Point(365, 8),
-                Size = new Size(28, 28)
+                Size = new Size(24, 24)
             };
-            btnRefresh.Click += (s2, e2) => RefreshDevicesClick();
+            btnRefresh.Click += (s2, e2) => OnRefreshClick();
+            captureShell = new ComboButtonShell(cmbDefault, btnRefresh);
             // 设置入口: 右上角齿轮 (位置由 LayoutTopRows 按面板宽度贴右)
             btnSettings = new GearButton { Location = new Point(440, 8) };
             btnSettings.Click += (s2, e2) => OpenSettings();
@@ -532,7 +537,7 @@ namespace StereoSplitter
 
             // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
             // 都在设置页里 (控件由本类持有, 由 SettingsForm 搬入搬出)。
-            splitContainer.Panel1.Controls.AddRange(new Control[] { lblD, cmbDefault, btnRefresh, btnSettings, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { captureShell, btnSettings, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterShell, lblWaterSec, btnClearLog, txtLog });
 
             // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。
@@ -1573,6 +1578,32 @@ namespace StereoSplitter
         /// 「刷新设备」按钮: 重新枚举设备并重建下拉/卡片 (设备被拔掉等场景)。
         /// 与下拉展开解耦 —— 点开下拉不再自动刷新 (用户要求撤掉), 刷新只走这个按钮。
         /// </summary>
+        /// <summary>
+        /// 刷新按钮的点击: 图标先转起来, 隔一小会儿再跑枚举。
+        /// <para>枚举 (<c>catalog.Refresh</c> + 重建卡片) 是**同步**的, 一进来就把消息泵堵死 ——
+        /// 旋转动画一帧都画不出来, 用户看到的是"界面冻住、图标没动"。所以先让图标转约 0.35 秒
+        /// (足够看清是"在转"而不是"闪了一下"), 再开始枚举。</para>
+        /// <para>StopSpin(700): 枚举本身可能几十毫秒就结束, 最短也要转够 0.7 秒,
+        /// 否则前 0.35 秒刚转起来就停, 反馈仍然是断的。</para>
+        /// </summary>
+        void OnRefreshClick()
+        {
+            if (btnRefresh.IsSpinning) return;      // 连点不叠加: 枚举本身已经很重
+            btnRefresh.StartSpin();
+
+            if (refreshKickTimer == null)
+            {
+                refreshKickTimer = new System.Windows.Forms.Timer { Interval = 350 };
+                refreshKickTimer.Tick += (s, e) =>
+                {
+                    refreshKickTimer.Stop();
+                    try { RefreshDevicesClick(); }
+                    finally { btnRefresh.StopSpin(700); }
+                };
+            }
+            refreshKickTimer.Start();
+        }
+
         void RefreshDevicesClick()
         {
             Log("[刷新] 重新枚举设备...");
@@ -1748,6 +1779,7 @@ namespace StereoSplitter
             DisposeTimer(ref delayHotTimer);
             DisposeTimer(ref deviceReturnTimer);   // R-10 补
             DisposeTimer(ref sinkRetryTimer);      // R-10 补
+            DisposeTimer(ref refreshKickTimer);    // 刷新动画的延迟启动
 
             try { Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged; } catch { }
 
