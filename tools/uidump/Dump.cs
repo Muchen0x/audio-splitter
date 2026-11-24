@@ -118,6 +118,31 @@ namespace StereoSplitter
                         Console.Out.WriteLine("PICK idx " + bIdx0 + " -> " + SelOf(cmb)
                             + " (期望 " + target + ")  flyoutStill=" + fy.Visible);
                         idxExpect = target;
+
+                        // —— 二次点击 = 只收子菜单, 父弹层留着 (用户报的回归点) ——
+                        Func<ToolStripDropDown> curMenu = () => fy.GetType()
+                            .GetField("profileMenu", BindingFlags.Instance | BindingFlags.NonPublic)
+                            .GetValue(fy) as ToolStripDropDown;
+                        onClick.Invoke(bufRow, new object[] { EventArgs.Empty });   // 重开子菜单
+                        for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                        Point oldCursor = Cursor.Position;
+                        Cursor.Position = fy.PointToScreen(new Point(fy.Width / 2, fy.Height / 2));
+                        var pm1 = curMenu();
+                        if (pm1 != null && pm1.Visible)
+                            pm1.Close(ToolStripDropDownCloseReason.AppFocusChange); // 模拟"点在外面收起"
+                        for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                        Console.Out.WriteLine("TOGGLE-1 menuClosed=" + (pm1 == null || !pm1.Visible)
+                            + " flyoutKept=" + fy.Visible + " (期望 True/True)");
+                        onClick.Invoke(bufRow, new object[] { EventArgs.Empty });   // 紧跟的这次点击 = 收起那一下
+                        for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                        var pm2 = curMenu();
+                        Console.Out.WriteLine("TOGGLE-2 reopened=" + (pm2 != null && pm2.Visible) + " (期望 False)");
+                        System.Threading.Thread.Sleep(450); Application.DoEvents(); // 过 400ms 闸
+                        onClick.Invoke(bufRow, new object[] { EventArgs.Empty });   // 再点一次 = 正常重开
+                        for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                        var pm3 = curMenu();
+                        Console.Out.WriteLine("TOGGLE-3 reopened=" + (pm3 != null && pm3.Visible) + " (期望 True)");
+                        Cursor.Position = oldCursor;
                     }
 
                     // 借用期间点"自动时钟校正"菜单行 (走 OnClick 反射触发真实 Click 路径):

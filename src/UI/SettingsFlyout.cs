@@ -48,6 +48,9 @@ namespace StereoSplitter
         /// <summary>借来的缓冲档位下拉: 菜单行只镜像它的值与可用性, 自己的弹窗不再用 (隐藏托管)。</summary>
         RoundedCombo cmbBuf;
         ProfileMenu profileMenu;
+        /// <summary>子菜单刚被"点在父弹层上"收起的时刻 (NowMs 基准); 0 = 没有。
+        /// 400ms 内的行点击视为同一次点击, 不再重开子菜单。</summary>
+        long submenuTogglePendingMs;
 
         // —— 布局常量 = 96 设计像素 (面板按 96 摆好后整体乘一次缩放系数) ——
         const int DesignW = 300;
@@ -186,13 +189,23 @@ namespace StereoSplitter
             foreach (Borrowed b in borrowed) if (b.C == c) b.Refresh();
         }
 
-        /// <summary>点"缓冲档位"行: 弹档位子菜单 (白底圆角, 当前档打勾)。</summary>
+        /// <summary>点"缓冲档位"行: 弹档位子菜单 (白底圆角, 当前档打勾)。
+        /// <para>第二次点同一行 = "只收子菜单, 父弹层留着" (用户指定): 子菜单的非点选收起
+        /// (鼠标按下点在外面) 会先于本次 Click 到达 —— 若点落在本弹层上, 记一个短闸,
+        /// 让紧跟的这次行点击不重开; 若点落在弹层外面, 父层才跟着一起收。</para></summary>
         void OpenProfileMenu(MenuRow row)
         {
             if (cmbBuf == null || cmbBuf.Items.Count == 0) return;
 
-            // 子菜单是另一个顶层窗口, 鼠标会离开本弹层 —— 挂起 AutoClose, 关掉后恢复;
-            // 若不是点菜单项收的 (点了别处/Esc), 本弹层也跟着收, 别留一个悬空的父层。
+            // 400ms 内刚被"点在父弹层上"收起过: 这一下点击就是收起子菜单的那一下, 别重开
+            if (submenuTogglePendingMs > 0 && NowMs() - submenuTogglePendingMs < 400)
+            {
+                submenuTogglePendingMs = 0;
+                return;
+            }
+            submenuTogglePendingMs = 0;
+
+            // 子菜单是另一个顶层窗口, 鼠标会离开本弹层 —— 挂起 AutoClose, 关掉后恢复
             if (profileMenu != null) { try { profileMenu.Dispose(); } catch { } profileMenu = null; }
             ProfileMenu menu = new ProfileMenu(cmbBuf, rowFont, idx =>
             {
@@ -206,7 +219,12 @@ namespace StereoSplitter
             {
                 AutoClose = true;
                 bool picked = e.CloseReason == ToolStripDropDownCloseReason.ItemClicked;
-                if (!picked && Visible) Close();
+                if (picked) return;
+                // 非点选收起: 看这次鼠标落点 —— 在本弹层上 → 只收子菜单 (父层留着,
+                // 紧跟的行点击由上面的短闸拦住不再重开); 在弹层外面 → 父层一起收。
+                Point mp = Control.MousePosition;
+                if (Bounds.Contains(mp)) { submenuTogglePendingMs = NowMs(); return; }
+                if (Visible) Close();
             };
 
             // 锚在行的右侧偏下 (级联菜单观感), 顶出屏幕工作区时往回收
