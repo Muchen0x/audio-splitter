@@ -10,7 +10,7 @@ namespace StereoSplitter
     /// 输出卡片:
     ///   [设备▾] [声道▾/多声道] [延迟][n][ms] [×]
     ///   [🔊] [滑条] n%            ← 喇叭 = 该设备的静音开关 (点一下静音)
-    ///   (多声道时) 每行: p0 [声道▾] [滑条] n%
+    ///   (多声道时) 每行: [声道▾] [滑条] n%
     /// 一张卡片对应一台设备; 声道下拉里的"多声道"把该设备的每个物理声道展开成一行。
     /// </summary>
     class OutputCardControl : UserControl
@@ -30,7 +30,6 @@ namespace StereoSplitter
         /// <summary>多声道行: 每个物理声道一行 (声道下拉 + 音量条 + 百分比)。</summary>
         sealed class SlotRow
         {
-            public Label Tag;
             public RoundedCombo Cmb;
             public VolumeSlider Vol;
             public Label Lbl;
@@ -66,7 +65,7 @@ namespace StereoSplitter
         // 或排成错误的列数; 常量没法在运行时改。
         public static int CardHeight { get; private set; } = 62;   // 单声道卡片高度
         public static int CardWidth { get; private set; } = 500;
-        public static int RowHeight { get; private set; } = 32;    // 多声道每行高度 (行内下拉 30 + 2 行距)
+        public static int RowHeight { get; private set; } = 28;    // 多声道每行高度 (行内下拉 26 + 2 行距)
 
         /// <summary>卡片之间的竖向间隙 (与 MainForm 里卡片的 Margin.Bottom 对应)。</summary>
         public static int CardGap { get; private set; } = 4;
@@ -77,13 +76,12 @@ namespace StereoSplitter
             CardHeight = (int)Math.Round(62 * f);
             RowTop = (int)Math.Round(64 * f);
             CardWidth = (int)Math.Round(500 * f);
-            RowHeight = (int)Math.Round(32 * f);
+            RowHeight = (int)Math.Round(28 * f);
             CardGap = (int)Math.Round(4 * f);
         }
 
         /// <summary>卡片边框色。下拉框本体 / 弹层 / 延迟壳也用这一个, 全界面同一套框。</summary>
         internal static readonly Color BorderColor = Color.FromArgb(203, 208, 216);
-        static readonly Color RowLabelColor = Color.FromArgb(120, 126, 136);
         static int CornerRadius { get { return Dpi.S(6); } }
         static int RowTop = 64;                 // 多声道首行 y (按 DPI 缩放在 ScaleForDpi 里)
 
@@ -95,6 +93,14 @@ namespace StereoSplitter
         /// 改走 Dpi.S 之后两头都对齐。</para>
         /// </summary>
         internal static int RowControlHeight { get { return Dpi.S(30); } }
+
+        /// <summary>
+        /// 多声道行内下拉的高度 (设计像素)。比第一行的 30 矮一档 —— 用户要求"这两个下拉框高度缩小一点"。
+        /// <para>多声道时一屏要竖排 N 个下拉 + 各自的滑条, 30 高的下拉把每行撑得很胖, 两三行就占掉
+        /// 半张屏; 行内下拉只承载"这个物理声道接哪个逻辑声道", 内容比第一行少, 缩到 26 刚好。
+        /// 与第一行的设备/声道下拉不一致是刻意的, 两者不在同一行, 不会并排比较。</para>
+        /// </summary>
+        internal static int RowComboHeight { get { return Dpi.S(26); } }
 
         public OutputCardControl(OutputCardModel model)
         {
@@ -169,7 +175,7 @@ namespace StereoSplitter
             {
                 Text = "100%",
                 AutoSize = false,
-                Width = 42,
+                Width = Dpi.S(42),      // 125% 下 42 物理像素放不下「100%」, 会裁成「100」
                 Height = 20,
                 TextAlign = ContentAlignment.MiddleLeft
             };
@@ -293,21 +299,12 @@ namespace StereoSplitter
         void AddRow(int index)
         {
             var r = new SlotRow();
-            r.Tag = new Label
-            {
-                Text = "p" + index,
-                AutoSize = false,
-                Width = 24,
-                Height = 20,
-                TextAlign = ContentAlignment.MiddleLeft,
-                ForeColor = RowLabelColor
-            };
-            // 与第一行的设备/声道下拉同一档 (同高 30, 同走 Dpi.S): 卡片里混用两种高度
-            // 会让同一列控件的底边对不齐, 差 1px 也看得出来
+            // 行首原来有个 "p0"/"p1" 的序号标签, 已去掉 (用户要求): 行的含义就是物理声道顺序,
+            // 而下拉里显示的逻辑声道名已经足够定位, 序号只是噪声, 还占掉 30px 宽度。
             r.Cmb = new RoundedCombo
             {
                 Width = Dpi.S(92),
-                Height = RowControlHeight,
+                Height = RowComboHeight,
                 ItemHeight = 24,
                 MaxDropDownItems = 10,
                 Enabled = !channelLocked        // 启动中新建的行也要是禁用状态
@@ -327,7 +324,7 @@ namespace StereoSplitter
             {
                 Text = "100%",
                 AutoSize = false,
-                Width = 42,
+                Width = Dpi.S(42),      // 同上: 字面量 42 在 125% 下会把「%」裁掉
                 Height = 20,
                 TextAlign = ContentAlignment.MiddleLeft
             };
@@ -344,18 +341,16 @@ namespace StereoSplitter
             r.Vol.KeyUp += (s, e) => Fire();
             r.Lbl.DoubleClick += (s, e) => { r.Vol.Value = 100; Fire(); };
 
-            Controls.AddRange(new Control[] { r.Tag, r.Cmb, r.Vol, r.Lbl });
+            Controls.AddRange(new Control[] { r.Cmb, r.Vol, r.Lbl });
             rows.Add(r);
         }
 
         void RemoveRow(int index)
         {
             SlotRow r = rows[index];
-            Controls.Remove(r.Tag);
             Controls.Remove(r.Cmb);
             Controls.Remove(r.Vol);
             Controls.Remove(r.Lbl);
-            r.Tag.Dispose();
             r.Cmb.Dispose();
             r.Vol.Dispose();
             r.Lbl.Dispose();
@@ -419,18 +414,19 @@ namespace StereoSplitter
             volTrack.Width = Math.Max(Dpi.S(120), w - volX - (Dpi.S(8) + lblVol.Width + Dpi.S(10)));
             lblVol.Location = new Point(volTrack.Right + Dpi.S(8), row2);
 
-            // 多声道行: p0 [声道▾] [滑条] n%
-            // 行内下拉 30 高而滑条/标签 20 高, 后两者按"在下拉里居中"偏移 5, 于是
+            // 多声道行: [声道▾] [滑条] n%
+            // 行首的 "p0" 序号标签已去掉, 下拉直接贴到 8 (与第一行的设备下拉同列)。
+            // 行内下拉 26 高而滑条/标签 20 高, 后两者按"在下拉里居中"偏移 3, 于是
             // 每行的文字中心、轨道线中心都落在下拉的垂直中线上。
+            int comboH = RowComboHeight;
             for (int i = 0; i < rows.Count; i++)
             {
                 int y = RowTop + i * RowHeight;
                 SlotRow r = rows[i];
-                int mid = (ctrlH - r.Vol.Height) / 2;
-                r.Tag.Location = new Point(Dpi.S(10), y + mid);
-                r.Cmb.Location = new Point(Dpi.S(38), y);
-                r.Vol.Location = new Point(Dpi.S(140), y + mid);
-                r.Vol.Width = Math.Max(Dpi.S(100), w - Dpi.S(140) - (Dpi.S(8) + r.Lbl.Width + Dpi.S(10)));
+                int mid = (comboH - r.Vol.Height) / 2;
+                r.Cmb.Location = new Point(Dpi.S(8), y);
+                r.Vol.Location = new Point(Dpi.S(108), y + mid);
+                r.Vol.Width = Math.Max(Dpi.S(100), w - Dpi.S(108) - (Dpi.S(8) + r.Lbl.Width + Dpi.S(10)));
                 r.Lbl.Location = new Point(r.Vol.Right + Dpi.S(8), y + mid);
             }
         }
