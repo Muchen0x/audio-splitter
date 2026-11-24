@@ -65,7 +65,10 @@ namespace StereoSplitter
             if (!cfgOk)
             {
                 StartFailed();
-                MessageBox.Show("自动配置失败，已中止启动。\n详见日志。", "启动中止");
+                // 失败原因直接进弹窗 (用户要求, 不再让用户去翻日志)
+                string msg = "自动配置失败，已中止启动。";
+                if (!string.IsNullOrEmpty(autoCfgFailReason)) msg += "\n\n原因: " + autoCfgFailReason;
+                MessageBox.Show(msg, "启动中止");
                 return;
             }
 
@@ -118,10 +121,15 @@ namespace StereoSplitter
 
                 autoRestartCount = 0;   // 手动启动 → 重新给自动重建机会
                 StartParams params0 = SnapshotStartParams();
-                if (!ValidateRouting(params0.Model))
+                List<string> routeErrors;
+                if (!ValidateRouting(params0.Model, out routeErrors))
                 {
                     StartFailed();
-                    MessageBox.Show("路由校验未通过（详见日志里的 [路由] 行），已中止启动。", "启动中止");
+                    // Error 级问题原文直接进弹窗 (用户要求), 日志照旧留全量
+                    string msg = "路由校验未通过，已中止启动。";
+                    if (routeErrors != null && routeErrors.Count > 0)
+                        msg += "\n\n" + string.Join("\n", routeErrors.ToArray());
+                    MessageBox.Show(msg, "启动中止");
                     return;
                 }
                 LaunchEngine(runCaptureId, params0, false);
@@ -180,19 +188,25 @@ namespace StereoSplitter
         /// <summary>
         /// 启动前的路由校验: Error 挡住启动, Warn/Info 只记日志。
         /// 校验两遍: 设备层 (空设备/指向捕获设备/端点声道数不足) + 声道层 (绑定越界/未分配/削波)。
+        /// <para>errors 带回全部 Error 级问题 (面向用户的原文) —— 失败弹窗直接展示, 不再让用户翻日志。</para>
         /// </summary>
-        bool ValidateRouting(RoutingModel model)
+        bool ValidateRouting(RoutingModel model, out List<string> errors)
         {
             var issues = model.ValidateSinks(DeviceIdAt(cmbDefault.SelectedIndex), EndpointChannels);
             // srcCh 传 0: 启动前拿不到捕获格式, 此时判抽头越界会把合法的 6ch 配置全误报
             issues.AddRange(model.Validate(0, model.EnabledSinks()));
 
             bool hasError = false;
+            errors = new List<string>();
             for (int i = 0; i < issues.Count; i++)
             {
                 switch (issues[i].Severity)
                 {
-                    case IssueSev.Error: hasError = true; Log("[错误] [路由] " + issues[i].Message); break;
+                    case IssueSev.Error:
+                        hasError = true;
+                        Log("[错误] [路由] " + issues[i].Message);
+                        errors.Add(issues[i].Message);
+                        break;
                     case IssueSev.Warn: Log("[警告] [路由] " + issues[i].Message); break;
                     default: Log("[提示] [路由] " + issues[i].Message); break;
                 }

@@ -1967,8 +1967,12 @@ namespace StereoSplitter
             return parts.Count == 0 ? " / 输出=(未绑定)" : " / " + string.Join(" / ", parts.ToArray());
         }
 
+        /// <summary>AutoConfigure 最近一次失败的原因 (面向用户的单句, 弹窗直接展示, null = 无)。</summary>
+        string autoCfgFailReason;
+
         bool AutoConfigure()
         {
+            autoCfgFailReason = null;
             if (cmbDefault.SelectedIndex < 0) return false;
 
             var dev = Devices[cmbDefault.SelectedIndex];
@@ -1987,6 +1991,8 @@ namespace StereoSplitter
                     {
                         Log("[错误] 配置 1/4 设置系统默认输出 → [" + cmbDefault.SelectedIndex + "] " +
                             dev.FriendlyName + " 失败: " + setErr);
+                        autoCfgFailReason = "无法把 [" + cmbDefault.SelectedIndex + "] " + dev.FriendlyName +
+                            " 设为系统默认输出" + (string.IsNullOrEmpty(setErr) ? "" : ": " + setErr);
                         int idx1 = catalog.IndexOf(catalog.DefaultRenderId());
                         if (idx1 >= 0) cmbDefault.SelectedIndex = idx1;
                         return false;
@@ -2008,6 +2014,7 @@ namespace StereoSplitter
                 if (cards.Count == 0 || models.Count == 0)
                 {
                     Log("[错误] 配置 3/4 没有输出卡片。");
+                    autoCfgFailReason = "没有输出卡片，请先点「添加设备」至少建一张。";
                     return false;
                 }
                 var cand = new List<int>();
@@ -2016,6 +2023,7 @@ namespace StereoSplitter
                 if (cand.Count == 0)
                 {
                     Log("[错误] 配置 3/4 除捕获设备外没有任何可用输出端点。");
+                    autoCfgFailReason = "除捕获设备 [" + defIdx + "] " + dev.FriendlyName + " 外，没有其它可用输出端点。";
                     return false;
                 }
                 var usedIdx = new HashSet<int>();
@@ -2053,6 +2061,7 @@ namespace StereoSplitter
                 if (!BindEndpointVolumeSync("[配置] 4/4"))
                 {
                     Log("[错误] 配置 4/4 输出音量绑定失败，中止启动。");
+                    autoCfgFailReason = "输出端点音量绑定失败（哪一台绑定不上，见日志 [错误] 行）。";
                     return false;
                 }
 
@@ -2065,6 +2074,9 @@ namespace StereoSplitter
                     Log("[错误] 回环检查未通过: 第 " + (badLane + 1) + " 张卡片（" +
                         (badLane < models.Count ? CardRole(models[badLane]) : "?") + "）与捕获设备相同 [" + defIdx + "] " +
                         dev.FriendlyName + "，请改选输出设备 (程序不会替你改)。");
+                    autoCfgFailReason = "第 " + (badLane + 1) + " 张卡片（" +
+                        (badLane < models.Count ? CardRole(models[badLane]) : "?") + "）与捕获设备相同 [" + defIdx + "] " +
+                        dev.FriendlyName + " —— 会造成回环，请改选输出设备。";
                     return false;
                 }
                 Log("[配置] 回环检查通过 (捕获输出与 " + cards.Count + " 张输出卡片无冲突)");
@@ -2074,6 +2086,7 @@ namespace StereoSplitter
             catch (Exception ex)
             {
                 Log("[错误] 自动配置失败: " + ex.Message);
+                autoCfgFailReason = ex.Message;
                 return false;
             }
         }
