@@ -1348,9 +1348,8 @@ namespace StereoSplitter
             bool fit = list != null && list.Height >= rows * combo.ItemHeight;
             // 自绘列表不另存条目副本 → 行数直接来自数据源
             int listItems = list == null ? -1 : combo.Items.Count;
-            // 弹层必须与本体等宽。窗口四周多了一圈自绘阴影 (ShadowPad), 所以要减掉再看内容宽
-            int shadow = RoundedCombo.ShadowPad;
-            bool sameW = ts.Width - shadow * 2 == Math.Max(combo.Width, combo.DropDownWidth);
+            // 弹层必须与本体等宽。窗口尺寸即内容尺寸 (无阴影外扩), 可以直接比
+            bool sameW = ts.Width == Math.Max(combo.Width, combo.DropDownWidth);
             // 本体文字区够不够放下当前选中项 —— 60px 宽的下拉最容易在这里翻车 (直接看界面只是
             // 觉得"怎么是省略号", 量出来才知道差几像素)
             int textRoom = combo.Width - RoundedCombo.TextPadX - RoundedCombo.ArrowZone;
@@ -1359,7 +1358,6 @@ namespace StereoSplitter
                 + " rows=" + rows + " rowH=" + combo.ItemHeight
                 + " scroll=" + (combo.Items.Count > rows ? "yes" : "no")
                 + " popup=" + ts.Size
-                + " shadowPad=" + shadow
                 + " comboW=" + combo.Width
                 + " textRoom=" + textRoom + "/selW=" + selW
                 + (selW > textRoom ? " <<< ELLIPSIS" : "")
