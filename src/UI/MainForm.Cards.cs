@@ -487,19 +487,19 @@ namespace StereoSplitter
         /// 顶部三行 (捕获+开始分流 / 规格 / 声道标注) 与卡片区宽度的自适应布局。
         /// <para>原本是按 600 宽硬编码的固定坐标 (刷新设备右缘 489、添加输出 574),
         /// 窗口缩到 500 宽 (客户区约 484) 时右侧控件会被挤出客户区截断。
-        /// 这里改为「右侧控件贴面板右缘、中间下拉吃掉剩余宽度」, 任意宽度都不越界。</para>
+        /// 这里改为「右侧控件贴面板右缘、左侧贴左缘、中间下拉居中」, 任意宽度都不越界。</para>
         /// <para>缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准 已迁入设置页,
         /// 不再参与这里的布局。</para>
         /// <para>设置齿轮也已搬去标题栏 (见 MainForm.LayoutCaption) —— 第一行不再有它。</para>
-        /// <para>「开始分流」搬进第一行 (用户指定): 贴右缘, 与捕获壳同高同顶边 ——
-        /// "选好设备 → 点开始"是同一个动作链, 放一行读起来顺。壳吃掉按钮左边的剩余宽度,
-        /// 窄窗口时保底 160 设计像素。</para>
+        /// <para>「开始分流」搬进第一行 (用户指定)。第一行现为三个独立控件 (用户指定拆开组合壳):
+        /// 刷新按钮贴左、设备下拉水平居中、开始按钮贴右 —— 刷新与开始同尺寸 (30 设计像素),
+        /// 下拉在两者之间居中, 左右间距对称 (多出来的空地平摊成两段相等的缝)。</para>
         /// </summary>
         void LayoutTopRows()
         {
-            if (captureShell == null || btnAddOutput == null) return;
+            if (cmbDefault == null || btnRefresh == null || btnAddOutput == null) return;
             if (btnStart == null || cmbSpec == null) return;
-            Control host = captureShell.Parent;
+            Control host = btnStart.Parent;
             if (host == null) return;
 
             Size panelSize = host.ClientSize;
@@ -510,16 +510,26 @@ namespace StereoSplitter
             int leftEdge = Dpi.S(15);               // 与其它行左缘一致
             int gap = Dpi.S(8);
 
-            // —— 第 1 行: [捕获下拉 | 刷新] 圆角壳 + 右缘的 [开始分流], 同一行 ——
-            // 主按钮先定位 (它是壳宽度的基准): 贴右缘、**垂直居中于行** —— 按钮本体 30 设计
-            // 像素, 比行高 (26) 大一圈: 图标是这一行的主操作, 大一号才压得住; 壳保持行高,
-            // 悬停垫各自完整, 视觉上仍是一条线。
-            btnStart.Top = Dpi.S(6) + (OutputCardControl.RowControlHeight - btnStart.Height) / 2;
-            btnStart.Left = Math.Max(leftEdge, panelW - rightEdge - btnStart.Width);
-            captureShell.Left = leftEdge;
-            captureShell.Top = Dpi.S(6);
-            captureShell.Height = OutputCardControl.RowControlHeight;
-            captureShell.Width = Math.Max(Dpi.S(160), btnStart.Left - gap - captureShell.Left);
+            // —— 第 1 行: [刷新] [捕获下拉] [开始分流] 三个独立控件 ——
+            // 两个按钮同尺寸 (30 设计像素, 比行高 26 大一圈: 图标是这一行的主操作, 大一号才压得住),
+            // 各自贴左右缘并垂直居中于行; 下拉在两者的内缘之间水平居中 (间距对称),
+            // 宽度不够时先缩下拉, 缩到下限还挤不下就让间距归零 —— 不允许互相压住。
+            int rowTop = Dpi.S(6);
+            int rowH = OutputCardControl.RowControlHeight;
+            btnRefresh.Left = leftEdge;
+            btnRefresh.Top = rowTop + (rowH - btnRefresh.Height) / 2;
+            btnStart.Top = rowTop + (rowH - btnStart.Height) / 2;
+            btnStart.Left = Math.Max(btnRefresh.Right + gap, panelW - rightEdge - btnStart.Width);
+
+            int innerL = btnRefresh.Right + gap;
+            int innerR = btnStart.Left - gap;
+            int space = Math.Max(0, innerR - innerL);
+            int cmbW = cmbDefault.Width;
+            int minCmbW = Dpi.S(120);            // 与壳时代相同的保底: 再窄设备名就全成省略号了
+            if (cmbW > space) cmbW = Math.Max(minCmbW, space);
+            if (cmbDefault.Width != cmbW) cmbDefault.Width = cmbW;
+            cmbDefault.Left = innerL + Math.Max(0, space - cmbW) / 2;
+            cmbDefault.Top = rowTop + (rowH - cmbDefault.Height) / 2;
 
             // —— 第 2 行: [规格下拉] 贴左, [添加设备] 贴右, 中间空地归「声道标注」或「运行状态字」 ——
             // 规格标签已删, 下拉自己说明是什么: 它当行首读起来才顺, 空出来的右端留给「添加设备」。

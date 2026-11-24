@@ -20,7 +20,8 @@ namespace StereoSplitter
     /// 「开始分流」图标按钮：与刷新齿轮同一套图标交互 (无边框、悬停浮圆角垫、键盘空格可点)，
     /// 图形随链路状态切换、全程带动效。
     ///
-    /// <para><b>形态与图形</b>：<see cref="StartButtonMode.Idle"/> = 播放三角 ▶ (蓝)；
+    /// <para><b>形态与图形</b>：<see cref="StartButtonMode.Idle"/> = 播放三角 ▶ (蓝) **带呼吸**
+    /// (缩放+透明度 1.4s 余弦起伏, 与刷新按钮同相 —— 用户指定"统一三角形呼吸");
     /// <see cref="StartButtonMode.Working"/> = 240° 圆弧匀速转圈 (启动中 / 正在停止 ——
     /// 与刷新齿轮同一套"时间驱动角度"的画法, 界面卡顿不丢角度, 转满一圈的角度连续所以
     /// 停下来不跳)；<see cref="StartButtonMode.Pulse"/> = 停止方块 ■ + 1.4s 周期的呼吸光环
@@ -53,6 +54,22 @@ namespace StereoSplitter
         const int SpinPeriodMs = 900;
         const int PulsePeriodMs = 1400;
 
+        // —— 呼吸动效 (与刷新按钮共用同一套参数, 见 GearButton.Breath) ——
+        // 用户指定: 刷新与开始两颗按钮统一"三角形呼吸", 节奏/幅度/风格一致 ——
+        // 共用全局时钟 (NowMs 取相位), 两颗按钮严格同相, 一起起伏才读作一组。
+        /// <summary>呼吸周期 (ms)。与运行中光环同一支钟 (1.4s): 界面里只有这一种呼吸节奏。</summary>
+        internal const int BreathPeriodMs = PulsePeriodMs;
+        /// <summary>呼吸幅度: 图标缩放峰值 +9%、alpha 谷值 -55 —— 微澜, 不是蹦跳。</summary>
+        internal const float BreathScaleAmp = 0.09f;
+        internal const int BreathAlphaAmp = 55;
+
+        /// <summary>呼吸波形 0..1..0 (余弦半波, 首尾衔接无跳变)。</summary>
+        internal static float BreathWave()
+        {
+            float phase = (NowMs() % BreathPeriodMs) / (float)BreathPeriodMs;
+            return 0.5f - 0.5f * (float)Math.Cos(phase * 2.0 * Math.PI);
+        }
+
         /// <summary>当前动效形态。换形态时重置相位并保证动画钟在跑。</summary>
         public StartButtonMode Mode
         {
@@ -62,7 +79,7 @@ namespace StereoSplitter
                 if (mode == value) return;
                 mode = value;
                 modeStartMs = NowMs();
-                if (mode != StartButtonMode.Idle) EnsureTimer().Start();
+                EnsureTimer().Start();   // Idle 也要钟: ▶ 呼吸靠它驱动
                 Invalidate();
             }
         }
@@ -124,8 +141,9 @@ namespace StereoSplitter
                         (int)Math.Round(tintFrom.B + (tintTo.B - tintFrom.B) * k));
                 }
             }
-            // 渐变完但呼吸/旋转还在跑: 钟不能停
-            if (mode != StartButtonMode.Idle) busy = true;
+            // 渐变完但呼吸/旋转还在跑: 钟不能停。Idle 的 ▶ 呼吸也要钟 (禁用时停,
+            // OnEnabledChanged 里恢复)。
+            if (mode != StartButtonMode.Idle || Enabled) busy = true;
 
             if (busy) Invalidate();
             else if (anim != null) anim.Stop();
@@ -184,7 +202,12 @@ namespace StereoSplitter
             base.OnMouseDown(e);
         }
         protected override void OnMouseUp(MouseEventArgs e) { if (down) { down = false; Invalidate(); } base.OnMouseUp(e); }
-        protected override void OnEnabledChanged(EventArgs e) { if (!Enabled) { hot = false; down = false; } Invalidate(); base.OnEnabledChanged(e); }
+        protected override void OnEnabledChanged(EventArgs e)
+        {
+            if (!Enabled) { hot = false; down = false; }
+            else if (mode == StartButtonMode.Idle) EnsureTimer().Start();   // 呼吸随启用恢复
+            Invalidate(); base.OnEnabledChanged(e);
+        }
 
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -266,10 +289,16 @@ namespace StereoSplitter
                 g.DrawEllipse(p, cx - r, cy - r, r * 2f, r * 2f);
         }
 
-        /// <summary>播放三角: 圆角三边形 (圆角用加宽线描一遍路径得到, 与卡片图标同一手法)。</summary>
+        /// <summary>
+        /// 播放三角: 圆角三边形 (圆角用加宽线描一遍路径得到, 与卡片图标同一手法)。
+        /// <para>Idle 态不再是静止贴图 (用户指定"三角形呼吸"): 缩放与透明度随 1.4s 余弦波
+        /// 一起起伏, 与刷新按钮的呼吸严格同相 (共用全局钟, 见 <see cref="BreathWave"/>)。</para>
+        /// </summary>
         void DrawPlay(Graphics g, float cx, float cy, Color ink)
         {
-            float s = Dpi.F(8.2f);                          // 半边长: 30 按钮里 ≈20px 高的三角
+            float w = BreathWave();
+            float s = Dpi.F(8.2f) * (1f + BreathScaleAmp * w);   // 半边长: 30 按钮里 ≈20px 高的三角
+            ink = Color.FromArgb(255 - (int)(BreathAlphaAmp * w), ink);
             // 视觉居中: 三角形的几何重心比外接框中心偏右, 左移半像素才不歪
             float x0 = cx - s * 0.72f, y0 = cy - s, x1 = cx - s * 0.72f, y1 = cy + s, x2 = cx + s;
             using (var path = new System.Drawing.Drawing2D.GraphicsPath())

@@ -1400,12 +1400,58 @@ namespace StereoSplitter
         /// <summary>图标此刻是否在转。</summary>
         public bool IsSpinning { get { return spinTimer != null && spinTimer.Enabled; } }
 
+        // —— 呼吸动效: 与开始按钮的 ▶ 三角同一套参数 (StartButton.Breath*), 用户指定两颗
+        // 按钮统一呼吸、节奏幅度一致 —— 参数与波形都取自 StartButton, 共用全局钟严格同相。
+        // opt-in: GearButton 还服务齿轮/加号/× 等中性图标, 呼吸只给刷新按钮开。
+        bool breath;
+        System.Windows.Forms.Timer breathTimer;
+
+        /// <summary>图标是否随 1.4s 余弦波呼吸 (缩放 +9% 峰值、alpha -55 谷值)。转圈的那一圈暂停。</summary>
+        public bool Breath
+        {
+            get { return breath; }
+            set
+            {
+                if (breath == value) return;
+                breath = value;
+                UpdateBreathTimer();
+                Invalidate();
+            }
+        }
+
+        void UpdateBreathTimer()
+        {
+            bool need = breath && Enabled;
+            if (need)
+            {
+                if (breathTimer == null)
+                {
+                    breathTimer = new System.Windows.Forms.Timer { Interval = 16 };
+                    breathTimer.Tick += (s, e) =>
+                    {
+                        if (!breath || !Enabled) { breathTimer.Stop(); return; }
+                        Invalidate();    // 转圈时 Spin 自己在 Invalidate, 这里多刷几帧无害
+                    };
+                }
+                breathTimer.Start();
+            }
+            else if (breathTimer != null) breathTimer.Stop();
+        }
+
+        /// <summary>呼吸此刻的波形值 (0..1..0); 不呼吸时恒 0。</summary>
+        float BreathNow()
+        {
+            return breath && Enabled && !(glyph == ButtonGlyph.Refresh && spinAngle != 0f)
+                ? StartButton.BreathWave()
+                : 0f;
+        }
+
         /// <summary>鼠标是否停在按钮上 (壳据此把整组的框一起加深)。</summary>
         internal bool IsHot { get { return hot; } }
 
         /// <summary>
-        /// 悬停/按下状态变了。嵌在组里时 (见 <see cref="ComboButtonShell"/>), 组框要跟着一起变深浅 ——
-        /// 组里一半高亮一半不高亮, 看着像两个控件拼的, 正是要避免的。
+        /// 悬停/按下状态变了。曾经给 ComboButtonShell 组合壳用 (壳已删), 事件保留:
+        /// 想让外部跟着按钮的深浅联动重画时订阅它。
         /// </summary>
         internal event Action VisualStateChanged;
         void NotifyVisual()
@@ -1460,11 +1506,20 @@ namespace StereoSplitter
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing && spinTimer != null)
+            if (disposing)
             {
-                spinTimer.Stop();
-                spinTimer.Dispose();
-                spinTimer = null;
+                if (spinTimer != null)
+                {
+                    spinTimer.Stop();
+                    spinTimer.Dispose();
+                    spinTimer = null;
+                }
+                if (breathTimer != null)
+                {
+                    breathTimer.Stop();
+                    breathTimer.Dispose();
+                    breathTimer = null;
+                }
             }
             base.Dispose(disposing);
         }
@@ -1555,7 +1610,12 @@ namespace StereoSplitter
             base.OnMouseDown(e);
         }
         protected override void OnMouseUp(MouseEventArgs e) { if (down) { down = false; Invalidate(); } base.OnMouseUp(e); }
-        protected override void OnEnabledChanged(EventArgs e) { if (!Enabled) { hot = false; down = false; } Invalidate(); base.OnEnabledChanged(e); }
+        protected override void OnEnabledChanged(EventArgs e)
+        {
+            if (!Enabled) { hot = false; down = false; }
+            UpdateBreathTimer();     // 置灰停呼吸, 恢复启用接着呼吸
+            Invalidate(); base.OnEnabledChanged(e);
+        }
 
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -1576,6 +1636,12 @@ namespace StereoSplitter
             float cy = (Height - 1) / 2f + (down ? 1f : 0f);
             Color icon = Enabled ? ((hot || down) ? IconActive : IconColor) : Color.FromArgb(170, 170, 170);
 
+            // 呼吸: 缩放 + 透明度一起起伏, 参数与开始按钮的 ▶ 完全一致 (见 StartButton.Breath*)。
+            // 转圈的那一圈里暂停 (两个动效叠加会糊), 停转后从全局钟的当前相位接着呼吸。
+            float breathW = BreathNow();
+            if (breathW > 0f)
+                icon = Color.FromArgb(255 - (int)(StartButton.BreathAlphaAmp * breathW), icon);
+
             // 刷新时整圈绕着按钮中心转: 只转 Refresh 一个图形 (螺母/× 转起来没有语义)
             bool spun = glyph == ButtonGlyph.Refresh && spinAngle != 0f;
             System.Drawing.Drawing2D.GraphicsState spinState = null;
@@ -1584,6 +1650,15 @@ namespace StereoSplitter
                 spinState = g.Save();
                 g.TranslateTransform(cx, cy);
                 g.RotateTransform(spinAngle);
+                g.TranslateTransform(-cx, -cy);
+            }
+            System.Drawing.Drawing2D.GraphicsState breathState = null;
+            if (breathW > 0f)
+            {
+                float k = 1f + StartButton.BreathScaleAmp * breathW;
+                breathState = g.Save();
+                g.TranslateTransform(cx, cy);
+                g.ScaleTransform(k, k);
                 g.TranslateTransform(-cx, -cy);
             }
 
@@ -1663,6 +1738,7 @@ namespace StereoSplitter
                     break;
             }
 
+            if (breathState != null) g.Restore(breathState);
             if (spun) g.Restore(spinState);
 
             // 键盘焦点: 一圈蓝色细框 (与下拉框的焦点色同一支蓝)。只在键盘进来时画 ——
@@ -1743,148 +1819,6 @@ namespace StereoSplitter
                 g.FillPolygon(fill, flag);
         }
     }
-
-    /// <summary>
-    /// 「输入控件 + 图标按钮」合成**一个**圆角组: 捕获设备下拉 + 刷新。
-    /// <para>合成一组的理由: 两者是同一件事的两半 —— "选哪台设备"、"重新枚举一遍"。
-    /// 各自带一圈框并排站着, 中间那道 8px 缝会把它们读成两个不相干的控件; 收进一个壳里,
-    /// 一条边、一个圆角、一条分隔线, 才看得出是一个组合。</para>
-    /// <para>壳负责: 圆角(6) / 白底 / 描边(与卡片同一支浅灰 <see cref="OutputCardControl.BorderColor"/>)
-    /// / 悬停与展开时的加深 / 键盘焦点的蓝框。内嵌下拉只画文字和箭头 (见 RoundedCombo.Embedded),
-    /// 否则两层框叠着, 边缘会差 1~2px 成双线。</para>
-    /// <para>壳不可能自己去盯子控件的 hot/open, 所以下拉在状态变化时发
-    /// <see cref="RoundedCombo.VisualStateChanged"/>, 壳收到就重画自己的框。</para>
-    /// </summary>
-    class ComboButtonShell : Control
-    {
-        static Color BorderNormal { get { return OutputCardControl.BorderColor; } }
-        /// <summary>悬停/展开: 与下拉框本体同一支加深色。</summary>
-        static readonly Color BorderHot = Color.FromArgb(146, 153, 164);
-        /// <summary>禁用: 与下拉框本体同一支淡色。</summary>
-        static readonly Color BorderDisabled = Color.FromArgb(226, 230, 235);
-        /// <summary>键盘焦点: 与下拉框/按钮同一支蓝。</summary>
-        static readonly Color BorderActive = Color.FromArgb(0, 120, 215);
-        /// <summary>
-        /// 中间那条分隔线。比边框深一档 (203→186): 与边框同色时 1px 白底上几乎看不见,
-        /// 那两个区域就又糊成一个长条了。
-        /// </summary>
-        static readonly Color SepNormal = Color.FromArgb(186, 192, 202);
-        static readonly Color DisabledBack = Color.FromArgb(244, 245, 247);
-        /// <summary>本体与壳内边缘的呼吸 (1~2px): 内嵌控件铺满会压住壳的圆角弧。</summary>
-        static int Inset { get { return Dpi.S(2); } }
-        /// <summary>右侧图标区宽度 (含与下拉之间的分隔线)。</summary>
-        static int ActionZone { get { return Dpi.S(30); } }
-        static int CornerRadius { get { return Dpi.S(6); } }
-
-        readonly RoundedCombo body;
-        readonly GearButton action;
-
-        public ComboButtonShell(RoundedCombo body, GearButton action)
-        {
-            if (body == null) throw new ArgumentNullException("body");
-            if (action == null) throw new ArgumentNullException("action");
-            this.body = body;
-            this.action = action;
-
-            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
-                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-            BackColor = Color.White;
-
-            // 内嵌下拉不再画自己的框和底 (壳统一负责)
-            body.Embedded = true;
-            body.VisualStateChanged += OnBodyVisualChanged;
-            // 图标按钮的悬停也让整组的框一起加深: 组里一半高亮一半不, 会读成两个控件
-            action.VisualStateChanged += OnBodyVisualChanged;
-
-            Controls.Add(body);
-            Controls.Add(action);
-            LayoutChildren();
-        }
-
-        /// <summary>内嵌的下拉本体 (外部照旧读它的 Items/SelectedIndex)。</summary>
-        public RoundedCombo Body { get { return body; } }
-        /// <summary>右侧的图标按钮。</summary>
-        public GearButton ActionButton { get { return action; } }
-
-        void OnBodyVisualChanged()
-        {
-            // 下拉本体从壳里探出来时 (弹层展开) 也要重画: 框的深浅跟着 hot/open 走
-            Invalidate();
-        }
-
-        void LayoutChildren()
-        {
-            int h = Height;
-            int zone = ActionZone;
-            body.SetBounds(Inset, Inset,
-                Math.Max(Dpi.S(40), Width - zone - Inset * 2), Math.Max(Dpi.S(18), h - Inset * 2));
-
-            // 图标按钮放在右侧区域内居中, 与壳的上下边各留一点 (和左侧下拉同一条中线)
-            int side = Math.Max(Dpi.S(20), h - Dpi.S(6));
-            action.Size = new Size(side, side);
-            action.Location = new Point(Width - zone + (zone - side) / 2, (h - side) / 2);
-        }
-
-        protected override void OnResize(EventArgs e)
-        {
-            base.OnResize(e);
-            LayoutChildren();
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-
-            // 圆角之外补父容器底色 (否则四个角会露出本控件的白方块)
-            Color outside = Parent != null ? Parent.BackColor : BackColor;
-            using (var b = new SolidBrush(outside)) g.FillRectangle(b, ClientRectangle);
-
-            bool enabled = body.Enabled;
-            bool strong = enabled && (body.IsHot || body.IsOpen || action.IsHot);
-            Color border = !enabled ? BorderDisabled
-                         : body.ShowFocusCue ? BorderActive
-                         : strong ? BorderHot
-                         : BorderNormal;
-
-            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (var path = UiDraw.RoundRect(rect, CornerRadius))
-            {
-                using (var fill = new SolidBrush(enabled ? BackColor : DisabledBack))
-                    g.FillPath(fill, path);
-            }
-
-            // 分隔线: 下拉与刷新之间的那条 1px 竖线, 上下各留一点 (不贴到圆角上)
-            int sepX = Width - ActionZone;
-            int sepPad = Dpi.S(6);
-            if (sepX > 0 && Height > sepPad * 2)
-            {
-                using (var pen = new Pen(strong ? BorderHot : SepNormal))
-                    g.DrawLine(pen, sepX + 0.5f, sepPad, sepX + 0.5f, Height - sepPad);
-            }
-
-            if (Width > 4 && Height > 4)
-            {
-                float inset = strong ? 0.75f : 0.5f;
-                using (var path = UiDraw.RoundRect(
-                    new RectangleF(inset, inset, Width - inset * 2, Height - inset * 2), CornerRadius))
-                using (var pen = new Pen(border, strong ? 1.5f : 1f))
-                    g.DrawPath(pen, path);
-            }
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-            {
-                if (body != null) body.VisualStateChanged -= OnBodyVisualChanged;
-                if (action != null) action.VisualStateChanged -= OnBodyVisualChanged;
-            }
-            base.Dispose(disposing);
-        }
-    }
-
 
     /// <summary>
     /// 喇叭图标按钮: 顶替「音量」文字标签 + 独立静音勾选框。点一下静音, 再点恢复。

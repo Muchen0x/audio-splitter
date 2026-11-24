@@ -63,9 +63,8 @@ namespace StereoSplitter
         Label lblVolMaster, lblVolGain;
         // 顶部固定行需要用到的控件 (自适应重排时要改它们的坐标/宽度)
         Label lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
-        StartButton btnStart;        // 自绘圆角 + 四态配色 + 动效 (换色渐变 / 过渡态转环 / 运行中呼吸点)
-        GearButton btnRefresh;       // 刷新设备 (圆环箭头图标): 运行中置灰, 链路级
-        ComboButtonShell captureShell;  // 捕获设备下拉 + 刷新按钮合成的一组 (一个圆角壳)
+        StartButton btnStart;        // 自绘圆角 + 四态配色 + 动效 (换色渐变 / 过渡态转环 / 运行中呼吸光环)
+        GearButton btnRefresh;       // 刷新设备 (圆环箭头图标): 运行中置灰, 链路级; 独立控件 (与下拉不再合成一组)
         RoundButton btnAddOutput;    // 「添加设备」文字按钮; 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
         Button btnClearLog;
 
@@ -363,8 +362,8 @@ namespace StereoSplitter
 
             // 捕获行: 原来行首有「捕获:」标签, 已删 (用户要求) —— 这一行只有"选哪台设备被抓取"
             // 一件事, 下拉里的设备名自己说明是什么, 再挂一个标签是重复标注。
-            // 下拉与刷新合成一组: 同一个圆角壳里左边选设备、右边重新枚举, 中间一条分隔线
-            // (见 Controls.cs 的 ComboButtonShell)。壳的尺寸/位置由 LayoutTopRows 定。
+            // 下拉与刷新曾是"同一圆角壳里的两组" (ComboButtonShell), 现拆成独立控件 (用户指定):
+            // 刷新按钮与开始按钮同尺寸 (30 设计像素) 贴左, 下拉水平居中, 位置由 LayoutTopRows 定。
             cmbDefault = new RoundedCombo
             {
                 Width = 250,
@@ -373,16 +372,17 @@ namespace StereoSplitter
                 ItemHeight = 24,
                 MaxDropDownItems = 12
             };
-            // 「刷新设备」: 圆环箭头图标按钮 (用户指定图形), 无边框 —— 与设置齿轮同一套。
+            // 「刷新设备」: 圆环箭头图标按钮 (用户指定图形), 无边框 —— 与开始按钮同一套。
             // 点一下重新枚举设备 (插拔 USB/DAC 后用); 点开下拉不再自动刷新 (用户要求撤掉)。
             // 点击后图标转满一圈 (StartSpin): 枚举是同步跑的, 没有这个反馈就像点了没反应。
+            // 呼吸动效与开始按钮同一套参数 (节奏/幅度), 见 GearButton.Breath。
             btnRefresh = new GearButton
             {
                 Glyph = ButtonGlyph.Refresh,
-                Size = new Size(24, 24)
+                Size = new Size(30, 30),
+                Breath = true
             };
             btnRefresh.Click += (s2, e2) => OnRefreshClick();
-            captureShell = new ComboButtonShell(cmbDefault, btnRefresh);
             // 「更多」入口: 原设置齿轮换成三条横线图标 (用户指定), 点开弹出下拉式弹层,
             // 原设置页的选项全部移入弹层 (见 SettingsFlyout)。放在最小化左边。
             // GlyphScale 不再参与 (More 图形自带标题栏尺寸), 字段保留给螺母等其它实例用。
@@ -433,8 +433,9 @@ namespace StereoSplitter
             // 「规格:」标签已删 —— 下拉里显示的就是规格, 再挂一个"规格:"是重复标注; 空出来的
             // 横向空间让给右对齐的下拉。
             // 行序 (上面还有捕获行 y6~32、增益 y52、主音量 y86 三行, 位置由各自的块硬编码):
-            //   y=6:   [捕获下拉|刷新] …… [开始分流]   同一行 (用户指定):
-            //          主按钮贴右缘, 壳吃掉它左边的剩余宽度; 两者同高同顶边, 对齐由 LayoutTopRows 定
+            //   y=6:   [刷新] …… [捕获下拉] …… [开始分流]   同一行 (用户指定):
+            //          下拉水平居中, 刷新贴左 (30 设计像素, 与开始按钮同尺寸), 开始贴右;
+            //          三者间距对称, 位置由 LayoutTopRows 定
             //   y=114: [规格下拉]   ……   [声道标注]   ……   [＋]
             //          三者同一行: 规格贴左 (当行首读), 加号贴右, 标注在两者之间居中
             //          (标注居中范围由 CenterSpecBadges 按两侧控件的位置收窄)
@@ -590,7 +591,7 @@ namespace StereoSplitter
 
             // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
             // 都在"更多"弹层里 (控件由本类持有, 由 SettingsFlyout 搬入搬出)。
-            splitContainer.Panel1.Controls.AddRange(new Control[] { captureShell, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, lblRunState, flwSpecChannels, btnAddOutput, cardHost });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { cmbDefault, btnRefresh, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, lblRunState, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterShell, lblWaterSec, btnClearLog, txtLog });
 
             // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。

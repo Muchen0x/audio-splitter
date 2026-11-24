@@ -742,6 +742,24 @@ namespace StereoSplitter
                     byte[, ,] f4 = ButtonGlyphZone(btn);
                     Console.Out.WriteLine("ANIM pulse   diff=" + ZoneDiff(f3, f4) + " (0=静止贴图, >0=呼吸点在动)");
 
+                    // Idle 的 ▶ 三角呼吸 (用户指定"统一三角形呼吸"): 常态下也必须不是静止贴图
+                    setState.Invoke(sf2, new object[] { AppState.Ready });
+                    for (int k = 0; k < 20; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
+                    byte[, ,] f5 = ButtonGlyphZone(btn);
+                    for (int k = 0; k < 24; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
+                    byte[, ,] f6 = ButtonGlyphZone(btn);
+                    Console.Out.WriteLine("ANIM idle    diff=" + ZoneDiff(f5, f6) + " (0=静止贴图, >0=▶呼吸在动)");
+
+                    // 刷新按钮的呼吸与 ▶ 同参数: 同样隔 360ms 必须在动
+                    var refBtn = Field(sf2, "btnRefresh") as GearButton;
+                    if (refBtn != null && refBtn.Enabled)
+                    {
+                        byte[, ,] r1 = ButtonGlyphZone(refBtn);
+                        for (int k = 0; k < 24; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
+                        byte[, ,] r2 = ButtonGlyphZone(refBtn);
+                        Console.Out.WriteLine("ANIM refresh diff=" + ZoneDiff(r1, r2) + " (0=静止贴图, >0=刷新呼吸在动)");
+                    }
+
                     // 规格行实拍 (运行中): 状态字替换声道标注后的样子
                     // DrawToBitmap 在高 DPI 下会把内容按 DPI 比例画进同样大小的位图 (偏移随之放大),
                     // 所以整窗落盘、由外部按像素找红字裁剪, 不在探针里猜偏移
@@ -1047,20 +1065,27 @@ namespace StereoSplitter
                 sf.Activate();
                 Pump();
 
-                var shell = Field(sf, "captureShell") as ComboButtonShell;
+                var body = Field(sf, "cmbDefault") as RoundedCombo;
                 var refresh = Field(sf, "btnRefresh") as GearButton;
                 var settings = Field(sf, "btnSettings") as GearButton;
-                if (shell == null || refresh == null) { Console.Out.WriteLine("TOP no controls"); sf.Close(); return; }
+                var startB = Field(sf, "btnStart") as Control;
+                if (body == null || refresh == null) { Console.Out.WriteLine("TOP no controls"); sf.Close(); return; }
 
-                RoundedCombo body = shell.Body;
                 Action<string> dump = tag =>
+                {
+                    int lg = startB != null && body.Bounds.Right <= startB.Left
+                        ? body.Left - refresh.Right : -1;
+                    int rg = startB != null && body.Bounds.Right <= startB.Left
+                        ? startB.Left - body.Right : -1;
                     Console.Out.WriteLine("TOP " + tag
-                        + " shell=" + shell.Bounds
+                        + " refresh=" + refresh.Bounds
                         + " body=" + body.Bounds
-                        + " btn=" + refresh.Bounds
+                        + " start=" + (startB == null ? "-" : startB.Bounds.ToString())
+                        + " gaps=" + lg + "/" + rg + (lg >= 0 && rg >= 0 && Math.Abs(lg - rg) <= 1 ? " (sym)" : "")
                         + " gear=" + (settings == null ? "-" : settings.Bounds.ToString())
                         + " enabled=" + body.Enabled + "/" + refresh.Enabled
                         + " spinning=" + refresh.IsSpinning);
+                };
 
                 Action<string> shot = path =>
                 {

@@ -77,8 +77,9 @@ namespace StereoSplitter
         bool embedded;
 
         /// <summary>
-        /// 嵌在宿主壳里 (见 <see cref="ComboButtonShell"/>): 不画自己的白底和边框, 只画文字与箭头。
-        /// <para>壳负责圆角、描边、底色 —— 一个组里两套框叠在一起, 边缘会差出 1~2px 的双线。</para>
+        /// true = 画成"嵌体": 不画自己的白底和边框, 只画文字与箭头 (曾经给 ComboButtonShell
+        /// 组合壳用, 壳已随"下拉+刷新拆成独立控件"删除, 现在所有下拉都独立摆放)。
+        /// <para>嵌体模式下框由宿主负责 —— 一个组里两套框叠在一起, 边缘会差出 1~2px 的双线。</para>
         /// </summary>
         public bool Embedded
         {
