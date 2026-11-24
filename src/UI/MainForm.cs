@@ -48,7 +48,14 @@ namespace StereoSplitter
         System.Windows.Forms.Timer watchTimer;   // 看门狗: 2 秒一看输出线程活性
         System.Windows.Forms.Timer delayHotTimer; // 延迟热改的合并窗口 (数字框逐位输入只跳一次)
         System.Windows.Forms.Timer powerTimer;   // 唤醒后延迟重建 (端点恢复要几百毫秒)
-        System.Windows.Forms.Timer refreshKickTimer;   // 刷新: 先让图标转 0.35s, 再开始同步枚举
+        System.Windows.Forms.Timer refreshKickTimer;   // 刷新: 等图标转完一圈再开始同步枚举
+        /// <summary>
+        /// 点击「刷新」到真正开始枚举的间隔 (ms) = 转一圈 + 40ms。
+        /// <para><b>必须等一整圈转完</b>: 枚举实测要 0.5~1s 且是同步的, 期间消息泵停摆 ——
+        /// 和动画并行的话, 图标会卡在半路, 恢复时那几帧已判超时直接归位, 用户只看到"闪一下"。
+        /// 等它转完再枚举, 一圈就是完整、可预期的一圈。</para>
+        /// </summary>
+        const int RefreshKickMs = GearButton.SpinOnceMs + 40;
         VolumeSlider volMaster, volGain;
         Label lblVolMaster, lblVolGain;
         // 顶部固定行需要用到的控件 (自适应重排时要改它们的坐标/宽度)
@@ -343,7 +350,7 @@ namespace StereoSplitter
             };
             // 「刷新设备」: 圆环箭头图标按钮 (用户指定图形), 无边框 —— 与设置齿轮同一套。
             // 点一下重新枚举设备 (插拔 USB/DAC 后用); 点开下拉不再自动刷新 (用户要求撤掉)。
-            // 点击后图标转圈 (StartSpin/StopSpin): 枚举是同步跑的, 没有这个反馈就像点了没反应。
+            // 点击后图标转满一圈 (StartSpin): 枚举是同步跑的, 没有这个反馈就像点了没反应。
             btnRefresh = new GearButton
             {
                 Glyph = ButtonGlyph.Refresh,
@@ -1579,26 +1586,25 @@ namespace StereoSplitter
         /// 与下拉展开解耦 —— 点开下拉不再自动刷新 (用户要求撤掉), 刷新只走这个按钮。
         /// </summary>
         /// <summary>
-        /// 刷新按钮的点击: 图标先转起来, 隔一小会儿再跑枚举。
+        /// 刷新按钮的点击: 图标先转满一圈, 转完再跑枚举。
         /// <para>枚举 (<c>catalog.Refresh</c> + 重建卡片) 是**同步**的, 一进来就把消息泵堵死 ——
-        /// 旋转动画一帧都画不出来, 用户看到的是"界面冻住、图标没动"。所以先让图标转约 0.35 秒
-        /// (足够看清是"在转"而不是"闪了一下"), 再开始枚举。</para>
-        /// <para>StopSpin(700): 枚举本身可能几十毫秒就结束, 最短也要转够 0.7 秒,
-        /// 否则前 0.35 秒刚转起来就停, 反馈仍然是断的。</para>
+        /// 实测要 0.5~1 秒, 期间动画一帧都画不出来。所以不能在 Click 里直接跑, 也不能和动画并行:
+        /// 并行的话图标转到一半就被冻住, 等枚举结束早已过了 560ms, 那几帧直接归位 ——
+        /// 看到的是"卡住然后突然归位", 比不转还怪。</para>
+        /// <para>顺序改成: 转一圈 (560ms) → 枚举。转完再干, 用户看到的就是完整的一圈。</para>
         /// </summary>
         void OnRefreshClick()
         {
-            if (btnRefresh.IsSpinning) return;      // 连点不叠加: 枚举本身已经很重
+            if (btnRefresh.IsSpinning) return;      // 这一圈还没转完: 忽略连点, 免得动画被打断重来
             btnRefresh.StartSpin();
 
             if (refreshKickTimer == null)
             {
-                refreshKickTimer = new System.Windows.Forms.Timer { Interval = 350 };
+                refreshKickTimer = new System.Windows.Forms.Timer { Interval = RefreshKickMs };
                 refreshKickTimer.Tick += (s, e) =>
                 {
                     refreshKickTimer.Stop();
-                    try { RefreshDevicesClick(); }
-                    finally { btnRefresh.StopSpin(700); }
+                    RefreshDevicesClick();
                 };
             }
             refreshKickTimer.Start();

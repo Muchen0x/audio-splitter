@@ -844,17 +844,35 @@ namespace StereoSplitter
                 sf.Width = 700;
                 Pump();
 
-                // 点击刷新: 立即查一次 (StartSpin 在 Click 里同步执行), 再泵一帧截"正在转"的图
+                // 点击刷新: 立即查一次 (StartSpin 在 Click 里同步执行), 角度此刻必须还是 0 (起点)
                 MethodInfo click = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
                 click.Invoke(refresh, new object[] { EventArgs.Empty });
-                dump("spin-click");
-                shot("top-spin.png");
-                dump("spin-mid");
+                dump("spin-click angle=" + SpinAngle(refresh));
 
-                // 转够最短时长 (700ms) 后必须自己停: 一直转就成了"卡在刷新中"
+                // 转半路: 采样整圈的角度轨迹 —— 必须从 0 单调涨到 360 再归 0,
+                // 不是"设个标志位不动"。kick 在 600ms 才触发, 这段采样不会被枚举打断。
+                var swMid = System.Diagnostics.Stopwatch.StartNew();
+                long nextSample = 0;
+                var seq = new System.Text.StringBuilder();
+                bool midShot = false;
+                while (swMid.ElapsedMilliseconds < 580)
+                {
+                    long el = swMid.ElapsedMilliseconds;
+                    if (el >= nextSample)
+                    {
+                        seq.Append(el).Append("ms=").Append(SpinAngle(refresh)).Append(' ');
+                        nextSample += 70;
+                    }
+                    if (!midShot && el >= 120) { midShot = true; shot("top-spin.png"); }
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(15);
+                }
+                dump("spin-seq " + seq.ToString().Trim());
+
+                // 转满一圈必须自己**回到原位**: 角度归 0、图标不再转, 不会歪着停在半路
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 while (sw.ElapsedMilliseconds < 2200) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
-                dump("spin-end");
+                dump("spin-end angle=" + SpinAngle(refresh));
                 shot("top-spin-end.png");
 
                 sf.Close();
@@ -1934,6 +1952,12 @@ namespace StereoSplitter
                 t = t.BaseType;
             }
             return null;
+        }
+        /// <summary>读 GearButton 的私有 spinAngle (度), 取整 —— 判"在转 / 已归位"用。</summary>
+        static int SpinAngle(object btn)
+        {
+            object v = Field(btn, "spinAngle");
+            return v == null ? -1 : (int)Math.Round(Convert.ToSingle(v));
         }
     }
 }

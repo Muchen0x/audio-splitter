@@ -1385,13 +1385,13 @@ namespace StereoSplitter
         bool keyboardFocusCues = true;
         ButtonGlyph glyph = ButtonGlyph.Nut;
 
-        // —— 刷新图标的旋转 (刷新进行中的反馈) ——
+        // —— 刷新图标的旋转: 点一次转满一圈, 回到原位 ——
         System.Windows.Forms.Timer spinTimer;
         float spinAngle;
         long spinStartMs;
-        long spinStopAtMs;
-        /// <summary>每帧转多少度。16ms 一帧 × 10° ≈ 1.7 圈/秒: 再快看不清在转, 再慢像卡住。</summary>
-        const float SpinStepDeg = 10f;
+        /// <summary>转满一圈用多久 (ms)。约 1.7 圈/秒 —— 再快看不清在转, 再慢像卡住。
+        /// <para>MainForm 要按它算"等转完再开始枚举"的时机, 所以对外可见。</para></summary>
+        internal const int SpinOnceMs = 560;
 
         /// <summary>图标此刻是否在转。</summary>
         public bool IsSpinning { get { return spinTimer != null && spinTimer.Enabled; } }
@@ -1411,8 +1411,11 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 让 Refresh 图标转起来 (刷新进行中的反馈)。
-        /// <para>用 Timer 而不是在点击处理里循环: 设备枚举是**同步**跑的, 循环里转界面画不出来。</para>
+        /// 让 Refresh 图标转满一圈回到原位 (点一次 = 一圈)。
+        /// <para>用 Timer 而不是在点击处理里循环: 设备枚举是**同步**跑的, 循环里界面画不出来。</para>
+        /// <para>一圈, 不是"一直转等人喊停": 转圈表达的是"这次点击生效了", 该有始有终。
+        /// 连续转要靠外部停它, 停在哪一帧图标就歪着停在哪 —— 只有转满 360° 才能保证
+        /// 停下来时正好是原位。</para>
         /// </summary>
         public void StartSpin()
         {
@@ -1421,33 +1424,26 @@ namespace StereoSplitter
                 spinTimer = new System.Windows.Forms.Timer { Interval = 16 };
                 spinTimer.Tick += (s, e) =>
                 {
-                    if (spinStopAtMs > 0 && NowMs() >= spinStopAtMs) { EndSpin(); return; }
-                    spinAngle = (spinAngle + SpinStepDeg) % 360f;
+                    // 角度由**流逝时间**算, 不是每帧累加: 枚举卡住掉十几帧也照样 560ms 转完,
+                    // 不会因为丢帧而少转几十度、停在歪角度上。
+                    float t = (NowMs() - spinStartMs) / (float)SpinOnceMs;
+                    if (t >= 1f) { EndSpin(); return; }
+                    // 先快后慢 (ease-out quad): 点下去当场就在动, 末尾平滑落到原位。
+                    // 缓入的头 100ms 几乎不动, 会被当成"点了没反应"。
+                    float eased = 1f - (1f - t) * (1f - t);
+                    spinAngle = 360f * eased;
                     Invalidate();
                 };
             }
-            if (spinTimer.Enabled) { spinStopAtMs = 0; return; }   // 已在转: 保留当前角度, 只取消"该停了"
+            if (spinTimer.Enabled) return;   // 已在转: 让它转完这一圈, 不从头来 (重来会看到图标瞬间跳回 0°)
             spinStartMs = NowMs();
-            spinStopAtMs = 0;
+            spinAngle = 0f;
             spinTimer.Start();
-        }
-
-        /// <summary>
-        /// 停止转动。<paramref name="minVisibleMs"/> 是**从 StartSpin 起算**的最短时长 ——
-        /// 设备枚举可能几十毫秒就结束, 真按"完事就停"去停, 用户只会看到图标闪一下, 不知道点到了没有。
-        /// </summary>
-        public void StopSpin(int minVisibleMs = 0)
-        {
-            if (spinTimer == null || !spinTimer.Enabled) return;
-            long deadline = spinStartMs + Math.Max(0, minVisibleMs);
-            if (NowMs() >= deadline) { EndSpin(); return; }
-            spinStopAtMs = deadline;
         }
 
         void EndSpin()
         {
-            spinStopAtMs = 0;
-            spinAngle = 0f;
+            spinAngle = 0f;      // 360° 与 0° 是同一位置, 归零没有跳变
             if (spinTimer != null) spinTimer.Stop();
             Invalidate();
         }
