@@ -610,6 +610,48 @@ namespace StereoSplitter
                     }
                     Console.Out.WriteLine("RUNSTATE-FULL -> runstate-full.png");
 
+                    // 插播桥验证: 模拟四条运行期 [状态] 日志走 Log(), 读回状态字
+                    MethodInfo logM = typeof(MainForm).GetMethod("Log",
+                        BindingFlags.Instance | BindingFlags.NonPublic, null, new[] { typeof(string) }, null);
+                    var lblM = (System.Windows.Forms.Label)Field(sf2, "lblRunState");
+                    var noteT = (System.Windows.Forms.Timer)Field(sf2, "runNoteTimer");
+                    if (logM != null && lblM != null)
+                    {
+                        string[] fakes =
+                        {
+                            "[状态] 缓冲水位 调节 L=62ms R=61ms 差=1ms 瞬时 L=64ms R=63ms 校正=+3ppm 最低 L=58ms R=57ms 欠载 L=0 R=0 电平 L=12% R=11%",
+                            "[状态] 捕获源暂无数据（应用暂停或静音），输出待命",
+                            "[状态] 缓冲水位已恢复: 62ms / 目标 120ms",
+                            "[状态] 捕获源恢复数据（此前静默约 12 秒）",
+                            "[状态] 运行中"      // 状态机迁移条目: 不许插播, 状态字应保持上一条
+                        };
+                        foreach (var fk in fakes)
+                        {
+                            logM.Invoke(sf2, new object[] { fk });
+                            Application.DoEvents();
+                            Console.Out.WriteLine("MIRROR '" + fk.Substring(7, Math.Min(16, fk.Length - 7))
+                                + "…' -> '" + lblM.Text + "' color=" + lblM.ForeColor.R + ","
+                                + lblM.ForeColor.G + "," + lblM.ForeColor.B
+                                + " holdTimer=" + (noteT != null && noteT.Enabled));
+                        }
+                        // 迁移接管: 状态一变, 插播计时器必须停, 文案回到权威版
+                        setState.Invoke(sf2, new object[] { AppState.Stopping });
+                        Application.DoEvents();
+                        Console.Out.WriteLine("MIRROR takeover -> '" + lblM.Text + "' holdTimer=" + (noteT != null && noteT.Enabled));
+                        setState.Invoke(sf2, new object[] { AppState.Running });
+                        Application.DoEvents();
+
+                        // 插播态整窗实拍 (先回 Running, 再播一条事件让状态字停在插播文案上)
+                        logM.Invoke(sf2, new object[] { fakes[0] });
+                        for (int k = 0; k < 8; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
+                        using (var full2 = new Bitmap(sf2.Width, sf2.Height))
+                        {
+                            sf2.DrawToBitmap(full2, new Rectangle(0, 0, sf2.Width, sf2.Height));
+                            full2.Save("runnote-full.png", System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                        Console.Out.WriteLine("RUNNOTE-FULL -> runnote-full.png");
+                    }
+
                     bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
                 }
                 Console.Out.WriteLine("STATES -> " + path);

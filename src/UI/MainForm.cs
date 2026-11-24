@@ -50,6 +50,7 @@ namespace StereoSplitter
         System.Windows.Forms.Timer delayHotTimer; // 延迟热改的合并窗口 (数字框逐位输入只跳一次)
         System.Windows.Forms.Timer powerTimer;   // 唤醒后延迟重建 (端点恢复要几百毫秒)
         System.Windows.Forms.Timer refreshKickTimer;   // 刷新: 等图标转完一圈再开始同步枚举
+        System.Windows.Forms.Timer runNoteTimer;       // 运行期事件插播状态字的保留时长 (到点回"运行中")
         /// <summary>
         /// 点击「刷新」到真正开始枚举的间隔 (ms) = 转一圈 + 40ms。
         /// <para><b>必须等一整圈转完</b>: 枚举实测要 0.5~1s 且是同步的, 期间消息泵停摆 ——
@@ -723,6 +724,16 @@ namespace StereoSplitter
             };
             // 初始不启动: Ready 状态下不跑, 由 SetAppState 按状态启停
 
+            // 运行期事件在规格行状态字上的保留时长: 到点回到"运行中" (见 ShowRunStateNote)。
+            // 6s: 水位监控默认 30s 一条, 事件类 (捕获源静默/恢复) 都是偶发 —— 足够读完。
+            runNoteTimer = new System.Windows.Forms.Timer { Interval = 6000 };
+            runNoteTimer.Tick += (s, e) =>
+            {
+                runNoteTimer.Stop();
+                // 只有仍然运行中才回"运行中": 期间状态若已迁移 (停止/失败), UpdateRunStateLabel 自己会摆
+                if (state == AppState.Running) UpdateRunStateLabel(AppState.Running);
+            };
+
             // ini 写盘 debounce (SaveSettings 同步字典后排队, 300ms 无新变更才落盘)
             saveDebounce = new System.Windows.Forms.Timer { Interval = 300 };
             saveDebounce.Tick += (s, e) =>
@@ -1290,10 +1301,13 @@ namespace StereoSplitter
         /// <item>启动失败: 浅红 + 指路日志 (按钮此刻已回到蓝色可点态)</item>
         /// </list>
         /// 空闲态 (就绪/已停止) 隐藏状态字、恢复标注。
+        /// <para>这是状态字的**唯一权威入口**: 状态迁移时它收回 <see cref="ShowRunStateNote"/>
+        /// 的插播 (停掉保留计时器), 事件插播只允许改文字/颜色, 不允许改"谁在场"。</para>
         /// </summary>
         void UpdateRunStateLabel(AppState s)
         {
             if (lblRunState == null) return;
+            if (runNoteTimer != null) runNoteTimer.Stop();   // 新的权威文案到场, 插播作废
             string txt; Color c; bool show = true;
             switch (s)
             {
@@ -1329,6 +1343,111 @@ namespace StereoSplitter
             int rb = btnAddOutput.Left - Dpi.S(8);
             lblRunState.Left = lb + Math.Max(0, (rb - lb - lblRunState.Width) / 2);
             lblRunState.Top = cmbSpec.Top + (cmbSpec.Height - lblRunState.Height) / 2;
+        }
+
+        // 运行期事件插播的两档配色: 事件是"过程信息"不是"状态", 都比"运行中"的红退一档,
+        // 眼睛读到的是"运行中, 但有件事值得知道"。
+        static readonly Color RunNoteInfo = Color.FromArgb(0x47, 0x68, 0x8C);   // 蓝灰: 与"启动中"同支
+        static readonly Color RunNoteWarn = Color.FromArgb(0xB4, 0x7A, 0x28);   // 琥珀: 注意但不报警
+
+        /// <summary>
+        /// 运行期事件插播 (用户指定: 日志里的状态也简单显示到声道标注处)。只改状态字的
+        /// 文字/颜色, "谁在场"的规则不动 —— 插播时声道标注本来就因 Running 而隐藏;
+        /// <see cref="runNoteTimer"/> 到点把它收回"运行中", 状态迁移时 UpdateRunStateLabel
+        /// 会立即停掉这个计时器 (权威文案到场, 插播作废)。
+        /// </summary>
+        void ShowRunStateNote(string txt, Color c)
+        {
+            if (lblRunState == null || !running || lblRunState.IsDisposed) return;
+            lblRunState.Text = txt;
+            lblRunState.ForeColor = c;
+            if (flwSpecChannels != null && flwSpecChannels.Visible) flwSpecChannels.Visible = false;
+            if (!lblRunState.Visible) lblRunState.Visible = true;
+            PlaceRunStateLabel();
+            runNoteTimer.Stop();
+            runNoteTimer.Start();
+        }
+
+        /// <summary>
+        /// 日志 → 状态字的插播桥 (在 <see cref="Log"/> 里对 <c>[状态]</c> 条目调用)。
+        /// 状态机迁移的那六条不插 —— UpdateRunStateLabel 是它们的唯一入口, 这里再插一遍
+        /// 只会跟权威文案打架; 只补**运行期事件**: 捕获源静默/恢复、水位恢复、周期水位。
+        /// 缓冲水位的全文有一百多字符 (调节/瞬时/校正/最低/欠载/电平/时序), 状态字只有
+        /// 一格文字宽, 挑最有用的调节与最低两组, 其余留给日志框。
+        /// </summary>
+        void MirrorRunStateEvent(string body)
+        {
+            string txt; Color c;
+            if (body.StartsWith("捕获源暂无数据"))
+            {
+                txt = "捕获源暂无数据，输出待命"; c = RunNoteWarn;
+            }
+            else if (body.StartsWith("捕获源恢复数据"))
+            {
+                // "捕获源恢复数据（此前静默约 12 秒）" → 保住时长, 它是唯一有信息量的部分
+                txt = "捕获源已恢复（静默" + After(body, "约 ", " ") + "秒）";
+                c = RunNoteInfo;
+            }
+            else if (body.StartsWith("缓冲水位已恢复"))
+            {
+                // "缓冲水位已恢复: 62ms / 目标 120ms" → "水位已恢复 62ms"
+                txt = "水位已恢复 " + FirstMs(body); c = RunNoteInfo;
+            }
+            else if (body.StartsWith("缓冲水位 "))
+            {
+                txt = "水位 " + BriefWater(body.Substring(5)); c = RunNoteInfo;
+            }
+            else return;
+            ShowRunStateNote(txt, c);
+        }
+
+        /// <summary>缓冲水位单行简版: 取「调节 L/R」「最低 L/R」两组 (欠载时补一笔)。
+        /// 解析失败或单输出 (字段顺序不同) 就退回截断 —— 日志里永远有全文。</summary>
+        static string BriefWater(string body)
+        {
+            try
+            {
+                var ms = System.Text.RegularExpressions.Regex.Matches(body, @"[LR]=(\d+)ms");
+                if (ms.Count >= 6)   // 双输出顺序: 调节(0,1) 瞬时(2,3) 最低(4,5)
+                {
+                    string s = "调节 " + ms[0].Groups[1].Value + "/" + ms[1].Groups[1].Value + "ms"
+                             + " 最低 " + ms[4].Groups[1].Value + "/" + ms[5].Groups[1].Value + "ms";
+                    // 欠载计数为 0 时不显示 (引擎哪怕没欠过载也会带 "欠载 L=0 R=0" 字段)
+                    var u = System.Text.RegularExpressions.Regex.Match(body, @"欠载 L=(\d+) R=(\d+)");
+                    if (u.Success && (u.Groups[1].Value != "0" || u.Groups[2].Value != "0"))
+                        s += " 欠载" + u.Groups[1].Value + "/" + u.Groups[2].Value;
+                    return s;
+                }
+                if (ms.Count >= 2)
+                    return "调节 " + ms[0].Groups[1].Value + "/" + ms[1].Groups[1].Value + "ms";
+            }
+            catch { }
+            return body.Length > 30 ? body.Substring(0, 30) + "…" : body;
+        }
+
+        /// <summary>取字符串里第一个 "Nms"。</summary>
+        static string FirstMs(string s)
+        {
+            int i = s.IndexOf("ms", StringComparison.Ordinal);
+            while (i > 0 && (i < 1 || !char.IsDigit(s[i - 1]))) 
+            {
+                i = s.IndexOf("ms", i + 1, StringComparison.Ordinal);
+                if (i < 0) break;
+            }
+            if (i <= 0) return "";
+            int j = i - 1;
+            while (j > 0 && (char.IsDigit(s[j - 1]) || s[j - 1] == '.')) j--;
+            return s.Substring(j, i - j) + "ms";
+        }
+
+        /// <summary>取 a 与 b 之间的子串 (找不到返回空串)。</summary>
+        static string After(string s, string a, string b)
+        {
+            int i = s.IndexOf(a, StringComparison.Ordinal);
+            if (i < 0) return "";
+            i += a.Length;
+            int j = s.IndexOf(b, i, StringComparison.Ordinal);
+            return j < 0 ? s.Substring(i) : s.Substring(i, j - i);
         }
 
         /// <summary>
@@ -2292,6 +2411,7 @@ namespace StereoSplitter
             DisposeTimer(ref deviceReturnTimer);   // R-10 补
             DisposeTimer(ref sinkRetryTimer);      // R-10 补
             DisposeTimer(ref refreshKickTimer);    // 刷新动画的延迟启动
+            DisposeTimer(ref runNoteTimer);        // 运行期事件插播状态字的保留时长
 
             // 标题栏图标: 由窗体图标缩放生成的一份副本 (Icon 每 new 一次都要自己释放)
             if (titleBarIcon != null)
@@ -2403,6 +2523,12 @@ namespace StereoSplitter
                 try { BeginInvoke(new LogDelegate(Log), msg); } catch { }
                 return;
             }
+
+            // 运行期事件插播到规格行状态字 (用户指定: 日志里的状态也显示到声道标注处)。
+            // 站在 Log 里搭桥的好处: 四类来源 (水位定时器 / 引擎看门狗 / 校正 provider 的
+            // 音频线程 Report) 走的都是这一个漏斗, 一处接管全覆盖; 到这里必在 UI 线程。
+            if (running && msg.StartsWith("[状态] ", StringComparison.Ordinal))
+                MirrorRunStateEvent(msg.Substring(5).TrimEnd());
 
             // 格式: HH:mm:ss.fff [LEVEL] [阶段] 内容 (毫秒便于排查启动时序)
             Infrastructure.LogLevel level = Infrastructure.SessionLog.Classify(msg);
