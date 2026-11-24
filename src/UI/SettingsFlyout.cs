@@ -53,7 +53,10 @@ namespace StereoSplitter
         long submenuTogglePendingMs;
 
         // —— 布局常量 = 96 设计像素 (面板按 96 摆好后整体乘一次缩放系数) ——
-        const int DesignW = 300;
+        // 宽度按用户要求收窄过 (原 300); 行水平内缩 PadX, 悬停垫不贴边框 ——
+        // 观感对齐下拉弹层 (描边环 + 内缩留白), 边框本身与下拉同 renderer 同色同半径
+        const int DesignW = 268;
+        const int PadX = 7;
         const int RowH = 34;
         const int PadY = 6;
         static readonly int DesignH = PadY + 5 * RowH + PadY;
@@ -146,7 +149,7 @@ namespace StereoSplitter
 
             var row = new MenuRow(icon, title, value, toggle, arrow)
             {
-                Bounds = new Rectangle(0, PadY + rowIdx * RowH, DesignW, RowH),
+                Bounds = new Rectangle(PadX, PadY + rowIdx * RowH, DesignW - PadX * 2, RowH),
                 Font = rowFont
             };
 

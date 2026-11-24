@@ -33,7 +33,11 @@ namespace StereoSplitter
             if (args.Length >= 1 && args[0] == "settings")
             {
                 var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(60, 80);
+                mf.TopMost = true;               // 前台被别的窗口占着时, 置顶才能保证弹层真的拍到
                 mf.Show();
+                mf.Activate();
                 for (int i = 0; i < 12; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
 
                 Control cmb = Field(mf, "cmbLatency") as Control;
@@ -48,10 +52,58 @@ namespace StereoSplitter
                 int idxExpect = int.MinValue;   // 子菜单选档后应有的档位 (int.MinValue = 没选过)
 
                 MethodInfo scMethod = mf.GetType().GetMethod("SettingsControls", BindingFlags.Instance | BindingFlags.NonPublic);
+
+                // 精确采边: ComboPopup 与 SettingsFlyout 的描边环是否真的画出来了
+                Action<ToolStripDropDown, string> sampleEdges = (dd, tag) =>
+                {
+                    if (dd == null || !dd.Visible) { Console.Out.WriteLine("EDGE " + tag + " not visible"); return; }
+                    Rectangle r = dd.Bounds;      // 顶层窗口, Bounds 即屏幕矩形
+                    using (var bmp = new Bitmap(r.Width, r.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+                        int midY = r.Height / 2;
+                        var sbs = new StringBuilder("EDGE " + tag + " " + r.Width + "x" + r.Height);
+                        for (int x = 0; x <= 4; x++)
+                            sbs.Append(" x").Append(x).Append('=').Append(bmp.GetPixel(x, midY));
+                        for (int y = 0; y <= 4; y++)
+                            sbs.Append(" y").Append(y).Append('=').Append(bmp.GetPixel(r.Width / 2, y));
+                        Console.Out.WriteLine(sbs.ToString());
+                    }
+                };
+
+                // 对照: 打开输出设备下拉的真实弹层 (同 renderer), 拍下来比边框/圆角。
+                // 放在弹层打开之前 —— 开下拉会抢焦点把 AutoClose 的弹层顺手关掉。
+                Control cmbDefault = Field(mf, "cmbDefault") as Control;
+                if (cmbDefault != null)
+                {
+                    MethodInfo openDD = cmbDefault.GetType().GetMethod("OpenDropDown",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+                    MethodInfo closeDD = cmbDefault.GetType().GetMethod("CloseDropDown",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+                    if (openDD != null)
+                    {
+                        openDD.Invoke(cmbDefault, null);
+                        for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                        using (var bmp = new Bitmap(400, 260))
+                        {
+                            using (var g = Graphics.FromImage(bmp))
+                                g.CopyFromScreen(cmbDefault.PointToScreen(new Point(-20, -20)), Point.Empty, bmp.Size);
+                            bmp.Save("dropdown-live.png", System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                        Console.Out.WriteLine("DROPDOWN-SHOT -> dropdown-live.png");
+                        var popupCtl = cmbDefault.GetType().GetField("popup", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cmbDefault) as ToolStripDropDown;
+                        if (popupCtl != null) sampleEdges(popupCtl, "comboPopup");
+                        else Console.Out.WriteLine("EDGE comboPopup: field null");
+                        if (closeDD != null) closeDD.Invoke(cmbDefault, null);
+                        for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    }
+                }
+
                 var arr = (Control[])scMethod.Invoke(mf, null);
                 using (var fy = new SettingsFlyout(arr))
                 {
-                    fy.Show(new Point(80, 60));
+                    fy.Show(new Point(1000, 60));   // 主窗 (60,80 起, 900 宽) 右侧外, 别被主窗压住
                     for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
 
                     // 弹层实拍 (实屏 CopyFromScreen: DrawToBitmap 拍不到顶层弹层的内容)
@@ -67,6 +119,7 @@ namespace StereoSplitter
                     var sb2 = new StringBuilder();
                     sb2.AppendLine("SETTINGS content=" + content.ClientSize + " popup=" + fy.Size
                         + " visible=" + fy.Visible);
+                    sampleEdges(fy, "flyout");
                     foreach (Control c in content.Controls)
                     {
                         string rowTag = c is MenuRow ? "ROW '" + c.Text + "' enabled=" + c.Enabled : "host '" + c.GetType().Name + "' hidden=" + !c.Visible;
