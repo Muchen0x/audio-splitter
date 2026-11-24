@@ -757,10 +757,22 @@ namespace StereoSplitter
                 }
                 if (combo == null) { Console.Out.WriteLine("ROWPOPUP no row combo"); sf.Close(); return; }
 
+                // 逐条量"文字宽度 vs 可用宽度": 宽度收到刚好时, 差 1px 就会变成省略号,
+                // 光看"能不能放下当前这条"不够 —— 弹层里每一条都得放得下。
+                int tw = combo.Width - RoundedCombo.TextPadX - RoundedCombo.ArrowZone;
                 var items = new System.Text.StringBuilder();
                 for (int i = 0; i < combo.Items.Count; i++)
-                    items.Append(i == 0 ? "" : " | ").Append(combo.Items[i]);
-                Console.Out.WriteLine("ROWPOPUP combo=" + combo.Width + "x" + combo.Height + " items=" + items);
+                {
+                    string it = combo.Items[i] == null ? "" : combo.Items[i].ToString();
+                    int ext = TextRenderer.MeasureText(it, combo.Font,
+                        new Size(int.MaxValue, int.MaxValue),
+                        TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
+                    items.Append(i == 0 ? "" : " | ").Append(it)
+                         .Append("(text=").Append(ext)
+                         .Append(ext <= tw ? " fits" : " CLIP").Append(")");
+                }
+                Console.Out.WriteLine("ROWPOPUP combo=" + combo.Width + "x" + combo.Height
+                    + " textArea=" + tw + " items=" + items);
 
                 typeof(RoundedCombo)
                     .GetMethod("OpenDropDown", BindingFlags.Instance | BindingFlags.NonPublic)

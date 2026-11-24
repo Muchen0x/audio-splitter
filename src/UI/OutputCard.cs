@@ -303,7 +303,9 @@ namespace StereoSplitter
             // 而下拉里显示的逻辑声道名已经足够定位, 序号只是噪声, 还占掉 30px 宽度。
             r.Cmb = new RoundedCombo
             {
-                Width = Dpi.S(92),
+                Width = Dpi.S(92),              // 初值; 下面开了 AutoFitWidth, 条目进来后会收到刚好
+                MinFitWidth = 56,
+                AutoFitWidth = true,            // 宽度只留到"刚好放得下最长条目"(用户要求), 让给滑条
                 Height = RowComboHeight,
                 ItemHeight = 24,
                 MaxDropDownItems = 10,
@@ -375,6 +377,8 @@ namespace StereoSplitter
                         if ((string)r.Cmb.Items[i] == (string)keep) { idx = i; break; }
                 }
                 if (r.Cmb.SelectedIndex != idx) r.Cmb.SelectedIndex = idx;
+                // 宽度不在这里算: 控件开了 AutoFitWidth, 条目一变它自己收到"刚好放得下最长的一条"。
+                // 放在控件里是因为字体要挂上父容器才定下来, 在调用方量会偏窄 (见 AutoFitWidth 注释)。
             }
             finally { syncing = false; }
         }
@@ -423,6 +427,8 @@ namespace StereoSplitter
             // 行首的 "p0" 序号标签已去掉, 下拉直接贴到 8 (与第一行的设备下拉同列)。
             // 行内下拉 22 高而滑条/标签 20 高, 后两者按"在下拉里居中"偏移 1, 于是
             // 每行的文字中心、轨道线中心都落在下拉的垂直中线上。
+            // 滑条起点跟着下拉的**实际**宽度走 (宽度由 FitWidth 按条目文字算, 不再写死 92),
+            // 收窄后多出来的宽度全给滑条。
             int comboH = RowComboHeight;
             for (int i = 0; i < rows.Count; i++)
             {
@@ -430,8 +436,9 @@ namespace StereoSplitter
                 SlotRow r = rows[i];
                 int mid = (comboH - r.Vol.Height) / 2;
                 r.Cmb.Location = new Point(Dpi.S(8), y);
-                r.Vol.Location = new Point(Dpi.S(108), y + mid);
-                r.Vol.Width = Math.Max(Dpi.S(100), w - Dpi.S(108) - (Dpi.S(8) + r.Lbl.Width + Dpi.S(10)));
+                int rowVolX = r.Cmb.Right + Dpi.S(8);
+                r.Vol.Location = new Point(rowVolX, y + mid);
+                r.Vol.Width = Math.Max(Dpi.S(100), w - rowVolX - (Dpi.S(8) + r.Lbl.Width + Dpi.S(10)));
                 r.Lbl.Location = new Point(r.Vol.Right + Dpi.S(8), y + mid);
             }
         }

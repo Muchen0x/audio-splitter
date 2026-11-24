@@ -128,6 +128,67 @@ namespace StereoSplitter
         /// <summary>收起状态下显示的文本 (即选中项的 ToString)。</summary>
         public string SelectedText { get { return Text; } }
 
+        /// <summary>
+        /// 刚好放得下全部条目的本体宽度: 最长一条的绘制宽度 + 左内缩 + 箭头区 + 1px 余量。
+        /// <para>给"宽度收到刚好"的布局用 (多声道行内的声道下拉)。必须按**全部**条目算而不是按当前
+        /// 选中项 —— 弹层与本体的宽度是同一个值, 按选中项算的话, 一旦展开换到更长的条目
+        /// (比如「左环绕」) 就会被省略号截断。</para>
+        /// <para>量文字用 <see cref="TextFormatFlags.NoPadding"/>: 绘制走 GDI 的 DrawText, 文字从
+        /// 矩形左缘起绘、不加内边距; 默认的 MeasureText 会各加约 3px, 照它算会宽出一截。</para>
+        /// </summary>
+        internal int FitWidth()
+        {
+            int widest = 0;
+            for (int i = 0; i < Items.Count; i++)
+            {
+                object it = Items[i];
+                string s = it == null ? "" : it.ToString();
+                if (s.Length == 0) continue;
+                Size sz = TextRenderer.MeasureText(s, Font,
+                    new Size(int.MaxValue, int.MaxValue),
+                    TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+                if (sz.Width > widest) widest = sz.Width;
+            }
+            // 2 设计像素余量: GDI 量出来的宽度偶尔比实际落笔窄 1~2px, 差这一点就变成省略号
+            return TextPadX + widest + ArrowZone + Dpi.S(2);
+        }
+
+        bool autoFitWidth;
+        int minFitWidth;
+
+        /// <summary>
+        /// 宽度随条目文字自适应 (收到"刚好放得下"的宽度)。
+        /// <para><b>为什么不放在调用方算一次</b>: 条目文案和字体都可能晚于赋值才定下来 ——
+        /// 卡片是运行期 new 的, 控件刚创建时字体还是 <see cref="Control.DefaultFont"/>, 挂到父容器上
+        /// 才换成缩放后的 11.25pt, 同一段「不使用」两次量出来能差 2px。所以重算挂在两个真正的
+        /// 变化点上: 条目变更 (<see cref="OnItemsChanged"/>) 与字体变更 (<see cref="OnFontChanged"/>)。</para>
+        /// </summary>
+        public bool AutoFitWidth
+        {
+            get { return autoFitWidth; }
+            set { autoFitWidth = value; Refit(); }
+        }
+
+        /// <summary>自适应时的最小宽度 (设计像素)。太窄的话箭头和文字会挤在一起。</summary>
+        public int MinFitWidth
+        {
+            get { return Dpi.S(minFitWidth); }
+            set { minFitWidth = value; Refit(); }
+        }
+
+        void Refit()
+        {
+            if (!autoFitWidth) return;
+            int w = Math.Max(Dpi.S(minFitWidth), FitWidth());
+            if (Width != w) Width = w;
+        }
+
+        protected override void OnFontChanged(EventArgs e)
+        {
+            base.OnFontChanged(e);
+            Refit();
+        }
+
         public event EventHandler SelectedIndexChanged;
 
         /// <summary>
@@ -197,6 +258,7 @@ namespace StereoSplitter
             // 条目变少时把越界的选中项拉回来; 条目变了索引就不再可靠, 弹层直接收掉
             if (selected >= Items.Count) selected = Items.Count - 1;
             RefreshText();
+            Refit();                       // 条目变了 → 自适应宽度要跟着重算
             if (popup != null) CloseDropDown();
             Invalidate();
         }
@@ -207,6 +269,7 @@ namespace StereoSplitter
             bool had = selected >= 0;
             selected = -1;
             RefreshText();
+            Refit();
             Invalidate();
             // 与原生一致: 清空导致选中项消失时, 事件要发出去
             if (had) OnSelectedIndexChanged(EventArgs.Empty);
