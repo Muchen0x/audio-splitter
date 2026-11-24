@@ -354,6 +354,8 @@ namespace StereoSplitter
             splitContainer.SplitterDistance = 386;
             // 窗口整体变矮时把内容区拽回来 (分隔条拖动本身不受限, 见 KeepContentOnShrink)
             splitContainer.SizeChanged += (s, e) => KeepContentOnShrink();
+            // 分隔条位置变了, 左右那两截"补到边"的分隔线要跟着重画
+            splitContainer.SplitterMoved += (s, e) => InvalidateSplitterBleed();
             Controls.Add(splitContainer);
 
             // 捕获行: 原来行首有「捕获:」标签, 已删 (用户要求) —— 这一行只有"选哪台设备被抓取"
@@ -777,8 +779,60 @@ namespace StereoSplitter
             Dpi.ScaleForm(this);
             base.OnLoad(e);
             // 缩放之后才知道标题栏的实际高度与按钮尺寸 —— 位置按当前客户区排一次
+            // 顺便把最外一圈让给窗体自己 (见下), 两件事都要用缩放后的数值。
+            ReserveResizeBorder();
             LayoutCaption();
             SyncCaptionState();
+        }
+
+        /// <summary>缩放边框的宽度 (设计像素)。与 <see cref="HitTestCaption"/> 里的 grip 同一支数。</summary>
+        const int ResizeBorderDesign = 6;
+
+        /// <summary>
+        /// 把窗口最外一圈让给窗体自己: 拖边缘缩放、Aero Snap、缩放光标全靠它。
+        ///
+        /// <para><b>为什么必须让出来</b>: 鼠标落在哪个窗口上是由系统按"最深的那层子窗口"判定的。
+        /// 内容区 (SplitContainer) 一旦铺满客户区, 边缘那几像素上就是它在接鼠标 —— 它回 HTCLIENT,
+        /// 点击便落在内容上, 窗体那套 HitTestCaption 从头到尾没被问过一次 (实测: 边缘按下滑 80px,
+        /// 宽度一个像素都不动; 内容内缩 8px 后同一位置立刻拉宽 77px)。</para>
+        ///
+        /// <para>所以 Padding 不只留标题栏, 左/右/下各再让出一圈。这圈底色与两个面板同为
+        /// SystemColors.Control, 看不出接缝; 只有横贯的分隔条会短一截, 由
+        /// <see cref="PaintSplitterBleed"/> 补到边。</para>
+        /// </summary>
+        void ReserveResizeBorder()
+        {
+            int grip = Dpi.S(ResizeBorderDesign);
+            Padding = new Padding(grip, Padding.Top, grip, grip);
+        }
+
+        /// <summary>
+        /// 把 6px 灰分隔条补进左右那一圈让出去的空隙, 让分隔线仍然通到窗口边缘。
+        /// <para>颜色取容器自己的 BackColor, 与它画的分隔条是同一支; 位置取 Panel1 的下缘,
+        /// 所以用户上下拖分隔条时补丁跟着走 (SplitterMoved 里重画)。</para>
+        /// </summary>
+        void PaintSplitterBleed(Graphics g)
+        {
+            if (splitContainer == null) return;
+            int grip = Padding.Left;
+            if (grip <= 0) return;
+
+            int y = splitContainer.Top + splitContainer.Panel1.Bottom;
+            int h = splitContainer.SplitterWidth;
+            using (var b = new SolidBrush(splitContainer.BackColor))
+            {
+                g.FillRectangle(b, 0, y, grip, h);
+                g.FillRectangle(b, splitContainer.Right, y, grip, h);
+            }
+        }
+
+        void InvalidateSplitterBleed()
+        {
+            if (splitContainer == null || !IsHandleCreated) return;
+            int grip = Padding.Left;
+            if (grip <= 0) return;
+            Invalidate(new Rectangle(0, 0, grip, ClientSize.Height));
+            Invalidate(new Rectangle(ClientSize.Width - grip, 0, grip, ClientSize.Height));
         }
 
         // ================= 自绘标题栏 =================
@@ -844,6 +898,7 @@ namespace StereoSplitter
         {
             base.OnPaint(e);
             PaintCaption(e.Graphics);
+            PaintSplitterBleed(e.Graphics);
         }
 
         // —— 还原尺寸的一次性钳制 ——
@@ -984,6 +1039,7 @@ namespace StereoSplitter
         const int WM_GETMINMAXINFO = 0x0024;
         const int WM_NCHITTEST = 0x0084;
         const int WM_NCACTIVATE = 0x0086;
+        const int WM_NCPAINT = 0x0085;
 
         const int HTCLIENT = 1;
         const int HTCAPTION = 2;
@@ -1017,6 +1073,28 @@ namespace StereoSplitter
             // 客户区盖满整个窗口, 标题栏与边框一条都不留 —— 全部由 PaintCaption 自己画。
             // wParam=0 的那次是"算窗口矩形"的询问, 必须照常走 (返回 0 会破坏坐标)。
             if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
+            {
+                m.Result = IntPtr.Zero;
+                return;
+            }
+
+            // NC 区的绘制一律不让系统动手。
+            //
+            // <para><b>为什么必须拦</b>: 窗口一旦失去激活 (打开设置页这类模态框、切到别的程序),
+            // 系统会照"这窗口有标题栏"的老规矩把标题条画一遍 —— Aero 的浅蓝渐变 + 三个带方框的
+            // 系统键, 直接盖在我们的自绘标题栏上, 而且**不会自己消失** (它画在窗口表面, 我们这边
+            // 没人再重绘那一条)。用户看到的就是"打开设置后标题栏变了"。</para>
+            //
+            // 自绘边框的窗口都这么处理: WM_NCACTIVATE 回 TRUE 表示"激活状态我收到了, 但别画",
+            // WM_NCPAINT 回 0 表示"NC 区没有要画的东西"。标题栏仍由 PaintCaption 画 —— 顺便
+            // 重绘一次, 把上次可能残留的痕迹盖掉。
+            if (m.Msg == WM_NCACTIVATE)
+            {
+                m.Result = (IntPtr)1;
+                Invalidate(new Rectangle(0, 0, ClientSize.Width, Padding.Top));
+                return;
+            }
+            if (m.Msg == WM_NCPAINT)
             {
                 m.Result = IntPtr.Zero;
                 return;

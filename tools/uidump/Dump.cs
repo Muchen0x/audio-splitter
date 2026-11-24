@@ -18,6 +18,8 @@ namespace StereoSplitter
 
         static void Main(string[] args)
         {
+            Console.Out.Flush();   // 探针可能被 timeout 掐死: 关掉块缓冲才看得到挂在哪一步
+            Console.SetOut(new System.IO.StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
             // CopyFromScreen 按物理像素取屏: 不声明 DPI 感知的话, 高缩放屏上窗口会被系统
             // 虚拟化放大, 按 Location/Size 去截只能截到左上角一块 (live/icons 全军覆没)。
             try { SetProcessDPIAware(); } catch { }
@@ -877,6 +879,248 @@ namespace StereoSplitter
 
                 sf.Close();
                 return;
+            }
+
+            // 真拖鼠标: 边缘能不能缩放、标题栏能不能拖窗。命中码对不等于系统真的会进缩放循环。
+            if (args.Length >= 1 && args[0] == "resizeprobe")
+            {
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(100, 100);
+                mf.Size = new Size(900, 700);
+                mf.TopMost = true;
+                mf.Show(); mf.Activate(); Pump(); Pump();
+
+                Console.Out.WriteLine("RS start size=" + mf.Size + " client=" + mf.ClientSize
+                    + " hitR=" + HitCode(mf, mf.ClientSize.Width - 3, 300)
+                    + " hitB=" + HitCode(mf, 400, mf.ClientSize.Height - 3));
+
+                // 消息流水: 缩放到底有没有"进循环" (WM_ENTERSIZEMOVE), 以及点击落在哪
+                var log = new StringBuilder();
+                var filt = new MsgLog(log);
+                Application.AddMessageFilter(filt);
+                var spy = new MsgSpy();
+                spy.AssignHandle(mf.Handle);
+                foreach (int inset in new[] { 3, 6 })
+                {
+                    // 每轮把窗口摆回原位: 前一轮拖完几何全变了, 下一轮的起点就没意义
+                    mf.Bounds = new Rectangle(100, 100, 900, 700);
+                    mf.WindowState = FormWindowState.Normal;
+                    Pump(); Pump();
+                    // 真实用户可能正按着鼠标: 等左键抬起再模拟, 否则按下/抬起序被搅乱, 拖拽挂死
+                    for (int i = 0; i < 30 && (GetAsyncKeyState(0x01) & 0x8000) != 0; i++)
+                        System.Threading.Thread.Sleep(50);
+                    int before = mf.Width;
+                    log.Clear();
+                    spy.Log.Clear();
+                    DragMouse(new Point(mf.Right - inset, mf.Top + 300), 80, 0);
+                    Console.Out.WriteLine("RS drag inset=" + inset + " dW=" + (mf.Width - before)
+                        + " msgs=" + log.ToString().Trim());
+                    Console.Out.WriteLine("RS   spy= " + spy.Log.ToString().Trim());
+                }
+                spy.ReleaseHandle();
+                Application.RemoveMessageFilter(filt);
+
+                var seq = new StringBuilder();
+                var tick = new System.Windows.Forms.Timer { Interval = 25 };
+                tick.Tick += (s0, e0) => seq.Append(mf.Width).Append(' ');
+                tick.Start();
+                DragMouse(new Point(mf.Right - 3, mf.Top + 300), 80, 0);
+                tick.Stop();
+                Console.Out.WriteLine("RS after-right-drag size=" + mf.Size + " seq= " + seq);
+
+                DragMouse(new Point(mf.Left + 300, mf.Top + 15), 40, 30);
+                Console.Out.WriteLine("RS after-caption-drag loc=" + mf.Location + " size=" + mf.Size);
+
+                Console.Out.Flush();
+                mf.Close();
+                Environment.Exit(0);
+            }
+
+            // 谁把标题条刷成浅蓝渐变: 分别禁用"裸窗体"和"真实主窗体", 看这条渐变是否只跟
+            // EnableWindow(FALSE) 有关 (与设置页本身无关); 再用 PrintWindow 区分"画进窗口表面"
+            // 还是"DWM 合成在外面"。
+            if (args.Length >= 1 && args[0] == "disprobe")
+            {
+                Action<Form, string> cap = (fm, tag) =>
+                {
+                    Pump();
+                    var r = new Rectangle(fm.Left, fm.Top, fm.Width, Math.Min(64, fm.Height));
+                    using (var bmp = new Bitmap(r.Width, r.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+                        bmp.Save("dis-" + tag + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                        var sbs = new StringBuilder("DIS " + tag);
+                        foreach (int x in new[] { 8, r.Width / 2, r.Width - 80 })
+                        {
+                            Color c = bmp.GetPixel(x, 10);
+                            sbs.Append(" x").Append(x).Append('=').Append(c.R).Append(',').Append(c.G).Append(',').Append(c.B);
+                        }
+                        Console.Out.WriteLine(sbs.ToString());
+                    }
+                };
+
+                // 1) 裸窗体: 没有自绘标题栏、没有自定义样式位
+                var bare = new Form
+                {
+                    Text = "bare",
+                    FormBorderStyle = FormBorderStyle.None,
+                    BackColor = Color.White,
+                    StartPosition = FormStartPosition.Manual,
+                    Location = new Point(500, 120),
+                    Size = new Size(420, 260),
+                    TopMost = true
+                };
+                bare.Show(); bare.Activate(); Pump();
+                cap(bare, "bare-on");
+                bare.Enabled = false; Pump();
+                cap(bare, "bare-off");
+                bare.Enabled = true; Pump();
+                bare.Close();
+
+                // 2) 主窗体: 正常 / 被禁用 / 再恢复
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(60, 80);
+                mf.Size = new Size(900, 700);
+                mf.TopMost = true;
+                mf.Show(); mf.Activate(); Pump(); Pump();
+                cap(mf, "main-on");
+                mf.Enabled = false; Pump(); Pump();
+                cap(mf, "main-off");
+
+                // PrintWindow: 让窗口自己把表面画一遍; 若蓝条在, 说明它已在窗口表面里
+                using (var bmp = new Bitmap(mf.Width, mf.Height))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                    {
+                        IntPtr hdc = g.GetHdc();
+                        PrintWindow(mf.Handle, hdc, 2);   // PW_RENDERFULLCONTENT
+                        g.ReleaseHdc(hdc);
+                    }
+                    bmp.Save("dis-main-off-print.png", System.Drawing.Imaging.ImageFormat.Png);
+                    Color c = bmp.GetPixel(mf.Width / 2, 10);
+                    Console.Out.WriteLine("DIS printwindow-off x-mid=" + c.R + "," + c.G + "," + c.B);
+                }
+
+                mf.Enabled = true; Pump(); Pump();
+                cap(mf, "main-on2");
+
+                // 4) 装上"不画 NC 区"的处理后, 再失活一次: 标题条应保持窗底色
+                var chrome = new ChromeSpy();
+                chrome.AssignHandle(mf.Handle);
+                var other2 = new Form
+                {
+                    Text = "other2",
+                    StartPosition = FormStartPosition.Manual,
+                    Location = new Point(1000, 500),
+                    Size = new Size(300, 200),
+                    TopMost = true
+                };
+                other2.Show(); other2.Activate(); Pump(); Pump();
+                cap(mf, "main-deact-nonc");
+                other2.Close(); Pump();
+                mf.Activate(); Pump(); Pump();
+                cap(mf, "main-react-nonc");
+                chrome.ReleaseHandle();
+
+                // 3) 只是"失去激活"呢: 拿另一个窗口抢焦点, 不做禁用、不开模态
+                var other = new Form
+                {
+                    Text = "other",
+                    StartPosition = FormStartPosition.Manual,
+                    Location = new Point(1000, 500),
+                    Size = new Size(300, 200),
+                    TopMost = true
+                };
+                other.Show(); other.Activate(); Pump(); Pump();
+                cap(mf, "main-deact");
+                other.Close(); Pump();
+                mf.Activate(); Pump(); Pump();
+                cap(mf, "main-react");
+
+                mf.Close();
+                Environment.Exit(0);
+            }
+
+            // 打开设置页**期间**主窗口长什么样: ShowDialog 会独占消息循环, 探针自己停在那里,
+            // 只能靠 Timer (在模态循环里照常投递) 抓屏 + 读样式位。用户报的"打开设置后会变"
+            // 必须在这一刻才看得见。
+            if (args.Length >= 1 && args[0] == "opendlg")
+            {
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(60, 80);
+                mf.Size = new Size(900, 700);
+                mf.TopMost = true;
+                mf.Show();
+                mf.Activate();
+                Pump(); Pump();
+
+                // 标题条整段 (含窗口左右边缘各 4px, 好看清边线) 从屏幕上抓下来
+                Action<string> strip = tag =>
+                {
+                    var r = new Rectangle(mf.Left - 4, mf.Top - 4, mf.Width + 8, Math.Min(72, mf.Height));
+                    if (r.Right > Screen.PrimaryScreen.Bounds.Right) r.Width = Screen.PrimaryScreen.Bounds.Right - r.Left;
+                    using (var bmp = new Bitmap(r.Width, r.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+                        bmp.Save("opendlg-" + tag + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                        // 抓完立刻采样: 标题条中段 + 齿轮左侧 + 窗内左上角
+                        var sbs = new StringBuilder("STRIP " + tag);
+                        int[] xs = { 10, r.Width / 2, r.Width - 120, r.Width - 60, r.Width - 2 };
+                        foreach (int x in xs)
+                        {
+                            if (x < 0 || x >= r.Width) continue;
+                            Color c = bmp.GetPixel(x, 12);
+                            sbs.Append(" x").Append(x).Append('=').Append(c.R).Append(',').Append(c.G).Append(',').Append(c.B);
+                        }
+                        Console.Out.WriteLine(sbs.ToString());
+                    }
+                };
+
+                Action<string> st = tag =>
+                {
+                    int style = GetWindowLong(mf.Handle, -16);
+                    Console.Out.WriteLine("DLG " + tag
+                        + " style=0x" + style.ToString("X8")
+                        + " thickframe=" + ((style & 0x00040000) != 0 ? "y" : "n")
+                        + " caption=" + ((style & 0x00C00000) == 0x00C00000 ? "y" : "n")
+                        + " size=" + mf.Size + " client=" + mf.ClientSize
+                        + " padTop=" + mf.Padding.Top + " state=" + mf.WindowState
+                        + " enabled=" + mf.Enabled + " forms=" + Application.OpenForms.Count
+                        + " hitR=" + HitCode(mf, mf.ClientSize.Width - 3, 200)
+                        + " hitCap=" + HitCode(mf, 240, 12));
+                };
+
+                st("before");
+                strip("before");
+
+                // 在模态循环里做一次: 抓屏 → 读样式 → 关掉设置页
+                var timer = new System.Windows.Forms.Timer { Interval = 1500 };
+                timer.Tick += (s0, e0) =>
+                {
+                    timer.Stop();
+                    strip("modal");
+                    st("modal");
+                    Console.Out.Flush();
+                    foreach (Form dlgForm in Application.OpenForms)
+                        if (dlgForm is SettingsForm) { dlgForm.Close(); break; }
+                };
+                timer.Start();
+
+                MethodInfo openM = mf.GetType().GetMethod("OpenSettings",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                openM.Invoke(mf, null);      // 阻塞到设置页关闭
+
+                Pump(); Pump();
+                strip("after");
+                st("after");
+
+                mf.Close();
+                Environment.Exit(0);
             }
 
             // 自绘标题栏: 几何 / WM_NCHITTEST 命中码 / 最大化-还原 / 窄窗标题省略
@@ -1802,6 +2046,33 @@ namespace StereoSplitter
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, int flags);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool SetCursorPos(int x, int y);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern void mouse_event(int flags, int dx, int dy, int data, IntPtr extra);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern short GetAsyncKeyState(int key);
+
+        /// <summary>真拖一次鼠标 (左键按下 → 移 → 抬起)。缩放/拖动窗口只有真鼠标才走系统循环。</summary>
+        static void DragMouse(Point from, int dx, int dy)
+        {
+            SetCursorPos(from.X, from.Y);
+            for (int i = 0; i < 3; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(20); }
+            mouse_event(0x0002, 0, 0, 0, IntPtr.Zero);          // LEFTDOWN
+            for (int i = 1; i <= 6; i++)
+            {
+                SetCursorPos(from.X + dx * i / 6, from.Y + dy * i / 6);
+                for (int k = 0; k < 3; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(20); }
+            }
+            mouse_event(0x0004, 0, 0, 0, IntPtr.Zero);          // LEFTUP
+            for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(25); }
+        }
+
         /// <summary>向数字框的箭头区投一次真实的左键按下/抬起。</summary>
         static void ClickSpin(Control buttons, bool up)
         {
@@ -1922,9 +2193,92 @@ namespace StereoSplitter
         }
 
         /// <summary>空转消息泵: 让布局/事件跑完 (无窗口应用里 DoEvents 是唯一的"再刷新一次")。</summary>
-        static void Pump()
-        {
+        static void Pump()        {
             for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+        }
+
+        /// <summary>试装"自绘边框"的标准处理: 不让系统画 NC 区 (标题栏/边框都是我们自己的)。</summary>
+        sealed class ChromeSpy : NativeWindow
+        {
+            public bool Swallow = true;
+            protected override void WndProc(ref Message m)
+            {
+                if (Swallow && (m.Msg == 0x0086 || m.Msg == 0x0085))   // WM_NCACTIVATE / WM_NCPAINT
+                {
+                    m.Result = (IntPtr)1;
+                    return;
+                }
+                base.WndProc(ref m);
+            }
+        }
+
+        /// <summary>挂在窗口 proc 前面偷看消息 (AssignHandle 会链到原来的 proc, 不影响窗口行为)。</summary>
+        sealed class MsgSpy : NativeWindow
+        {
+            public readonly StringBuilder Log = new StringBuilder();
+            protected override void WndProc(ref Message m)
+            {
+                switch (m.Msg)
+                {
+                    case 0x0084:
+                        base.WndProc(ref m);
+                        Log.Append("NCHITTEST→").Append(m.Result.ToInt64()).Append(' ');
+                        return;
+                    case 0x00A1:
+                        Log.Append("NCLDOWN(").Append((int)m.WParam).Append(") ");
+                        break;
+                    case 0x0112:
+                        Log.Append("SYS(0x").Append(((int)m.WParam & 0xFFF0).ToString("X")).Append(") ");
+                        break;
+                    case 0x0231: Log.Append("ENTERSIZE "); break;
+                    case 0x0232: Log.Append("EXITSIZE "); break;
+                    case 0x00A3: Log.Append("NCLDBLCLK(").Append((int)m.WParam).Append(") "); break;
+                }
+                base.WndProc(ref m);
+            }
+        }
+
+        /// <summary>只记鼠标/系统命令: 判断拖拽的按下有没有真的落到窗口上。</summary>
+        sealed class MsgLog : IMessageFilter
+        {
+            readonly StringBuilder sb;
+            public MsgLog(StringBuilder sb) { this.sb = sb; }
+            public bool PreFilterMessage(ref Message m)
+            {
+                switch (m.Msg)
+                {
+                    case 0x0201: sb.Append("LDOWN(").Append(m.LParam.ToInt64() & 0xFFFF).Append(',').Append((m.LParam.ToInt64() >> 16) & 0xFFFF).Append(") "); break;
+                    case 0x0202: sb.Append("LUP "); break;
+                    case 0x0200: sb.Append("."); break;
+                    case 0x00A1: sb.Append("NCLDOWN(").Append((int)m.WParam).Append(") "); break;
+                    case 0x0112: sb.Append("SYS(0x").Append(((int)m.WParam & 0xFFF0).ToString("X")).Append(") "); break;
+                    case 0x0231: sb.Append("ENTERSIZE "); break;
+                    case 0x0232: sb.Append("EXITSIZE "); break;
+                }
+                return false;
+            }
+        }
+
+        /// <summary>把 WM_NCHITTEST 直接发给窗口, 看它回什么命中码 (客户区坐标)。</summary>
+        static string HitCode(Form fm, int x, int y)
+        {
+            Point scr = fm.PointToScreen(new Point(x, y));
+            IntPtr lp = (IntPtr)((scr.Y << 16) | (scr.X & 0xFFFF));
+            long r = SendMessage(fm.Handle, 0x0084, IntPtr.Zero, lp).ToInt64();
+            switch (r)
+            {
+                case 1: return "CLIENT";
+                case 2: return "CAPTION";
+                case 10: return "LEFT";
+                case 11: return "RIGHT";
+                case 12: return "TOP";
+                case 13: return "TOPLEFT";
+                case 14: return "TOPRIGHT";
+                case 15: return "BOTTOM";
+                case 16: return "BOTTOMLEFT";
+                case 17: return "BOTTOMRIGHT";
+                default: return r.ToString();
+            }
         }
 
         /// <summary>模拟一次用户拖动 (Value 赋值不会触发 Scroll, 自动静音那类规则就测不到)。</summary>
