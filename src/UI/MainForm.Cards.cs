@@ -439,11 +439,11 @@ namespace StereoSplitter
             // 每次都改一次 bounds 会连带整块日志框重排重画。
             if (cs == lastLogPanelSize) return;
             lastLogPanelSize = cs;
-            int w = Math.Max(120, cs.Width - 15 - 10);
+            int w = Math.Max(Dpi.S(120), cs.Width - Dpi.S(15) - Dpi.S(10));
             // 高下限设 0: 分隔条现在可以一路把日志区压到没有, 日志框跟着缩到 0 而不是留着
             // 40px 高度溢出到面板外面 (Panel 会裁剪, 但多出来的高度仍会参与滚动条计算)
-            int h = Math.Max(0, cs.Height - 30 - 8);
-            txtLog.SetBounds(15, 30, w, h);
+            int h = Math.Max(0, cs.Height - Dpi.S(30) - Dpi.S(8));
+            txtLog.SetBounds(Dpi.S(15), Dpi.S(30), w, h);
         }
 
         /// <summary>
@@ -464,17 +464,17 @@ namespace StereoSplitter
             // 宽度没变 (改高度/拖分隔条也会走到这里) → 摆出来的结果不会变, 直接跳过
             if (panelW == lastVolPanelW) return;
             lastVolPanelW = panelW;
-            const int leftEdge = 45;    // 滑条左端: 两行共用一个起点, 图标都在 x=15..37, 右侧留 8px 就贴上
-            const int rightEdge = 10;   // 右端留白, 与卡片区/日志框右缘一致
+            int leftEdge = Dpi.S(45);   // 滑条左端: 两行共用一个起点, 图标都在 x=15..37, 右侧留 8px 就贴上
+            int rightEdge = Dpi.S(10);  // 右端留白, 与卡片区/日志框右缘一致
             int pctW = lblVolMaster.Width;
 
             int pctX = panelW - rightEdge - pctW;
-            int volW = Math.Max(120, pctX - 8 - leftEdge);
+            int volW = Math.Max(Dpi.S(120), pctX - Dpi.S(8) - leftEdge);
 
-            volGain.SetBounds(leftEdge, 52, volW, 20);
-            lblVolGain.Location = new Point(pctX, 52);
-            volMaster.SetBounds(leftEdge, 86, volW, 20);
-            lblVolMaster.Location = new Point(pctX, 86);
+            volGain.SetBounds(leftEdge, Dpi.S(52), volW, Dpi.S(20));
+            lblVolGain.Location = new Point(pctX, Dpi.S(52));
+            volMaster.SetBounds(leftEdge, Dpi.S(86), volW, Dpi.S(20));
+            lblVolMaster.Location = new Point(pctX, Dpi.S(86));
         }
 
         /// <summary>AutoSize 控件取宽: 用 PreferredSize (不依赖当前布局), 构造期也能算准。</summary>
@@ -502,14 +502,14 @@ namespace StereoSplitter
             if (panelSize == lastTopPanelSize) return;   // 尺寸没变就不重排 (拖分隔条会频繁触发)
             lastTopPanelSize = panelSize;
             int panelW = panelSize.Width;
-            const int rightEdge = 10;               // 与卡片区/日志框右缘一致的留白
-            const int leftEdge = 15;                // 与其它行左缘一致
-            const int gap = 8;
+            int rightEdge = Dpi.S(10);              // 与卡片区/日志框右缘一致的留白
+            int leftEdge = Dpi.S(15);               // 与其它行左缘一致
+            int gap = Dpi.S(8);
 
             // —— 第 1 行: [捕获:] [下拉] [刷新(图标)] [设置(齿轮, 贴右)] ——
             btnSettings.Left = panelW - rightEdge - btnSettings.Width;
             btnRefresh.Left = btnSettings.Left - gap - btnRefresh.Width;
-            cmbDefault.Width = Math.Max(60, btnRefresh.Left - gap - cmbDefault.Left);
+            cmbDefault.Width = Math.Max(Dpi.S(60), btnRefresh.Left - gap - cmbDefault.Left);
 
             // —— 第 2 行: [开始分流] 独占一行, 水平居中 ——
             // 它是这一屏唯一的主操作, 居中比贴左更稳: 窗口拉宽时不会飘到角落里去。
@@ -531,8 +531,8 @@ namespace StereoSplitter
             // 改尺寸会触发 cardHost.Resize → FitCardWidths 重排卡片。
             if (cardHost != null)
             {
-                int cw = Math.Max(200, panelW - cardHost.Left - rightEdge);
-                int chh = Math.Max(0, panelSize.Height - cardHost.Top - 4);
+                int cw = Math.Max(Dpi.S(200), panelW - cardHost.Left - rightEdge);
+                int chh = Math.Max(0, panelSize.Height - cardHost.Top - Dpi.S(4));
                 if (cardHost.Width != cw || cardHost.Height != chh)
                     cardHost.Size = new Size(cw, chh);
             }
@@ -551,11 +551,11 @@ namespace StereoSplitter
             int panelW = host.ClientSize.Width;
             if (panelW == lastLogHeaderW) return;
             lastLogHeaderW = panelW;
-            const int rightEdge = 10;
-            const int gap = 6;
+            int rightEdge = Dpi.S(10);
+            int gap = Dpi.S(6);
 
             btnClearLog.Left = panelW - rightEdge - btnClearLog.Width;
-            lblWaterSec.Left = btnClearLog.Left - 8 - PreferredW(lblWaterSec);
+            lblWaterSec.Left = btnClearLog.Left - Dpi.S(8) - PreferredW(lblWaterSec);
             nudWaterShell.Left = lblWaterSec.Left - gap - nudWaterShell.Width;
             lblWaterIv.Left = nudWaterShell.Left - gap - PreferredW(lblWaterIv);
             lblWater.Left = lblWaterIv.Left - gap - PreferredW(lblWater);
@@ -1241,12 +1241,12 @@ namespace StereoSplitter
             }
 
             int panelW = flwSpecChannels.Parent.ClientSize.Width;
-            const int sideMargin = 15;   // 与其它行左缘一致; 居中后左右各留这么多
+            int sideMargin = Dpi.S(15);  // 与其它行左缘一致; 居中后左右各留这么多
             int leftBound = sideMargin;
             int rightBound = Math.Max(sideMargin, panelW - sideMargin);
 
             // 两侧控件还没加进父容器 (构造期早于 AddRange) 时按整面板算, 之后 LayoutTopRows 会再调一次
-            const int gap = 8;
+            int gap = Dpi.S(8);
             if (cmbSpec != null && cmbSpec.Parent == flwSpecChannels.Parent)
                 leftBound = Math.Max(leftBound, cmbSpec.Right + gap);
             if (btnAddOutput != null && btnAddOutput.Parent == flwSpecChannels.Parent)

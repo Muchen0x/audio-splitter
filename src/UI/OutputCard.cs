@@ -61,17 +61,30 @@ namespace StereoSplitter
         /// <summary>运行中试图切换单/多声道形态 → 已被拦下并回滚（调用方负责提示）。</summary>
         public event Action<OutputCardControl> ShapeBlocked;
 
-        public const int CardHeight = 56;       // 单声道卡片高度
-        public const int CardWidth = 500;
-        public const int RowHeight = 26;        // 多声道每行高度
+        // 以下尺寸按 96 DPI 的设计值给出, 实际值由 ScaleForDpi 按系统缩放乘一次 (125% → ×1.25)。
+        // 做成静态字段而非常量: 卡片宽度参与列数计算, 放大后若仍按设计值算, 卡片会比可视区宽
+        // 或排成错误的列数; 常量没法在运行时改。
+        public static int CardHeight { get; private set; } = 56;   // 单声道卡片高度
+        public static int CardWidth { get; private set; } = 500;
+        public static int RowHeight { get; private set; } = 26;    // 多声道每行高度
 
         /// <summary>卡片之间的竖向间隙 (与 MainForm 里卡片的 Margin.Bottom 对应)。</summary>
-        public const int CardGap = 4;
+        public static int CardGap { get; private set; } = 4;
+
+        /// <summary>按 DPI 缩放卡片尺寸 (由 <see cref="Dpi.Init"/> 调一次)。100% 时保持原值。</summary>
+        internal static void ScaleForDpi(float f)
+        {
+            CardHeight = (int)Math.Round(56 * f);
+            RowTop = (int)Math.Round(58 * f);
+            CardWidth = (int)Math.Round(500 * f);
+            RowHeight = (int)Math.Round(26 * f);
+            CardGap = (int)Math.Round(4 * f);
+        }
 
         static readonly Color BorderColor = Color.FromArgb(203, 208, 216);
         static readonly Color RowLabelColor = Color.FromArgb(120, 126, 136);
-        const int CornerRadius = 6;
-        const int RowTop = 58;                  // 多声道首行 y
+        static int CornerRadius { get { return Dpi.S(6); } }
+        static int RowTop = 58;                 // 多声道首行 y (按 DPI 缩放在 ScaleForDpi 里)
 
         public OutputCardControl(OutputCardModel model)
         {
@@ -373,34 +386,34 @@ namespace StereoSplitter
             int w = Width;
 
             // 第一行右起排: [×] ← [延迟圆角壳(字样+数字框+箭头+ms 单位)] ← [声道], 设备下拉占满左侧。
-            btnRemove.Location = new Point(w - 6 - btnRemove.Width, 3);
-            nudShell.Location = new Point(btnRemove.Left - 8 - nudShell.Width, 5);
-            cmbChannel.Location = new Point(nudShell.Left - 8 - cmbChannel.Width, 5);
-            cmbDevice.Location = new Point(8, 5);
-            cmbDevice.Width = Math.Max(90, cmbChannel.Left - 14);
+            btnRemove.Location = new Point(w - Dpi.S(6) - btnRemove.Width, Dpi.S(3));
+            nudShell.Location = new Point(btnRemove.Left - Dpi.S(8) - nudShell.Width, Dpi.S(5));
+            cmbChannel.Location = new Point(nudShell.Left - Dpi.S(8) - cmbChannel.Width, Dpi.S(5));
+            cmbDevice.Location = new Point(Dpi.S(8), Dpi.S(5));
+            cmbDevice.Width = Math.Max(Dpi.S(90), cmbChannel.Left - Dpi.S(14));
 
             // 第二行: 喇叭(静音开关) → 滑条(拉满可用宽度) → 百分比。
             // 喇叭 22 高放在 row2-1 处, 中心正好落在滑条轨道线上 (滑条 20 高, 轨道画在垂直中心);
             // 左缘 8 与第一行的设备下拉同列。
             // 单声道卡片高 56 = 上边距4 + 第一行21 + 间隔5 + 第二行20 + 下边距6, 下方不再留空。
-            const int row2 = 30;
-            btnMute.Location = new Point(8, row2 - 1);
-            int volX = btnMute.Right + 6;
+            int row2 = Dpi.S(30);
+            btnMute.Location = new Point(Dpi.S(8), row2 - Dpi.S(1));
+            int volX = btnMute.Right + Dpi.S(6);
             volTrack.Location = new Point(volX, row2);
             // 右起只剩 [百分比][8]: 静音勾选框已并入行首的喇叭图标, 空出的宽度全给滑条
-            volTrack.Width = Math.Max(120, w - volX - (8 + lblVol.Width + 10));
-            lblVol.Location = new Point(volTrack.Right + 8, row2);
+            volTrack.Width = Math.Max(Dpi.S(120), w - volX - (Dpi.S(8) + lblVol.Width + Dpi.S(10)));
+            lblVol.Location = new Point(volTrack.Right + Dpi.S(8), row2);
 
             // 多声道行: p0 [声道▾] [滑条] n%
             for (int i = 0; i < rows.Count; i++)
             {
                 int y = RowTop + i * RowHeight;
                 SlotRow r = rows[i];
-                r.Tag.Location = new Point(10, y + 3);
-                r.Cmb.Location = new Point(38, y);
-                r.Vol.Location = new Point(140, y + 3);
-                r.Vol.Width = Math.Max(100, w - 140 - (8 + r.Lbl.Width + 10));
-                r.Lbl.Location = new Point(r.Vol.Right + 8, y + 3);
+                r.Tag.Location = new Point(Dpi.S(10), y + Dpi.S(3));
+                r.Cmb.Location = new Point(Dpi.S(38), y);
+                r.Vol.Location = new Point(Dpi.S(140), y + Dpi.S(3));
+                r.Vol.Width = Math.Max(Dpi.S(100), w - Dpi.S(140) - (Dpi.S(8) + r.Lbl.Width + Dpi.S(10)));
+                r.Lbl.Location = new Point(r.Vol.Right + Dpi.S(8), y + Dpi.S(3));
             }
         }
 
@@ -420,12 +433,12 @@ namespace StereoSplitter
 
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
             using (var path = UiDraw.RoundRect(rect, CornerRadius))
-            {
-                using (var fill = new SolidBrush(BackColor))
-                    g.FillPath(fill, path);
-                using (var pen = new Pen(BorderColor))
-                    g.DrawPath(pen, path);
-            }
+            using (var fill = new SolidBrush(BackColor))
+                g.FillPath(fill, path);
+            // 描边走半像素对齐路径 (见 UiDraw.PenRect): 否则 1px 边被抗锯齿拆成两条灰线
+            using (var edgePath = UiDraw.PenRect(this, CornerRadius))
+            using (var pen = new Pen(BorderColor))
+                g.DrawPath(pen, edgePath);
         }
 
         /// <summary>用模型值回填控件 (载入/外部改动后调用)。行数须先由 SetMulti 定好。</summary>

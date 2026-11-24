@@ -16,18 +16,31 @@ namespace StereoSplitter.Model
     {
         /// <summary>卡片基准宽度：换列的步长。取 490 = 卡片里固定控件（设备/声道/延迟/百分号/静音）
         /// 占掉约 273px 之后，滑条还剩 200px 左右的最舒适宽度，也是默认窗口下单列卡片的取值区。</summary>
-        public const int BaseW = 490;
+        public static int BaseW { get; private set; } = 490;
 
         /// <summary>并排卡片之间的横向间距（卡片外框到外框）。</summary>
-        public const int GapX = 10;
+        public static int GapX { get; private set; } = 10;
 
         /// <summary>卡片最窄宽度：再窄第一行的设备下拉就压到「声道」下拉上了。
         /// 第一行的固定控件（× / ms / 延迟框 / 延迟 / 声道）合计约 246px，再加设备下拉 90px
         /// 与左侧 8px，360 是"刚好不重叠"的值；低于它就宁可横向滚动也不挤成畸形。</summary>
-        public const int MinW = 360;
+        public static int MinW { get; private set; } = 360;
 
         /// <summary>单列时的宽度上限：再宽滑条就拉成一根看不见刻度的长线。</summary>
-        public const int MaxW = 1120;
+        public static int MaxW { get; private set; } = 1120;
+
+        /// <summary>
+        /// 按 DPI 缩放这套阈值 (由 <see cref="StereoSplitter.Dpi.Init"/> 调一次)。
+        /// <para>四个值必须**同比例**放大: 列数判断用的是"可用宽度 ÷ 基准宽"的整数倍关系,
+        /// 只放大其中一两个会让换列点偏移、最小宽对不上。</para>
+        /// </summary>
+        internal static void ScaleForDpi(float f)
+        {
+            BaseW = (int)System.Math.Round(490 * f);
+            GapX = (int)System.Math.Round(10 * f);
+            MinW = (int)System.Math.Round(360 * f);
+            MaxW = (int)System.Math.Round(1120 * f);
+        }
 
         /// <summary>
         /// 给定可用宽度与卡片数，算列数与统一卡片宽度。

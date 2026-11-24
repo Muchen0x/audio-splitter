@@ -118,6 +118,8 @@ namespace StereoSplitter
             Controls.AddRange(new Control[] { lblDev, cmbDevice, lblChan, cmbChannel, btnOk, btnCancel });
             AcceptButton = btnOk;
             CancelButton = btnCancel;
+            // 与主窗口同一套 DPI 放大 (控件都按 96 DPI 摆好后, 在 Load 里整体乘一次)
+            Load += (s2, e2) => Dpi.ScaleForm(this);
         }
 
         void Confirm()

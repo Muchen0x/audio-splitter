@@ -21,6 +21,9 @@ namespace StereoSplitter
             // CopyFromScreen 按物理像素取屏: 不声明 DPI 感知的话, 高缩放屏上窗口会被系统
             // 虚拟化放大, 按 Location/Size 去截只能截到左上角一块 (live/icons 全军覆没)。
             try { SetProcessDPIAware(); } catch { }
+            // 与主程序同一套 DPI 换算: 不初始化的话 Dpi.Factor 恒为 1, 窗体不会缩放,
+            // 截出来的图就不是用户屏幕上看到的样子 (125% 下会误判"布局已适配")。
+            StereoSplitter.Dpi.Init();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
@@ -986,6 +989,30 @@ namespace StereoSplitter
                         Console.Out.Write(csb.ToString());
                     }
                 }
+                mf.Close();
+                return;
+            }
+
+            // DPI 适配自检: 打印缩放相关的实际值 (uidump 自己也要 Init, 否则 Dpi.S() 恒为 1)
+            if (args.Length >= 1 && args[0] == "dpiprobe")
+            {
+                StereoSplitter.Dpi.Init();
+                Console.Out.WriteLine("Dpi.Factor=" + StereoSplitter.Dpi.Factor + " S(15)=" + StereoSplitter.Dpi.S(15));
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(20, 20);
+                mf.TopMost = true;
+                mf.Show();
+                for (int i = 0; i < 14; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+                Console.Out.WriteLine("DeviceDpi=" + mf.DeviceDpi
+                    + " AutoScaleMode=" + mf.AutoScaleMode
+                    + " AutoScaleDimensions=" + mf.AutoScaleDimensions
+                    + " Current=" + mf.CurrentAutoScaleDimensions
+                    + " Size=" + mf.Size + " Client=" + mf.ClientSize);
+                var b = Field(mf, "btnStart") as Control;
+                var host = Field(mf, "cardHost") as Control;
+                if (b != null) Console.Out.WriteLine("btnStart=" + b.Bounds);
+                if (host != null) Console.Out.WriteLine("cardHost=" + host.Bounds + " cards=" + host.Controls.Count);
                 mf.Close();
                 return;
             }

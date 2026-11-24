@@ -276,6 +276,11 @@ namespace StereoSplitter
             // 窗体本身双缓冲: 缩放/拖动分隔条时背景不会先刷成白的再画控件 (整窗闪一下的来源)
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
             DoubleBuffered = true;
+            // DPI 适配: 设计基准 96 DPI。先关掉 WinForms 的自动缩放 (纯代码构建的窗体没有
+            // AutoScaleDimensions 的"设计值"可依据, 实测它把两边的尺寸标注拉平后就不再缩放),
+            // 改由 OnLoad 里显式 Scale(因子) 一次性放大构造期摆好的全部控件与字体。
+            // 运行时重排 (LayoutXxx)、动态创建的卡片、自绘的线宽/圆角另由 Dpi.S() 换算。
+            AutoScaleMode = AutoScaleMode.None;
             // 初始窗口尺寸; 不设 MinimumSize/MaximumSize, 长宽完全交给用户自由拖动
             Size = new Size(500, 500);
             Font = new Font("Microsoft YaHei UI", 9F);
@@ -701,6 +706,19 @@ namespace StereoSplitter
             FormClosing += MainForm_FormClosing;
         }
 
+        /// <summary>
+        /// DPI 放大: 构造期所有控件都按 96 DPI 的设计值摆好, 这里一次性乘上系统缩放系数
+        /// (125% → 1.25), 之后的首次布局就按放大后的尺寸算。
+        /// <para><b>为什么不用 AutoScaleMode.Dpi</b>: 纯代码构建的窗体没有设计器写入的
+        /// AutoScaleDimensions, WinForms 首次布局时会把"设计尺寸"与"当前 DPI"标成同一个值,
+        /// 结果一像素都不缩放 (实测: AutoScaleDimensions 被改成 120, 控件仍是 96 的像素值)。</para>
+        /// </summary>
+        protected override void OnLoad(EventArgs e)
+        {
+            Dpi.ScaleForm(this);
+            base.OnLoad(e);
+        }
+
         void SetAppState(AppState s)
         {
             // R-07: 四条恢复路径 (整链路重建 / 单路重建 / 端点回归轮询 / 看门狗) 都从这里改状态,
@@ -882,7 +900,7 @@ namespace StereoSplitter
                 // 现在两个面板都没有下限, WinForms 不会帮着夹取, 必须按真实客户区高度反算一次;
                 // 之后完全由用户拖动决定, 不再有任何限制。
                 splitContainer.SplitterDistance =
-                    Math.Max(0, splitContainer.Height - 110 - splitContainer.SplitterWidth);
+                    Math.Max(0, splitContainer.Height - Dpi.S(110) - splitContainer.SplitterWidth);
                 // 高DPI下 AutoSize 宽度在构造后才最终确定 → Load 时强制重排一次顶部三行、卡片区与日志标题行
                 // (重置缓存尺寸, 否则 LayoutTopRows/LayoutLogHeader 会以为尺寸没变而跳过)
                 lastTopPanelSize = Size.Empty;

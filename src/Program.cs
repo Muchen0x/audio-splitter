@@ -25,6 +25,9 @@ namespace StereoSplitter
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern bool AllowSetForegroundWindow(int dwProcessId);
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool SetProcessDPIAware();
+
         // ASFW_ANY: 把"允许抢前台"的许可发给本会话里的任意进程
         const int ASFW_ANY = -1;
 
@@ -224,6 +227,12 @@ namespace StereoSplitter
         [STAThread]
         static void Main(string[] argv)
         {
+            // DPI 感知必须在**任何窗口 / DC 创建之前**声明。此前进程是 unaware 的: 系统 125% 缩放时
+            // Windows 把整个窗口当位图放大 1.25 倍显示 (实测 500 逻辑像素的窗口占 625 物理像素),
+            // 于是 1px 边框被插值拉粗、6px 圆角拉成一圈台阶 —— 这就是"圆角明显锯齿"的根因。
+            // 声明之后由 GDI 按真实 DPI 绘制; 界面尺寸交给 MainForm 的 AutoScaleMode.Dpi 放大。
+            try { SetProcessDPIAware(); } catch { }
+
             // 兜底: 静态构造理论上已装好, 这里再确保一次 (幂等), 让后续任何分支都安全。
             InstallAssemblyResolver();
 
@@ -240,6 +249,9 @@ namespace StereoSplitter
 
             if (p.Cmd == Command.Gui)
             {
+                // DPI 换算只在 GUI 分支初始化: 自检是纯算术验证 (卡片栅格/时间轴都按 96 DPI 的
+                // 设计值断言), 若跟着屏幕缩放, 同一组用例在不同缩放率的机器上结论会不一样。
+                Dpi.Init();
                 RunGui();
                 return;
             }

@@ -174,11 +174,11 @@ namespace StereoSplitter
         Color fillDisabled = Color.Empty;
         Color borderColor = Color.Empty;
         Color textColor = Color.White;
-        int radius = 6;
+        int radius = Dpi.S(6);
         bool hot, pressed;
         ButtonGlyph glyph = ButtonGlyph.None;
-        int glyphRadius = 8;
-        float glyphThickness = 2.8f;
+        int glyphRadius = Dpi.S(8);
+        float glyphThickness = Dpi.F(2.8f);
         bool outline;
 
         public RoundButton()
@@ -344,13 +344,15 @@ namespace StereoSplitter
             // 圆角只剩 Region 的硬台阶 —— 6px 半径在 125% 缩放下放大成 7.5px, 一颗颗方角非常明显。</para>
             if (Width > 4 && Height > 4)
             {
-                using (var bodyPath = UiDraw.RoundRect(
-                    new Rectangle(2, 2, Width - 4, Height - 4), Math.Max(1, radius - 1)))
+                int r = Math.Max(1, radius - 1);
+                using (var bodyPath = UiDraw.RoundRect(new Rectangle(2, 2, Width - 4, Height - 4), r))
+                using (var edgePath = UiDraw.RoundRect(
+                    new RectangleF(2.5f, 2.5f, Width - 5f, Height - 5f), r))
                 {
                     using (var b = new SolidBrush(c))
                         g.FillPath(b, bodyPath);
                     using (var p = new Pen(edge))
-                        g.DrawPath(p, bodyPath);
+                        g.DrawPath(p, edgePath);
                 }
             }
 
@@ -900,13 +902,15 @@ namespace StereoSplitter
         static readonly Color BorderDisabled = Color.FromArgb(203, 208, 216);  // 禁用态: 黑边会让不可点的框看着仍可点
         static readonly Color BackDisabled = Color.FromArgb(244, 245, 247);
         static readonly Color TextDisabled = Color.FromArgb(150, 154, 160);
-        const int CornerRadius = 6;
-        const int PadX = 7;          // 文字距左缘 (与 RoundedCombo.TextPadX 对齐)
-        const int GapCapInner = 2;   // 文字与数字区的间隔 (与数字-单位间隔一致, 用户指定)
-        const int GapNumUnit = 2;    // 数字区与单位的间隔
-        const int GapUnitArrow = 4;  // 单位与箭头区的间隔
-        const int NumPad = 2;        // 数字文字两侧的余量 (光标/边距)
-        const int ArrowW = 20;       // 上下箭头区宽度
+        // 设计值 (96 DPI), 访问时按系统缩放换算; SpinStrip 例外 —— 它是原生 UpDownButtons
+        // 的物理宽度, 系统不随 DPI 放大, 保持 16 才能正好让开它。
+        static int CornerRadius { get { return Dpi.S(6); } }
+        static int PadX { get { return Dpi.S(7); } }          // 文字距左缘 (与 RoundedCombo.TextPadX 对齐)
+        static int GapCapInner { get { return Dpi.S(2); } }   // 文字与数字区的间隔 (与数字-单位间隔一致)
+        static int GapNumUnit { get { return Dpi.S(2); } }    // 数字区与单位的间隔
+        static int GapUnitArrow { get { return Dpi.S(4); } }  // 单位与箭头区的间隔
+        static int NumPad { get { return Dpi.S(2); } }        // 数字文字两侧的余量 (光标/边距)
+        static int ArrowW { get { return Dpi.S(20); } }       // 上下箭头区宽度
         const int SpinStrip = 16;    // 数字框内部给 (已藏) 原生按钮留的条宽, 见 Recalc
 
         public readonly NoWheelNumeric Inner;
@@ -1017,7 +1021,9 @@ namespace StereoSplitter
                 unit.BringToFront();
             }
             arrowX = unitX + GapUnitArrow;
-            Size = new Size(arrowX + ArrowW + 1, h);
+            // 右侧多留一段给圆角: 箭头若压在圆角弧线上, 擦箭头的白底会把弧线一起擦掉 ——
+            // 表现就是"底边框在箭头下方断一截、右边缘留一条游离竖线"。
+            Size = new Size(arrowX + ArrowW + CornerRadius, h);
             Invalidate();
         }
 
@@ -1082,30 +1088,31 @@ namespace StereoSplitter
             Color outside = Parent != null ? Parent.BackColor : SystemColors.Control;
             using (var b = new SolidBrush(outside)) g.FillRectangle(b, ClientRectangle);
 
-            // 边框: 黑色细边 (与 RoundedCombo 同一套), 悬停时同一黑色加粗到 1.5px ——
-            // 黑色已是最深, 没法像浅灰那样靠加深区分; 加粗时路径内缩 1px, 否则一半笔宽
-            // 落在客户区外被裁掉, 看不出变粗。
             bool strong = Inner.Enabled && hot;
             var frame = new Rectangle(0, 0, Width - 1, Height - 1);
             using (var path = UiDraw.RoundRect(frame, CornerRadius))
             using (var fill = new SolidBrush(Inner.Enabled ? Color.White : BackDisabled))
                 g.FillPath(fill, path);
-            var edgeRect = strong && Width > 4 && Height > 4
-                ? new Rectangle(1, 1, Width - 3, Height - 3)
-                : frame;
-            using (var path = UiDraw.RoundRect(edgeRect, CornerRadius))
-            using (var pen = new Pen(Inner.Enabled ? BorderNormal : BorderDisabled, strong ? 1.5f : 1f))
-                g.DrawPath(pen, path);
 
             // 原生上下按钮可能在句柄创建后被数字框自己摆回来, 每次绘制前压一道保险
             EnforceSpinHidden();
 
-            // 箭头区: 两条圆头短线, 与 RoundedCombo 下拉箭头同一笔画; 悬停/按下变深。
-            // 这里只管画, 状态变化时 RefreshArrow() 只让箭头矩形失效 —— 外壳是双缓冲的,
-            // 整框不会跟着重绘, 原生按钮那种"hover 一闪一闪"不存在了。
-            // 白底只铺到边框内侧: 悬停时边框加粗到 x=Width-2, 铺满会把它擦掉一截
+            // 箭头区白底: 整块清干净再画箭头 (RefreshArrow 只让这块失效)。
+            // 它会连带擦掉右侧圆角的那段弧线 —— 所以**边框放到它之后再画**;
+            // 顺序反了就是"底边在箭头下方断开、右缘留一条孤立竖线"。
             using (var b = new SolidBrush(Inner.Enabled ? Color.White : BackDisabled))
-                g.FillRectangle(b, arrowX, 1, Math.Max(0, Width - arrowX - 2), Height - 2);
+                g.FillRectangle(b, arrowX, 1, Math.Max(0, Width - arrowX - 1), Height - 2);
+
+            // 边框: 黑色细边 (与 RoundedCombo 同一套), 悬停时同一黑色加粗到 1.5px。
+            // 走半像素对齐路径, 否则 1px 会被抗锯齿拆成两条灰线 (看着比 1px 粗、发灰)。
+            if (Width > 4 && Height > 4)
+            {
+                float inset = strong ? 0.75f : 0.5f;
+                using (var path = UiDraw.RoundRect(
+                    new RectangleF(inset, inset, Width - inset * 2, Height - inset * 2), CornerRadius))
+                using (var pen = new Pen(Inner.Enabled ? BorderNormal : BorderDisabled, strong ? 1.5f : 1f))
+                    g.DrawPath(pen, path);
+            }
             Color off = Color.FromArgb(178, 178, 178);
             Color ink = Color.FromArgb(95, 94, 90);
             Color act = Color.FromArgb(44, 44, 42);
@@ -1120,12 +1127,12 @@ namespace StereoSplitter
         /// <summary>「^」/「v」两条圆头短线 (dir=1 朝上, -1 朝下), 与旧钩子画的同一笔画。</summary>
         static void DrawChevron(Graphics g, float cx, float cy, float dir, Color inkColor)
         {
-            using (var p = new Pen(inkColor, 1.6f))
+            using (var p = new Pen(inkColor, Dpi.F(1.6f)))
             {
                 p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
                 p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
-                g.DrawLine(p, cx - 4f, cy + 2.2f * dir, cx, cy - 2.2f * dir);
-                g.DrawLine(p, cx, cy - 2.2f * dir, cx + 4f, cy + 2.2f * dir);
+                g.DrawLine(p, cx - Dpi.F(4f), cy + Dpi.F(2.2f) * dir, cx, cy - Dpi.F(2.2f) * dir);
+                g.DrawLine(p, cx, cy - Dpi.F(2.2f) * dir, cx + Dpi.F(4f), cy + Dpi.F(2.2f) * dir);
             }
         }
 
@@ -1797,6 +1804,37 @@ namespace StereoSplitter
     /// <summary>自绘用的公共绘制工具。</summary>
     static class UiDraw
     {
+        /// <summary>
+        /// 圆角矩形路径 (浮点版)。**1px 描边必须用它**: 传 (0.5, 0.5, W-1, H-1) 让笔心落在像素中心,
+        /// 线正好覆盖一整列像素, 是纯黑; 用整数矩形时笔心在像素边界上, 抗锯齿把 1px 拆成
+        /// 两条 50% 灰 —— 放大看就是"边框发灰、比 1px 粗"。
+        /// </summary>
+        public static System.Drawing.Drawing2D.GraphicsPath RoundRect(RectangleF r, float radius)
+        {
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            float max = Math.Min(r.Width, r.Height) / 2f;
+            float d = Math.Min(radius, max) * 2f;
+            if (d <= 0f)
+            {
+                path.AddRectangle(r);
+            }
+            else
+            {
+                path.AddArc(r.X, r.Y, d, d, 180, 90);
+                path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+                path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+                path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+                path.CloseFigure();
+            }
+            return path;
+        }
+
+        /// <summary>1px 描边用的路径: 客户区四边各内缩半像素。</summary>
+        public static System.Drawing.Drawing2D.GraphicsPath PenRect(Control c, int radius)
+        {
+            return RoundRect(new RectangleF(0.5f, 0.5f, c.Width - 1f, c.Height - 1f), radius);
+        }
+
         /// <summary>圆角矩形路径 (radius 会被夹到不超过半高/半宽)。</summary>
         public static System.Drawing.Drawing2D.GraphicsPath RoundRect(Rectangle r, int radius)
         {

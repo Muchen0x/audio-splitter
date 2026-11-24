@@ -166,6 +166,8 @@ namespace StereoSplitter
                 lblMic, cmbMic, btnRescan, lblTip, lv, lblState,
                 btnStart, btnApply, btnClose, txtLog
             });
+            // 与主窗口同一套 DPI 放大 (控件都按 96 DPI 摆好后, 在 Load 里整体乘一次)
+            Load += (s2, e2) => Dpi.ScaleForm(this);
         }
 
         /// <summary>提示文案: 说清"音乐不用停"以及失败时该调什么。</summary>

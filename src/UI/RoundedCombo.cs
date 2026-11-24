@@ -41,16 +41,17 @@ namespace StereoSplitter
         /// <summary>弹层里已选中项的高亮 (灰, 不是系统蓝)。</summary>
         internal static readonly Color RowSelected = Color.FromArgb(226, 228, 232);
 
+        // 以下都是 96 DPI 的设计值, 访问时按系统缩放换算 (见 Dpi)。
         /// <summary>本体圆角。比卡片的 8 小一号 —— 控件矮, 同半径会显得过圆。</summary>
-        const int CornerRadius = 6;
+        static int CornerRadius { get { return Dpi.S(6); } }
         /// <summary>弹层圆角, 与输出卡片/设置分组卡一致。</summary>
-        internal const int PopupRadius = 8;
+        internal static int PopupRadius { get { return Dpi.S(8); } }
         /// <summary>文字左内缩。与卡片里其它控件的 8px 对齐。</summary>
-        internal const int TextPadX = 8;
+        internal static int TextPadX { get { return Dpi.S(8); } }
         /// <summary>右侧给箭头留的宽度 (internal: 量测工具要靠它算文字可用宽度)。</summary>
-        internal const int ArrowZone = 22;
+        internal static int ArrowZone { get { return Dpi.S(22); } }
         /// <summary>弹层上下留白 (视觉上让第一行不贴边)。</summary>
-        const int PopupPadY = 4;
+        static int PopupPadY { get { return Dpi.S(4); } }
         /// <summary>
         /// 弹层四周留给自绘阴影的像素。
         /// <para><b>为什么要自己画</b>: 系统的 <c>DropShadowEnabled</c> 是按窗口**矩形**投的,
@@ -58,7 +59,7 @@ namespace StereoSplitter
         /// 关掉系统阴影、把窗口外扩这么多、在自己的绘制里画圆角投影, 形状才与控件圆角一致。</para>
         /// <para>代价是弹层窗口比内容宽 2×该值: 落点与量测都要按"内容区"算, 不能再用窗口尺寸直接比。</para>
         /// </summary>
-        internal const int ShadowPad = 4;
+        internal static int ShadowPad { get { return Dpi.S(4); } }
         /// <summary>自动收起后多久内不允许再展开 (毫秒)。见 <see cref="OpenDropDown"/> 的说明。</summary>
         const int AutoCloseGuardMs = 300;
 
@@ -149,8 +150,18 @@ namespace StereoSplitter
         /// <summary>弹层最多显示多少行, 超过就用滚动条。</summary>
         public int MaxDropDownItems { get; set; }
 
-        /// <summary>弹层行高。本体高度由 <see cref="Control.Height"/> 单独决定, 两者互不影响。</summary>
-        public int ItemHeight { get; set; }
+        int itemHeight = Dpi.S(24);
+
+        /// <summary>
+        /// 弹层行高。本体高度由 <see cref="Control.Height"/> 单独决定, 两者互不影响。
+        /// <para>赋值按设计像素处理 (调用点一律写 24), 取值拿到的是按当前 DPI 换算后的实际像素 ——
+        /// 它不参与 WinForms 的 Bounds 缩放, 不换算的话 125% 下行高还是 24, 15px 的字会顶到行边。</para>
+        /// </summary>
+        public int ItemHeight
+        {
+            get { return itemHeight; }
+            set { itemHeight = Dpi.S(value); }
+        }
 
         /// <summary>
         /// 哪些行显示成灰色 (不可选的样子)。
@@ -240,13 +251,17 @@ namespace StereoSplitter
                     g.FillPath(fill, path);
             }
 
-            // 加粗时路径内缩 1px, 否则 1.5px 笔的一半落在客户区外被裁掉, 反而看不出变粗
-            var borderRect = strong && Width > 4 && Height > 4
-                ? new Rectangle(1, 1, Width - 3, Height - 3)
-                : rect;
-            using (var path = UiDraw.RoundRect(borderRect, CornerRadius))
-            using (var pen = new Pen(border, strong ? 1.5f : 1f))
-                g.DrawPath(pen, path);
+            // 描边走**半像素对齐**路径: 笔心落在像素中心时 1px 正好盖住一整列, 是纯黑;
+            // 用整数边界会把 1px 拆成两条 50% 灰 (放大看就是"灰边、比 1px 粗")。
+            // 加粗时再多留一点余量, 免得 1.5px 的一半被客户区裁掉。
+            if (Width > 4 && Height > 4)
+            {
+                float inset = strong ? 0.75f : 0.5f;
+                using (var path = UiDraw.RoundRect(
+                    new RectangleF(inset, inset, Width - inset * 2, Height - inset * 2), CornerRadius))
+                using (var pen = new Pen(border, strong ? 1.5f : 1f))
+                    g.DrawPath(pen, path);
+            }
 
             int tw = Math.Max(0, Width - TextPadX - ArrowZone);
             string text = Text;
@@ -272,12 +287,12 @@ namespace StereoSplitter
         /// </summary>
         void DrawChevron(Graphics g, Color color)
         {
-            float cx = Width - 13f;
+            float cx = Width - Dpi.F(13f);
             float cy = Height / 2f;
-            const float halfW = 4f;
-            const float halfH = 2.2f;
+            float halfW = Dpi.F(4f);
+            float halfH = Dpi.F(2.2f);
             float dir = open ? -1f : 1f;
-            using (var pen = new Pen(color, 1.6f))
+            using (var pen = new Pen(color, Dpi.F(1.6f)))
             {
                 pen.StartCap = LineCap.Round;
                 pen.EndCap = LineCap.Round;
@@ -833,7 +848,7 @@ namespace StereoSplitter
                 g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 int pad = RoundedCombo.ShadowPad;
                 using (var path = UiDraw.RoundRect(
-                    new Rectangle(pad, pad, ts.Width - pad * 2 - 1, ts.Height - pad * 2 - 1),
+                    new RectangleF(pad + 0.5f, pad + 0.5f, ts.Width - pad * 2 - 1f, ts.Height - pad * 2 - 1f),
                     RoundedCombo.PopupRadius))
                 using (var pen = new Pen(BorderColor))
                     g.DrawPath(pen, path);
