@@ -669,6 +669,61 @@ namespace StereoSplitter
                 return;
             }
 
+            // 实屏抓弹层: DrawToBitmap 走 WM_PRINT, 与真实屏幕合成未必一致 (尤其 SetWindowRgn
+            // 裁出来的圆角边缘)。要判断"圆角有没有裂缝/缺口", 只能 CopyFromScreen。
+            if (args.Length >= 1 && args[0] == "livepopup")
+            {
+                int lw = 500, lh = 500;
+                if (args.Length >= 3) { int.TryParse(args[1], out lw); int.TryParse(args[2], out lh); }
+                string path = args.Length >= 4 ? args[3] : "livepopup.png";
+
+                var sf = new MainForm();
+                sf.StartPosition = FormStartPosition.Manual;
+                sf.Location = new Point(40, 40);
+                sf.Size = new Size(lw, lh);
+                sf.TopMost = true;
+                sf.Show();
+                sf.Activate();
+                Pump();
+
+                RoundedCombo combo = Field(sf, "cmbSpec") as RoundedCombo;
+                ToolStrip ts = null;
+                if (combo != null)
+                {
+                    System.Reflection.MethodInfo openM = typeof(RoundedCombo)
+                        .GetMethod("OpenDropDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                    if (openM != null) openM.Invoke(combo, null);
+                    Pump();
+                    ts = Field(combo, "popup") as ToolStrip;
+                }
+                if (ts == null || !ts.Visible)
+                {
+                    Console.Out.WriteLine("LIVEPOPUP popup=closed");
+                    sf.Close();
+                    return;
+                }
+
+                Rectangle r = ts.Bounds;                       // 顶层窗口, 已是屏幕坐标
+                r.Inflate(8, 8);                               // 四周留 8px 背景, 才看得出角上有没有缝
+                Rectangle scr = Screen.FromControl(sf).Bounds;
+                r.Intersect(scr);
+
+                Console.Out.WriteLine("LIVEPOPUP size=" + ts.Size + " client=" + ts.ClientSize
+                    + " region=" + (ts.Region == null ? "NULL" : "set")
+                    + " opacity=" + ((ToolStripDropDown)ts).Opacity
+                    + " dropshadow=" + ((ToolStripDropDown)ts).DropShadowEnabled);
+
+                using (var bmp = new Bitmap(r.Width, r.Height))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                        g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+                    bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                }
+                Console.Out.WriteLine("LIVEPOPUP at=" + ts.Bounds + " -> " + path);
+                sf.Close();
+                return;
+            }
+
             // 滚动复现: 卡片列表滚动后延迟框出现"重影"(文字/箭头被画两次)。
             // 用 BufferedFlowPanel + 8 张真卡片模拟, 逐步滚动并逐张截图, 看是哪一步开始糊。
             if (args.Length >= 1 && args[0] == "scroll")

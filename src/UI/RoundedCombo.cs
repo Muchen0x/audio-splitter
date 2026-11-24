@@ -679,8 +679,10 @@ namespace StereoSplitter
             DropShadowEnabled = false;
             BackColor = Color.White;
             GripStyle = ToolStripGripStyle.Hidden;
-            // 左右各 1px 边框 + 上下各 4px 留白
-            Padding = new Padding(1, 4, 1, 4);
+            // 内缩交给 host 的 Margin, 不用 ToolStrip.Padding: 有 Padding 时 ToolStrip 的绘制
+            // clip 会收缩到内边距里, 铺白铺不到最外那几行, 描边又恰好画在那里 —— 表现是
+            // 边框"画了却看不见", 四角只剩几点残影 (实测)。Padding 为 0, clip 才等于整个客户区。
+            Padding = Padding.Empty;
             Size = size;
             Renderer = new PopupRenderer();
 
@@ -688,11 +690,11 @@ namespace StereoSplitter
             // 定位, 不依赖 ListBox 的 IndexFromPoint (那份副本一旦忘填, 表现就是"能展开但点哪行都没反应")。
             List = new ComboRowList(owner)
             {
-                Size = new Size(size.Width - 2, size.Height - 8 - 2)
+                Size = new Size(size.Width - 2, size.Height - 8 - 2)    // 左右各 1px 边框 + 上下各 4px 留白
             };
             var host = new ToolStripControlHost(List)
             {
-                Margin = Padding.Empty,
+                Margin = new Padding(1, 4, 1, 4),
                 Padding = Padding.Empty,
                 AutoSize = false,
                 Size = List.Size
@@ -708,6 +710,52 @@ namespace StereoSplitter
         {
             List.Highlight(index);
         }
+
+        /// <summary>
+        /// 关掉 Windows 11 给顶层窗口自动套的系统圆角。
+        /// <para><b>为什么要关</b>: 系统的圆角是在 DWM 合成阶段另做的一层裁剪, 叠在我们自绘的
+        /// Region 之上。Region 里特意留了给描边当余量的白边, 若被系统再裁一次, 圆角外侧就会
+        /// 直接露出父窗口底色 —— 1 倍下看正是"圆角上有裂缝/缺口"。弹层的形状本来就由我们自己的
+        /// Region 决定, 系统这一层只会让结果不可控。</para>
+        /// <para>Win10 及更早没有这个属性, 调用会失败, 忽略即可。</para>
+        /// </summary>
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            ApplyCornerPreference();
+        }
+
+        /// <summary>窗口真正显示后再设一次: handle 刚创建时 DWM 还没接管这个窗口, 那一次是空转。</summary>
+        protected override void OnOpened(EventArgs e)
+        {
+            base.OnOpened(e);
+            ApplyCornerPreference();
+        }
+
+        void ApplyCornerPreference()
+        {
+            try
+            {
+                int noRound = 1;                                        // DWMWCP_DONOTROUND
+                DwmSetWindowAttribute(Handle, DwmCornerPreference, ref noRound, sizeof(int));
+                // 让 DWM 立刻按新属性重算窗口框 (不改位置/尺寸/层序)
+                SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
+                    SwpNoMove | SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
+            }
+            catch (DllNotFoundException) { }
+            catch (EntryPointNotFoundException) { }
+        }
+
+        const int DwmCornerPreference = 33;                             // DWMWA_WINDOW_CORNER_PREFERENCE
+
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+        static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+        const int SwpNoSize = 0x0001, SwpNoMove = 0x0002, SwpNoZOrder = 0x0004,
+                  SwpNoActivate = 0x0010, SwpFrameChanged = 0x0020;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, int flags);
 
         /// <summary>
         /// 滚轮只滚弹层列表, 绝不放它冒泡: ToolStripDropDown 不处理 WM_MOUSEWHEEL,
@@ -757,15 +805,15 @@ namespace StereoSplitter
 
         /// <summary>
         /// 把窗口本身裁成圆角: 不这么做的话浮层的四个角会露出方角。
-        /// <para><b>Region 要比可见内容外扩 1px</b>: Region 是像素级硬裁, 没有抗锯齿。若裁剪边界
-        /// 正好压在 1px 描边的中心线上, 弧线外侧那半个抗锯齿像素会被裁掉, 转角看起来又灰又断。
-        /// 外扩 1px 后整条弧线都落在裁剪区内, 代价是圆角外侧多 1px 空白 —— 由背景铺白填掉,
-        /// 在浅色界面上看不出来 (见 <see cref="PopupRenderer"/>)。</para>
+        /// <para><b>Region 要比可见内容外扩 2px</b>: Region 是像素级硬裁, 没有抗锯齿, 贴着边界
+        /// 的像素还可能整格被丢掉。外扩 1px 只够盖住描边本身, 描边外侧那条白底反而被吃掉,
+        /// 圆角处于是露出下层窗口、像裂了一道缝; 外扩 2px 才留得下一圈完整白边, 裁切的台阶
+        /// 落在白底之外 (见 <see cref="PopupRenderer"/> 的铺白)。</para>
         /// </summary>
         void ShapeRound()
         {
             if (Width <= 0 || Height <= 0) return;
-            const int Bleed = 1;
+            const int Bleed = 2;
             using (var path = UiDraw.RoundRect(
                 new Rectangle(-Bleed, -Bleed, Width + Bleed * 2, Height + Bleed * 2),
                 RoundedCombo.PopupRadius + Bleed))
@@ -821,14 +869,40 @@ namespace StereoSplitter
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 // 半像素对齐: 1px 笔心落在像素中心才是纯黑, 整数边界会被 AA 拆成两条 50% 灰。
-                // 半径减掉同样的 0.5: 圆心才与 Region 的圆心重合, 弧线内外间距处处相等 (1px),
-                // 而 Region 外扩的正是这 1px, 描边的抗锯齿因此不会被裁。
+                // 半径同步减 0.5: 圆心才与 Region 的圆心重合, 弧线到裁剪边界的间距处处相等。
+                // (ToolStrip 的 Padding 必须为 0, 否则绘制 clip 收缩到内边距里, 这条边画不出来)
                 const float Inset = 0.5f;
+                float radius = RoundedCombo.PopupRadius - Inset;
+                float right = ts.Width - Inset, bottom = ts.Height - Inset;
+
+                // 四角补底: 1px 的圆弧是斜着切过像素栅格的, 每一格只被覆盖一半左右, 相邻两格
+                // 之间还会整格漏空 —— 一整条圆角在 1 倍下就断成"虚线", 看着像圆角有裂缝。
+                // 先用 2px 的笔**只沿四段弧**重描一遍 (直边一点不动, 仍是严格 1px), 空隙被填实,
+                // 弧线才连成一条线。代价是四个转角比直边厚一点点 —— 比起"转角断开", 这点厚度
+                // 在 1 倍下几乎看不出来, 而断开是一眼就能看见的。
+                float d = radius * 2f;
+                using (var arcPen = new Pen(BorderColor, Dpi.F(1.6f)))
+                {
+                    DrawArc(g, arcPen, Inset, Inset, d, 180f);                 // 左上
+                    DrawArc(g, arcPen, right - d, Inset, d, 270f);             // 右上
+                    DrawArc(g, arcPen, right - d, bottom - d, d, 0f);          // 右下
+                    DrawArc(g, arcPen, Inset, bottom - d, d, 90f);             // 左下
+                }
+
                 using (var path = UiDraw.RoundRect(
                     new RectangleF(Inset, Inset, ts.Width - Inset * 2, ts.Height - Inset * 2),
-                    RoundedCombo.PopupRadius - Inset))
+                    radius))
                 using (var pen = new Pen(BorderColor))
                     g.DrawPath(pen, path);
+            }
+
+            static void DrawArc(Graphics g, Pen pen, float x, float y, float d, float start)
+            {
+                using (var p = new GraphicsPath())
+                {
+                    p.AddArc(x, y, d, d, start, 90f);
+                    g.DrawPath(pen, p);
+                }
             }
         }
     }
