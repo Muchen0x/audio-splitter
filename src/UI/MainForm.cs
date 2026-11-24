@@ -418,7 +418,7 @@ namespace StereoSplitter
                 Size = new Size(cmbSpec.Width, cmbSpec.Height),
                 Outline = true,
                 FillColor = Color.White,
-                BorderColor = Color.FromArgb(203, 208, 216),   // 与下拉/卡片同一框色
+                BorderColor = Color.Black,                     // 与下拉/延迟同排, 同一套黑色细边
                 TextColor = Color.FromArgb(64, 64, 64)
             };
 
@@ -491,12 +491,18 @@ namespace StereoSplitter
             lblWaterSec = new Label { Text = "秒", Location = new Point(461, 8), AutoSize = true };
 
             lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true, Font = new Font("Microsoft YaHei UI", 10F) };
-            btnClearLog = new NoCueButton
+            // 「清除日志」: 原先用系统 Button (系统灰边 + 系统圆角), 与旁边的下拉/添加设备
+            // 并排时框色明显不是一套; 换成自绘描边按钮, 同一套黑色细边。
+            btnClearLog = new RoundButton
             {
                 Text = "清除日志",
                 Location = new Point(489, 4),
                 Width = 85,
-                Height = 22
+                Height = 22,
+                Outline = true,
+                FillColor = Color.White,
+                BorderColor = Color.Black,
+                TextColor = Color.FromArgb(64, 64, 64)
                 // 右缘由 LayoutLogHeader() 按面板实际宽度摆放
             };
 

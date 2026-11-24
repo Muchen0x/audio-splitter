@@ -663,7 +663,8 @@ namespace StereoSplitter
     /// </summary>
     sealed class ComboPopup : ToolStripDropDown
     {
-        static readonly Color BorderColor = Color.FromArgb(203, 208, 216);
+        /// <summary>弹层边框: 与下拉本体同一套黑色细边 (用户指定), 白底 + 圆角投影衬托着不显重。</summary>
+        static readonly Color BorderColor = Color.Black;
 
         internal readonly ComboRowList List;
 

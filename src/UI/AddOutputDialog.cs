@@ -14,7 +14,8 @@ namespace StereoSplitter
     /// </summary>
     class AddOutputDialog : Form
     {
-        static readonly Color BorderNormal = Color.FromArgb(203, 208, 216);
+        // 次要操作 (取消) 用与下拉同一套黑色细边; 主操作 (添加) 保留强调蓝,
+        // 它是这一屏的唯一主动作, 边与字同色才能一眼分出主次。
 
         readonly RoundedCombo cmbDevice = new RoundedCombo
         {
@@ -109,7 +110,7 @@ namespace StereoSplitter
                 Size = new Size(76, 28),
                 Outline = true,
                 FillColor = Color.White,
-                BorderColor = BorderNormal,
+                BorderColor = Color.Black,
                 TextColor = Color.FromArgb(64, 64, 64)
             };
             btnCancel.Click += (s, e) => { DialogResult = DialogResult.Cancel; };
