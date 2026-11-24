@@ -187,11 +187,13 @@ namespace StereoSplitter
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
                 | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
 
-            // 系统按钮类仍会在自绘内容之外补一圈"主题边框"(125% 缩放下最明显, 深灰 1px),
+            // 系统按钮类会在客户区最外一圈补自己的"主题边框"(125% 缩放下最明显, 深灰 #C8C8C8),
             // 圆角外那四个方角正好把它露出来 —— 看着就是"两个边框"。
-            // Flat + BorderSize=0 是唯一能让 native 尽量不画边框的组合 (FlatStyle 只有三档,
-            // System/Standard 都自带边框)。但光靠它不够 (实测仍在), 真正的解法是下面的
-            // ShapeRound: 把窗口本身裁成圆角, 方角不在窗口内, 谁画都露不出来。
+            // Flat + BorderSize=0 让它别画, 再由 OnPaint 先铺满父容器底色, 那一圈就没东西可露。
+            // 早期版本还额外用 Region 把窗口裁成圆角、并把描边内缩 2px —— 代价是按钮的**可见框
+            // 比控件小一圈**(130×35 的按钮只有 126×31 的框), 与旁边"框就是控件边界"的下拉框
+            // 并排时差 4px, 一眼就看出按钮缩在里头。现在改成填满 + 描边贴边(见 OnPaint),
+            // 框与控件同尺寸, 两者的框可以逐像素重合。
             FlatStyle = FlatStyle.Flat;
             FlatAppearance.BorderSize = 0;
         }
@@ -276,33 +278,6 @@ namespace StereoSplitter
         {
             base.OnHandleCreated(e);
             FocusCue.HideNow(this);          // 自绘本来就不画虚线框, 这句是防系统在别处补一刀
-            ShapeRound();
-        }
-
-        protected override void OnResize(EventArgs e)
-        {
-            base.OnResize(e);
-            ShapeRound();
-        }
-
-        /// <summary>
-        /// 把窗口本身裁成圆角，与 <see cref="RoundedCombo"/> 同一手法。
-        /// <para>为什么非裁不可：系统按钮类会在客户区最外一圈画自己的边框（主题色，约 #C8C8C8），
-        /// 我们的圆角在四角向内收，那一小段就露出来了 —— 表现就是"按钮有两个边框"。
-        /// 只靠 <c>FlatStyle.Flat + BorderSize=0</c> 压不住（实测仍在），矩形填充盖它也盖不住
-        /// （它画在我们之后）。裁了之后方角不属于这个窗口，谁画都露不出来。</para>
-        /// <para><b>Region 要内缩 1px</b>：那圈 native 边框正好在客户区第 0 列上，Region 与客户区
-        /// 边界重合的话它仍在裁剪区内。代价是按钮的可见尺寸小 2px，描边相应画在 (2,2) 处。</para>
-        /// </summary>
-        void ShapeRound()
-        {
-            if (Width <= 4 || Height <= 4) return;
-            using (var path = UiDraw.RoundRect(new Rectangle(1, 1, Width - 2, Height - 2), radius))
-            {
-                Region old = Region;
-                Region = new Region(path);
-                if (old != null) old.Dispose();
-            }
         }
 
         protected override void WndProc(ref Message m)
@@ -317,7 +292,9 @@ namespace StereoSplitter
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
 
-            // 圆角外那几个角要补成父容器底色, 否则会露出方角白块 (与 RoundedCombo.OnPaint 同一手法)
+            // 圆角外那几个角要补成父容器底色, 否则会露出方角白块 (与 RoundedCombo.OnPaint 同一手法)。
+            // 这一笔同时负责盖掉系统按钮类画在客户区最外一圈的主题边框 —— 整块铺满,
+            // 后面画的圆角本体再压上去, 第 0 行/列不会露出 #C8C8C8。
             if (Parent != null)
                 using (var b = new SolidBrush(Parent.BackColor))
                     g.FillRectangle(b, ClientRectangle);
@@ -344,15 +321,20 @@ namespace StereoSplitter
                 edge = Blend(edge, Color.Black, pressed ? 0.28f : 0.18f);
 
             // 填充与描边走同一条圆角路径, 一并做抗锯齿。
-            // <para>路径整体落在 Region (内缩 1px) 之内, 所以边缘那圈半透明像素不会被裁掉,
-            // 而是与上面已铺好的父容器底色混合成平滑过渡。此前是"实心矩形铺满 + Region 硬裁",
-            // 圆角只剩 Region 的硬台阶 —— 6px 半径在 125% 缩放下放大成 7.5px, 一颗颗方角非常明显。</para>
+            // <para><b>描边贴到最外圈</b>: 笔心落在 0.5, 1px 的边正好占满第 0 行/列与第
+            // W-1/H-1 行/列, 于是按钮的**可见框 = 控件大小**, 与旁边的 RoundedCombo
+            // (框就是控件边界) 能逐像素重合。此前描边内缩 2px, 按钮的框比下拉小一圈,
+            // 同一行并排放着, 一眼看出按钮"缩在里头"。</para>
+            // <para>贴边的前提是**不能再用 Region 裁圆角**: Region 是像素级硬裁, 圆角处
+            // 会把描边外缘那圈抗锯齿像素按格切掉, 1px 的弧线立刻变成断续的虚线点
+            // (蓝描边 8 倍放大时很明显)。不裁的代价是圆角外四个方角仍在窗口内, 由开头
+            // 铺的父容器底色盖住 —— 与 RoundedCombo 同一手法, 同一个视觉结果。</para>
             if (Width > 4 && Height > 4)
             {
                 int r = Math.Max(1, radius - 1);
-                using (var bodyPath = UiDraw.RoundRect(new Rectangle(2, 2, Width - 4, Height - 4), r))
+                using (var bodyPath = UiDraw.RoundRect(new Rectangle(0, 0, Width, Height), r))
                 using (var edgePath = UiDraw.RoundRect(
-                    new RectangleF(2.5f, 2.5f, Width - 5f, Height - 5f), r))
+                    new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), r - 0.5f))
                 {
                     using (var b = new SolidBrush(c))
                         g.FillPath(b, bodyPath);
