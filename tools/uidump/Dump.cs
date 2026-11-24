@@ -795,6 +795,94 @@ namespace StereoSplitter
                 return;
             }
 
+            // 跨卡片列对齐: 同一张卡 (宽度不变) 在单声道/多声道两种形态下,
+            // 设备列/声道列/延迟壳列必须落在同一 x —— 折叠键挂在「×」下方、不占横向链,
+            // 所以"有没有折叠键"不该让这三列移动一个像素。
+            if (args.Length >= 1 && args[0] == "cols")
+            {
+                var sf = new MainForm();
+                sf.StartPosition = FormStartPosition.Manual;
+                sf.Location = new Point(40, 40);
+                sf.Size = new Size(700, 800);
+                sf.TopMost = true;
+                sf.Show();
+                sf.Activate();
+                Pump();
+
+                var host = Field(sf, "cardHost") as Control;
+                OutputCardControl card = null;
+                if (host != null)
+                    foreach (Control c in host.Controls)
+                    {
+                        var oc = c as OutputCardControl;
+                        if (oc != null) { card = oc; break; }
+                    }
+                if (card == null) { Console.Out.WriteLine("COLS no card"); sf.Close(); return; }
+
+                var chans = new List<KeyValuePair<string, string>>();
+                chans.Add(new KeyValuePair<string, string>("FL", "FL"));
+                chans.Add(new KeyValuePair<string, string>("FR", "FR"));
+
+                Action<string> m = tag =>
+                {
+                    Console.Out.WriteLine("COLS " + tag
+                        + " w=" + card.Width + " h=" + card.Height
+                        + " dev=" + card.cmbDevice.Left + ".." + card.cmbDevice.Right
+                        + " ch=" + card.cmbChannel.Left + ".." + card.cmbChannel.Right
+                        + " shell=" + card.nudShell.Left + ".." + card.nudShell.Right
+                        + " tgl=" + card.btnRowsToggle.Left + ".." + card.btnRowsToggle.Right
+                        + "y" + card.btnRowsToggle.Top + ".." + card.btnRowsToggle.Bottom
+                        + (card.btnRowsToggle.Visible ? "" : "(hidden)")
+                        + " x=" + card.btnRemove.Left + ".." + card.btnRemove.Right
+                        + "y" + card.btnRemove.Top + ".." + card.btnRemove.Bottom);
+                };
+
+                Action<string> shot = path =>
+                {
+                    for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+                    using (var bmp = new Bitmap(sf.Width, sf.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(sf.Location, Point.Empty, sf.Size);
+                        bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                };
+
+                card.SetMulti(false, 0, chans);
+                Pump();
+                m("single");
+                shot("cols-single.png");
+
+                // 收起状态的键按卡片模型的 Multi 判定 (RowsCollapsed 只对多声道卡成立),
+                // 所以造多声道形态时模型也要一起改, 否则点折叠键是空操作
+                card.Model.Multi = true;
+                card.SetMulti(true, 2, chans);
+                Pump();
+                m("multi");
+                shot("cols-multi.png");
+
+                // 同宽度下三列左缘逐列相等才算对齐: 直接给结论, 不靠人眼比数字
+                m("multi-fit=" + (card.nudShell.Right == card.btnRemove.Left - Dpi.S(5) ? "ok" : "BAD"));
+
+                // 展开态点一下: 行藏起来 + 卡高落到单声道那档; 再点回来必须复原
+                MethodInfo click = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
+                click.Invoke(card.btnRowsToggle, new object[] { EventArgs.Empty });
+                Pump();
+                m("collapsed rowsVisible=" + (card.RowsVisible ? "yes" : "no")
+                    + " glyph=" + card.btnRowsToggle.Glyph);
+                shot("cols-collapsed.png");
+
+                click.Invoke(card.btnRowsToggle, new object[] { EventArgs.Empty });
+                Pump();
+                m("expanded2 rowsVisible=" + (card.RowsVisible ? "yes" : "no")
+                    + " glyph=" + card.btnRowsToggle.Glyph);
+
+                card.SetMulti(false, 0, chans);
+                Pump();
+                sf.Close();
+                return;
+            }
+
             // 多声道行的收起/展开: 点一下折叠键, 打印两态几何 + 各存一张实屏图。
             // 状态是"看的方式", 没有配置可以断言 —— 只能看行是不是真的藏了、卡片高度有没有跟着收。
             if (args.Length >= 1 && args[0] == "toggle")
@@ -844,6 +932,28 @@ namespace StereoSplitter
                 };
 
                 dump("expanded");
+
+                // 跨卡片列对齐: 「×」在每张卡自己的右上角, 于是它的左侧一个缝就是横向链的右端 ——
+                // 单声道卡没有折叠键, 但延迟壳/声道/设备这三列必须和多声道卡落在同一 x。
+                // 卡宽一致时这些左缘应当逐列相等; 打印出来直接比, 不用靠眼睛看截图。
+                if (host != null)
+                {
+                    int ci = 0;
+                    foreach (Control c in host.Controls)
+                    {
+                        var oc = c as OutputCardControl;
+                        if (oc == null) continue;
+                        Console.Out.WriteLine("COLS #" + ci++ + " kind=" + (oc.ChildRowCount > 0 ? "multi" : "single")
+                            + " w=" + oc.Width
+                            + " dev=" + oc.cmbDevice.Left + ".." + oc.cmbDevice.Right
+                            + " ch=" + oc.cmbChannel.Left + ".." + oc.cmbChannel.Right
+                            + " shell=" + oc.nudShell.Left + ".." + oc.nudShell.Right
+                            + " tgl=" + oc.btnRowsToggle.Left + ".." + oc.btnRowsToggle.Right
+                            + (oc.btnRowsToggle.Visible ? "" : "(hidden)")
+                            + " x=" + oc.btnRemove.Left + ".." + oc.btnRemove.Right);
+                    }
+                }
+
                 shot("toggle-expanded.png");
 
                 MethodInfo click = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);

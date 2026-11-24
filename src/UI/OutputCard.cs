@@ -264,20 +264,24 @@ namespace StereoSplitter
                 Glyph = ButtonGlyph.Cross,
                 Size = new Size(20, 20)
             };
-            // 「×」贴死在卡片右上角 (位置见 LayoutControls), 会压住卡片自己那条顶边/右边和圆角弧。
-            // 子控件在父容器之后绘制, 被压住的那一段不会自己回来 —— 让它在画完自己之后再补一遍。
+            // 贴死在卡片右边缘的按钮 (「×」和「行折叠键」) 会压住卡片自己那条右边框和圆角弧。
+            // 子控件在父容器之后绘制, 被压住的那一段不会自己回来 —— 让它们在画完自己之后再补一遍。
             // 坐标换算: 按钮坐标 → 卡片坐标 (平移回去), 再把裁剪限制在按钮自己那块。
-            btnRemove.OwnerFrame = g =>
+            void PatchOwnerFrame(GearButton b)
             {
-                var st = g.Save();
-                g.TranslateTransform(-btnRemove.Left, -btnRemove.Top);
-                g.SetClip(new Rectangle(btnRemove.Left, btnRemove.Top,
-                    btnRemove.Width, btnRemove.Height), System.Drawing.Drawing2D.CombineMode.Intersect);
-                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-                PaintFrame(g, false);
-                g.Restore(st);
-            };
+                b.OwnerFrame = g =>
+                {
+                    var st = g.Save();
+                    g.TranslateTransform(-b.Left, -b.Top);
+                    g.SetClip(new Rectangle(b.Left, b.Top, b.Width, b.Height),
+                        System.Drawing.Drawing2D.CombineMode.Intersect);
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                    PaintFrame(g, false);
+                    g.Restore(st);
+                };
+            }
+            PatchOwnerFrame(btnRemove);
 
             // 第二行: 喇叭(静音开关) + 滑条 + 百分比。
             // 原来这里是「音量」文字 + 滑条 + 百分比 + 「静音」勾选框: 两个标签占掉 ~90px,
@@ -305,7 +309,7 @@ namespace StereoSplitter
                 TextAlign = ContentAlignment.MiddleLeft
             };
 
-            // 多声道行的收起/展开: 无边框小按钮 (与「×」同一套 GearButton), 夹在延迟壳与「×」之间。
+            // 多声道行的收起/展开: 无边框小按钮 (与「×」同一套 GearButton), 摆在「×」正下方。
             // TabStop = true: 键盘用户要能走到它; Space/Enter 在 GearButton 里接成点击。
             btnRowsToggle = new GearButton
             {
@@ -315,6 +319,8 @@ namespace StereoSplitter
                 AccessibleRole = AccessibleRole.PushButton
             };
             btnRowsToggle.Click += (s, e) => RowsCollapsed = !RowsCollapsed;
+            // 它和「×」同列贴右边缘 (见 LayoutControls), 同样要补画被盖住的那段边框
+            PatchOwnerFrame(btnRowsToggle);
 
             Controls.AddRange(new Control[]
             {
@@ -535,24 +541,26 @@ namespace StereoSplitter
             int row1 = pad;
             int ctrlH = RowControlHeight;
 
-            // 第一行右起排: [×] ← [折叠键] ← [延迟圆角壳(字样+数字框+箭头+ms 单位)] ← [声道],
+            // 第一行右起排: [×] ← [延迟圆角壳(字样+数字框+箭头+ms 单位)] ← [声道],
             // 设备下拉占满左侧。
             // 「×」钉在卡片**最右上角**: (卡宽 - 键宽, 0), 两条边都直接贴卡片边缘, 不参与四周留白。
             // 它不受 pad 影响 —— 以后改留白、加内容都不会把这个键推离角上 (用户要求)。
-            // 卡片那一段边框由它自己补画 (见构造函数里的 OwnerFrame)。
+            // 卡片那一段边框由它自己补画 (见构造函数里的 PatchOwnerFrame)。
             btnRemove.Location = new Point(w - btnRemove.Width, 0);
 
-            // 折叠键: 夹在「延迟」壳与「×」之间, 两者各留同一个 5px 缝; 20 高的键在第一行 26 高里
-            // 垂直居中, 与延迟壳同一条中线 —— 横向夹在中间、纵向对齐, 看着才是"这一组"的成员。
-            // 只有多声道卡片有它 (单声道没有"下面的行"可收), 单声道时这块位置直接还回给延迟壳。
-            int tglGap = Dpi.S(5);
-            int tglX = btnRemove.Left - tglGap - btnRowsToggle.Width;
-            btnRowsToggle.Location = new Point(tglX, row1 + (ctrlH - btnRowsToggle.Height) / 2);
+            // 折叠键: 挂在「×」**正下方**, 右缘与「×」同列贴卡片右边缘, 上下紧邻 (中间不留缝,
+            // 两个键拼成右上角一条 20 宽的竖带)。它的底边落在 40, 与第一行控件的底边 (42)
+            // 差 2px —— 那是 32 高的第一行装不下两个 20 高按钮的余量, 视觉上看不出, 不去凑。
+            // 关键: 它不占第一行的横向链 —— 链的右端只由「×」决定, 于是延迟壳/声道/设备
+            // 落在什么 x 与"有没有折叠键"无关, 单声道卡片和多声道卡片的这几列完全对齐。
+            btnRowsToggle.Location = new Point(btnRemove.Left, btnRemove.Bottom);
 
             bool multi = rows.Count > 0;
             btnRowsToggle.Visible = multi;
-            // 单声道时这块位置直接还回延迟壳 (不占位): 那边没有"下面的行", 留个空档只会让人找按钮
-            int chainRight = multi ? tglX - tglGap : btnRemove.Left - Dpi.S(8);
+
+            // 横向链恒定从「×」左侧一个缝起算 (不看 multi): 单声道卡片不显示折叠键,
+            // 但它那块位置仍然空着, 延迟壳不会被推右 —— 跨卡片列对齐 (用户要求)。
+            int chainRight = btnRemove.Left - Dpi.S(5);
 
             nudShell.Location = new Point(chainRight - nudShell.Width, row1);
             cmbChannel.Location = new Point(nudShell.Left - Dpi.S(8) - cmbChannel.Width, row1);
