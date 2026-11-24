@@ -214,6 +214,7 @@ namespace StereoSplitter
         {
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
             // 圆角之外的那几个小角要补成父容器底色, 否则会露出本控件的白底方块
             if (Parent != null)
@@ -801,6 +802,7 @@ namespace StereoSplitter
                 ToolStrip ts = e.ToolStrip;
                 Graphics g = e.Graphics;
                 g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 int pad = RoundedCombo.ShadowPad;
                 int w = ts.Width, h = ts.Height;
 
@@ -828,6 +830,7 @@ namespace StereoSplitter
                 ToolStrip ts = e.ToolStrip;
                 Graphics g = e.Graphics;
                 g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 int pad = RoundedCombo.ShadowPad;
                 using (var path = UiDraw.RoundRect(
                     new Rectangle(pad, pad, ts.Width - pad * 2 - 1, ts.Height - pad * 2 - 1),

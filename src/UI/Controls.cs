@@ -315,6 +315,7 @@ namespace StereoSplitter
         {
             Graphics g = e.Graphics;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
 
             // 圆角外那几个角要补成父容器底色, 否则会露出方角白块 (与 RoundedCombo.OnPaint 同一手法)
             if (Parent != null)
@@ -337,19 +338,20 @@ namespace StereoSplitter
             float edgeFade = outline ? 0.30f : 0.45f;   // 描边时边框就是主体, 别淡到看不见
             if (!Enabled && !borderColor.IsEmpty) edge = Blend(edge, Color.White, edgeFade);
 
-            // 底色铺满矩形, 圆角交给 Region (见 ShapeRound) —— 不能再用抗锯齿的圆角填充:
-            // 边缘那圈半透明像素被 Region 硬裁之后会变成暗边 (实测 #C8C8C8), 比原来的问题更显眼。
-            // 圆角处的台阶由紧随其后的描边盖住, 看不出锯齿。
+            // 填充与描边走同一条圆角路径, 一并做抗锯齿。
+            // <para>路径整体落在 Region (内缩 1px) 之内, 所以边缘那圈半透明像素不会被裁掉,
+            // 而是与上面已铺好的父容器底色混合成平滑过渡。此前是"实心矩形铺满 + Region 硬裁",
+            // 圆角只剩 Region 的硬台阶 —— 6px 半径在 125% 缩放下放大成 7.5px, 一颗颗方角非常明显。</para>
             if (Width > 4 && Height > 4)
             {
-                using (var b = new SolidBrush(c))
-                    g.FillRectangle(b, ClientRectangle);
-
-                // 描边再往里 1px (即 (2,2)): Region 已经把客户区第 0 列裁掉了, 描边贴着 (1,1) 画的话
-                // 外侧半个像素会被裁掉, 线又细又淡
-                using (var edgePath = UiDraw.RoundRect(new Rectangle(2, 2, Width - 4, Height - 4), Math.Max(1, radius - 1)))
-                using (var p = new Pen(edge))
-                    g.DrawPath(p, edgePath);
+                using (var bodyPath = UiDraw.RoundRect(
+                    new Rectangle(2, 2, Width - 4, Height - 4), Math.Max(1, radius - 1)))
+                {
+                    using (var b = new SolidBrush(c))
+                        g.FillPath(b, bodyPath);
+                    using (var p = new Pen(edge))
+                        g.DrawPath(p, bodyPath);
+                }
             }
 
             // 文字色: 只有在"自动淡化成的禁用态"里才跟着变浅。显式给了 FillDisabled 的
@@ -894,8 +896,8 @@ namespace StereoSplitter
     /// </summary>
     class RoundNumericShell : Panel
     {
-        static readonly Color BorderNormal = Color.FromArgb(203, 208, 216);   // 与 RoundedCombo/SoftCard 同框色
-        static readonly Color BorderHot = Color.FromArgb(168, 176, 188);
+        static readonly Color BorderNormal = Color.Black;                      // 与 RoundedCombo 同一套黑色细边
+        static readonly Color BorderDisabled = Color.FromArgb(203, 208, 216);  // 禁用态: 黑边会让不可点的框看着仍可点
         static readonly Color BackDisabled = Color.FromArgb(244, 245, 247);
         static readonly Color TextDisabled = Color.FromArgb(150, 154, 160);
         const int CornerRadius = 6;
@@ -1074,18 +1076,26 @@ namespace StereoSplitter
         {
             Graphics g = e.Graphics;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
 
             // 圆角外四个小角补成父容器底色 (与 SoftCard.OnPaint 同一手法)
             Color outside = Parent != null ? Parent.BackColor : SystemColors.Control;
             using (var b = new SolidBrush(outside)) g.FillRectangle(b, ClientRectangle);
 
-            using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), CornerRadius))
-            {
-                using (var fill = new SolidBrush(Inner.Enabled ? Color.White : BackDisabled))
-                    g.FillPath(fill, path);
-                using (var pen = new Pen(Inner.Enabled && hot ? BorderHot : BorderNormal))
-                    g.DrawPath(pen, path);
-            }
+            // 边框: 黑色细边 (与 RoundedCombo 同一套), 悬停时同一黑色加粗到 1.5px ——
+            // 黑色已是最深, 没法像浅灰那样靠加深区分; 加粗时路径内缩 1px, 否则一半笔宽
+            // 落在客户区外被裁掉, 看不出变粗。
+            bool strong = Inner.Enabled && hot;
+            var frame = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (var path = UiDraw.RoundRect(frame, CornerRadius))
+            using (var fill = new SolidBrush(Inner.Enabled ? Color.White : BackDisabled))
+                g.FillPath(fill, path);
+            var edgeRect = strong && Width > 4 && Height > 4
+                ? new Rectangle(1, 1, Width - 3, Height - 3)
+                : frame;
+            using (var path = UiDraw.RoundRect(edgeRect, CornerRadius))
+            using (var pen = new Pen(Inner.Enabled ? BorderNormal : BorderDisabled, strong ? 1.5f : 1f))
+                g.DrawPath(pen, path);
 
             // 原生上下按钮可能在句柄创建后被数字框自己摆回来, 每次绘制前压一道保险
             EnforceSpinHidden();
@@ -1093,8 +1103,9 @@ namespace StereoSplitter
             // 箭头区: 两条圆头短线, 与 RoundedCombo 下拉箭头同一笔画; 悬停/按下变深。
             // 这里只管画, 状态变化时 RefreshArrow() 只让箭头矩形失效 —— 外壳是双缓冲的,
             // 整框不会跟着重绘, 原生按钮那种"hover 一闪一闪"不存在了。
+            // 白底只铺到边框内侧: 悬停时边框加粗到 x=Width-2, 铺满会把它擦掉一截
             using (var b = new SolidBrush(Inner.Enabled ? Color.White : BackDisabled))
-                g.FillRectangle(b, arrowX, 1, Width - arrowX - 1, Height - 2);
+                g.FillRectangle(b, arrowX, 1, Math.Max(0, Width - arrowX - 2), Height - 2);
             Color off = Color.FromArgb(178, 178, 178);
             Color ink = Color.FromArgb(95, 94, 90);
             Color act = Color.FromArgb(44, 44, 42);

@@ -924,6 +924,72 @@ namespace StereoSplitter
                 return;
             }
 
+            // 圆角锯齿检查: 按控件真实位置抓左上角, 打印像素灰度矩阵 + 存 16x 放大图
+            if (args.Length >= 1 && args[0] == "corners")
+            {
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(40, 40);
+                mf.Size = new Size(560, 560);
+                mf.TopMost = true;
+                mf.Show();
+                mf.Activate();
+                for (int i = 0; i < 16; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+                Cursor.Position = new Point(mf.Left + 2, mf.Top + 2);
+                for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+
+                var items = new List<KeyValuePair<string, Control>>();
+                var addBtn = Field(mf, "btnAddOutput") as Control;
+                var clearBtn = Field(mf, "btnClearLog") as Control;
+                var spec = Field(mf, "cmbSpec") as Control;
+                var startBtn = Field(mf, "btnStart") as Control;
+                var host = Field(mf, "cardHost") as Control;
+                if (addBtn != null) items.Add(new KeyValuePair<string, Control>("btnAdd", addBtn));
+                if (clearBtn != null) items.Add(new KeyValuePair<string, Control>("btnClear", clearBtn));
+                if (startBtn != null) items.Add(new KeyValuePair<string, Control>("btnStart", startBtn));
+                if (spec != null) items.Add(new KeyValuePair<string, Control>("combo", spec));
+                if (host != null)
+                {
+                    foreach (Control c in host.Controls)
+                    {
+                        var oc = c as OutputCardControl;
+                        if (oc == null || !oc.Visible) continue;
+                        items.Add(new KeyValuePair<string, Control>("card", oc));
+                        items.Add(new KeyValuePair<string, Control>("shell", oc.nudShell));
+                        items.Add(new KeyValuePair<string, Control>("cardcombo", oc.Controls.Find("cmbChannel", true).Length > 0 ? oc.Controls.Find("cmbChannel", true)[0] : oc));
+                        break;
+                    }
+                }
+
+                foreach (var kv in items)
+                {
+                    Control c = kv.Value;
+                    Rectangle r = c.RectangleToScreen(c.ClientRectangle);
+                    if (r.Width < 12 || r.Height < 12) continue;
+                    using (var bmp = new Bitmap(14, 14))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(r.Location, Point.Empty, new Size(14, 14));
+                        bmp.Save("corn-" + kv.Key + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                        var csb = new StringBuilder();
+                        for (int y = 0; y < 8; y++)
+                        {
+                            csb.Append("    y" + y + ": ");
+                            for (int x = 0; x < 8; x++)
+                            {
+                                Color cc = bmp.GetPixel(x, y);
+                                csb.Append(((cc.R + cc.G + cc.B) / 3).ToString("000") + " ");
+                            }
+                            csb.AppendLine();
+                        }
+                        Console.Out.WriteLine("CORNER " + kv.Key + " at " + r.Location + " size " + c.Size);
+                        Console.Out.Write(csb.ToString());
+                    }
+                }
+                mf.Close();
+                return;
+            }
+
             var f = new MainForm();
             int w, h;
             if (args.Length >= 2 && int.TryParse(args[0], out w) && int.TryParse(args[1], out h))

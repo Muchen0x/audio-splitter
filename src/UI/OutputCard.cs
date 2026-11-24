@@ -412,6 +412,7 @@ namespace StereoSplitter
         {
             Graphics g = e.Graphics;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
 
             Color outside = Parent != null ? Parent.BackColor : BackColor;
             using (var outsideBrush = new SolidBrush(outside))
