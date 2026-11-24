@@ -1383,6 +1383,15 @@ namespace StereoSplitter
         bool hot, down;
         ButtonGlyph glyph = ButtonGlyph.Nut;
 
+        /// <summary>
+        /// 贴到父容器边角时, 由父容器把自己的外框补画一遍。
+        /// <para>子控件在父容器**之后**绘制: 按钮一旦压住父容器的边框, 那一段顶边/右边连同圆角弧
+        /// 就没了, 圆角外侧还会露出按钮的方角白块。父容器才直到自己的圆角半径和边框色, 所以让它
+        /// 用**按钮坐标**画一遍 —— 按钮只负责在画完自己的底/悬停/图标之后调这个回调。</para>
+        /// <para>卡片右上角的「×」用它把卡片外框补回来 (见 OutputCardControl)。</para>
+        /// </summary>
+        public Action<Graphics> OwnerFrame { get; set; }
+
         /// <summary>按钮上的图形 (默认螺母 = 设置)。</summary>
         public ButtonGlyph Glyph
         {
@@ -1466,6 +1475,10 @@ namespace StereoSplitter
                     DrawRefresh(g, cx, cy, Math.Min(Width, Height) / 22f, icon);
                     break;
             }
+
+            // 最后补画父容器外框: 既盖住按钮方角露到父容器圆角外的那点白, 也把被压住的
+            // 那一段边框重新描一遍 (顺序必须在图标之后, 否则边框会被悬停底盖掉)
+            if (OwnerFrame != null) OwnerFrame(g);
         }
 
         /// <summary>

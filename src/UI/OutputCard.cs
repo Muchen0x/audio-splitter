@@ -183,6 +183,20 @@ namespace StereoSplitter
                 Glyph = ButtonGlyph.Cross,
                 Size = new Size(20, 20)
             };
+            // 「×」贴死在卡片右上角 (位置见 LayoutControls), 会压住卡片自己那条顶边/右边和圆角弧。
+            // 子控件在父容器之后绘制, 被压住的那一段不会自己回来 —— 让它在画完自己之后再补一遍。
+            // 坐标换算: 按钮坐标 → 卡片坐标 (平移回去), 再把裁剪限制在按钮自己那块。
+            btnRemove.OwnerFrame = g =>
+            {
+                var st = g.Save();
+                g.TranslateTransform(-btnRemove.Left, -btnRemove.Top);
+                g.SetClip(new Rectangle(btnRemove.Left, btnRemove.Top,
+                    btnRemove.Width, btnRemove.Height), System.Drawing.Drawing2D.CombineMode.Intersect);
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                PaintFrame(g, false);
+                g.Restore(st);
+            };
 
             // 第二行: 喇叭(静音开关) + 滑条 + 百分比。
             // 原来这里是「音量」文字 + 滑条 + 百分比 + 「静音」勾选框: 两个标签占掉 ~90px,
@@ -435,9 +449,10 @@ namespace StereoSplitter
             int ctrlH = RowControlHeight;
 
             // 第一行右起排: [×] ← [延迟圆角壳(字样+数字框+箭头+ms 单位)] ← [声道], 设备下拉占满左侧。
-            // 「×」钉在卡片**最右上角**: 右缘 = 卡片右缘 - pad, 顶边 = pad (用户指定"水平靠右、垂直靠上")。
-            // 它 20 高、第一行 26 高, 顶对齐后比那一行的中线高 3px —— 是有意的, 靠上比居中更像"关闭"。
-            btnRemove.Location = new Point(w - pad - btnRemove.Width, pad);
+            // 「×」钉在卡片**最右上角**: (卡宽 - 键宽, 0), 两条边都直接贴卡片边缘, 不参与四周留白。
+            // 它不受 pad 影响 —— 以后改留白、加内容都不会把这个键推离角上 (用户要求)。
+            // 卡片那一段边框由它自己补画 (见构造函数里的 OwnerFrame)。
+            btnRemove.Location = new Point(w - btnRemove.Width, 0);
             nudShell.Location = new Point(btnRemove.Left - Dpi.S(8) - nudShell.Width, row1);
             cmbChannel.Location = new Point(nudShell.Left - Dpi.S(8) - cmbChannel.Width, row1);
             cmbDevice.Location = new Point(pad, row1);
@@ -485,19 +500,45 @@ namespace StereoSplitter
             Graphics g = e.Graphics;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            PaintFrame(g, true);
+        }
 
+        /// <summary>
+        /// 画卡片外框 (排版按本控件的客户区算)。
+        /// <para><b>body = true</b>: 卡片自己的绘制 —— 铺容器底色 → 填圆角白底 → 描边。</para>
+        /// <para><b>body = false</b>: 只补"圆角之外那点容器底色 + 一圈边框", 白底不动。
+        /// 供贴死在右上角的「×」用: 子控件画在父容器之后, 按钮一压上去, 卡片的那段顶边/右边
+        /// 连同圆角弧就被它的白底盖掉了, 只能由按钮在画完自己之后补画回来
+        /// (见 GearButton.OwnerFrame)。用同一个方法画, 两处的圆角半径/边框色/半像素对齐才是同一套。</para>
+        /// </summary>
+        void PaintFrame(Graphics g, bool body)
+        {
             Color outside = Parent != null ? Parent.BackColor : BackColor;
-            using (var outsideBrush = new SolidBrush(outside))
-                g.FillRectangle(outsideBrush, ClientRectangle);
-
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
             using (var path = UiDraw.RoundRect(rect, CornerRadius))
-            using (var fill = new SolidBrush(BackColor))
-                g.FillPath(fill, path);
-            // 描边走半像素对齐路径 (见 UiDraw.PenRect): 否则 1px 边被抗锯齿拆成两条灰线
-            using (var edgePath = UiDraw.PenRect(this, CornerRadius))
-            using (var pen = new Pen(BorderColor))
-                g.DrawPath(pen, edgePath);
+            {
+                if (body)
+                {
+                    using (var outsideBrush = new SolidBrush(outside))
+                        g.FillRectangle(outsideBrush, ClientRectangle);
+                    using (var fill = new SolidBrush(BackColor))
+                        g.FillPath(fill, path);
+                }
+                else
+                {
+                    // 只补路径之外那一圈: 按钮自己的白底、悬停底色和图标都要留着
+                    var st = g.Save();
+                    g.SetClip(path, System.Drawing.Drawing2D.CombineMode.Exclude);
+                    using (var outsideBrush = new SolidBrush(outside))
+                        g.FillRectangle(outsideBrush, ClientRectangle);
+                    g.Restore(st);
+                }
+
+                // 描边走半像素对齐路径 (见 UiDraw.PenRect): 否则 1px 边被抗锯齿拆成两条灰线
+                using (var edgePath = UiDraw.PenRect(this, CornerRadius))
+                using (var pen = new Pen(BorderColor))
+                    g.DrawPath(pen, edgePath);
+            }
         }
 
         /// <summary>用模型值回填控件 (载入/外部改动后调用)。行数须先由 SetMulti 定好。</summary>
