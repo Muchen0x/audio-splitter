@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -846,11 +846,53 @@ namespace StereoSplitter
             PaintCaption(e.Graphics);
         }
 
+        // —— 还原尺寸的一次性钳制 ——
+        // 系统在"最大化 → 还原"时按"窗口带边框"的假设反算窗口矩形, 每次多加 16px (125% 下),
+        // 最大化还原两轮就能看出窗口一圈圈变大。这里记住离开正常态时的矩形, 还原时摆回去。
+        Rectangle normalBounds = Rectangle.Empty;
+        FormWindowState lastWindowState = FormWindowState.Normal;
+        bool clampingBounds;            // 防重入: 自己在 OnResize 里改尺寸会再触发一次 OnResize
+
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
+            ClampRestoredBounds();
             LayoutCaption();
             SyncCaptionState();
+        }
+
+        /// <summary>
+        /// 从最大化/最小化回到正常态时, 把窗口尺寸按记下的矩形摆正。
+        /// <para>时序是这里唯一要注意的: 还原时<b>先</b>按正确尺寸给我们一次 WM_SIZE (875x1000),
+        /// <b>随后</b> WinForms 又照"窗口带边框"反算了一遍, 再加 16px (125% 下) 补一次
+        /// —— 那一跳在我们的 OnResize 之后。所以校正必须排到下一轮消息里做, 否则改了也被盖掉。</para>
+        /// <para>用户后来自己拖边缘时不会触发这段: 那时 <c>lastWindowState</c> 早已是 Normal。</para>
+        /// </summary>
+        void ClampRestoredBounds()
+        {
+            FormWindowState st = WindowState;
+            if (st == FormWindowState.Normal && !clampingBounds)
+            {
+                if (lastWindowState != FormWindowState.Normal && !normalBounds.IsEmpty)
+                {
+                    Size target = normalBounds.Size;
+                    try
+                    {
+                        BeginInvoke((Action)(() =>
+                        {
+                            if (WindowState != FormWindowState.Normal || clampingBounds) return;
+                            if (Bounds.Size == target) return;
+                            clampingBounds = true;
+                            try { Bounds = new Rectangle(Bounds.Location, target); }
+                            finally { clampingBounds = false; }
+                            normalBounds = Bounds;
+                        }));
+                    }
+                    catch (InvalidOperationException) { }   // 句柄已销毁 (正在关窗): 无所谓
+                }
+                normalBounds = Bounds;      // 连续记录: 用户拖动边缘时这里一直在更新
+            }
+            lastWindowState = st;
         }
 
         /// <summary>最大化/还原键的字形与可访问名跟着窗口状态走; 顺带更新圆角偏好。</summary>
@@ -874,16 +916,13 @@ namespace StereoSplitter
 
         /// <summary>
         /// 最大化边界与 Win11 圆角。
-        /// <para><b>为什么必须钉 MaximizedBounds</b>: 窗口保留了 WS_THICKFRAME (缩放热区由系统给),
-        /// 系统最大化时会按"有边框"的尺寸算, 结果四周多出几像素、把任务栏盖住一截。</para>
+        /// <para><b>最大化边界</b>由 WM_GETMINMAXINFO 直接接管 (见 WndProc): 那里拿到的是
+        /// "系统打算给多大"的第一手数值, 不再走 MaximizedBounds 这条 WinForms 的中间层。</para>
         /// <para>圆角: 常态圆角、最大化方角 —— 最大化时若还圆角, 四角会透出桌面。</para>
         /// </summary>
         void ApplyWindowFrame()
         {
             if (!IsHandleCreated) return;
-
-            var scr = Screen.FromControl(this);
-            if (MaximizedBounds != scr.WorkingArea) MaximizedBounds = scr.WorkingArea;
 
             // DWMWA_WINDOW_CORNER_PREFERENCE = 33; 1 = 不要圆角, 2 = 圆角
             try
@@ -892,18 +931,57 @@ namespace StereoSplitter
                 DwmSetWindowAttribute(Handle, 33, ref pref, sizeof(int));
             }
             catch { }   // Windows 10 没有这个属性: 调用失败即可, 窗口保持方角
+
+            // 保留 WS_THICKFRAME 之后, 系统会给窗口描一圈 1px 的边线 (颜色随主题/强调色变,
+            // 深浅还不一致)。它与卡片描边不是同一支色, 看着像"窗口外框是别人画的"。
+            // DWMWA_BORDER_COLOR = 34: 按设计里的卡片描边 (203,208,216) 指定, 边缘才同一套。
+            try
+            {
+                int line = unchecked((int)0x00D8D0CB);   // COLORREF = 0x00BBGGRR
+                DwmSetWindowAttribute(Handle, 34, ref line, sizeof(int));
+            }
+            catch { }
         }
 
         [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
         static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
+        // —— 第 998 行起: 窗口几何的三处接管 ——
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct POINT { public int x, y; }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct MINMAXINFO
+        {
+            public POINT ptReserved, ptMaxSize, ptMaxPosition, ptMinTrackSize, ptMaxTrackSize;
+        }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct RECT { public int left, top, right, bottom; }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct MONITORINFO
+        {
+            public int cbSize;
+            public RECT rcMonitor, rcWork;
+            public int dwFlags;
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr MonitorFromWindow(IntPtr hwnd, int dwFlags);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+        const int MONITOR_DEFAULTTONEAREST = 2;
+
         // 窗口样式位 (Win32 常量, 只在本文件用)
+        const int WS_CAPTION = 0x00C00000;
+        const int WS_THICKFRAME = 0x00040000;
         const int WS_MINIMIZEBOX = 0x00020000;
         const int WS_MAXIMIZEBOX = 0x00010000;
         const int WS_SYSMENU = 0x00080000;
-        const int CS_DROPSHADOW = 0x00020000;
 
         const int WM_NCCALCSIZE = 0x0083;
+        const int WM_GETMINMAXINFO = 0x0024;
         const int WM_NCHITTEST = 0x0084;
         const int WM_NCACTIVATE = 0x0086;
 
@@ -917,23 +995,57 @@ namespace StereoSplitter
             get
             {
                 CreateParams cp = base.CreateParams;
-                // 只留"这窗口能被最大化 / 最小化 / 有系统菜单", 不要 WS_CAPTION 与 WS_THICKFRAME。
-                // 那两个会把窗口框成"有 8px 不可见边框": 系统按边框算最大化矩形与还原尺寸,
-                // 而我们的客户区已经盖满整窗 → 最大化比工作区大 18px、还原回来尺寸还多一圈。
-                // 二者都在 NCHITTEST 里手工实现了 (边缘缩放 + HTCAPTION), 不需要系统那层边框。
-                cp.Style |= WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
-                cp.ClassStyle |= CS_DROPSHADOW;
+                // 边框样式位**必须留着** (WS_CAPTION | WS_THICKFRAME): 它们不只是"画一条框",
+                // 还是系统计算窗口几何的依据 —— 最大化矩形 = 工作区 + 两侧边框、还原尺寸同一条公式、
+                // 边缘缩放与 Aero Snap 的热区。以前把这两个删掉, 系统那些算法就全部失配
+                // (最大化多 18px、还原大一圈), 只能靠手写 hit-test 与尺寸补偿去追 —— 追不平。
+                //
+                // 现在的分工是 QQ 音乐/Chrome 那套: **边框留着, 只是不画**。客户区照旧盖满整窗
+                // (见 WM_NCCALCSIZE), 那条 8px 边框被我们的绘制吃掉, 用户看不到; 但系统算几何时
+                // 它依然存在, 于是最大化的客户区正好等于工作区, 边框落在屏幕外。
+                // 只留 WS_THICKFRAME, 不要 WS_CAPTION:
+                // THICKFRAME 是"窗口几何按边框算"的那一位 (最大化矩形 = 工作区 + 边框、Snap 热区、
+                // 边缘缩放), 必须留着; CAPTION 则会让系统在最大化时**多减一条标题栏高度** ——
+                // 实测客户区比工作区矮 29px。标题栏由我们自己画, 不需要系统那一位。
+                cp.Style |= WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
                 return cp;
             }
         }
 
         protected override void WndProc(ref Message m)
         {
-            // 客户区盖满整个窗口: 系统标题栏与边框一条都不留, 全部由 PaintCaption 自己画。
-            // wParam=0 的那次是"算客户区矩形"的询问, 必须照常走 (返回 0 会破坏坐标)。
+            // 客户区盖满整个窗口, 标题栏与边框一条都不留 —— 全部由 PaintCaption 自己画。
+            // wParam=0 的那次是"算窗口矩形"的询问, 必须照常走 (返回 0 会破坏坐标)。
             if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
             {
                 m.Result = IntPtr.Zero;
+                return;
+            }
+
+            // "最大化能占多大"由我们说了算: 系统默认给的是**工作区 + 两侧边框**
+            // (那是留给不可见边框的位置), 而我们的边框已经被绘制吃掉, 照单全收就会
+            // 比屏幕大一圈、底边压住任务栏。这里直接把它按到工作区上。
+            //
+            // 这一句是"保留 WS_THICKFRAME"的全部代价 —— 换成上一版删掉边框的做法,
+            // 这笔账确实不用付, 但 Snap / Win+方向键 / 系统阴影也就一起没了。
+            if (m.Msg == WM_GETMINMAXINFO)
+            {
+                base.WndProc(ref m);
+                var mmi = (MINMAXINFO)System.Runtime.InteropServices.Marshal.PtrToStructure(
+                    m.LParam, typeof(MINMAXINFO));
+                var mi = new MONITORINFO
+                {
+                    cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(MONITORINFO))
+                };
+                IntPtr mon = MonitorFromWindow(Handle, MONITOR_DEFAULTTONEAREST);
+                if (mon != IntPtr.Zero && GetMonitorInfo(mon, ref mi))
+                {
+                    mmi.ptMaxPosition.x = mi.rcWork.left;
+                    mmi.ptMaxPosition.y = mi.rcWork.top;
+                    mmi.ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
+                    mmi.ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
+                    System.Runtime.InteropServices.Marshal.StructureToPtr(mmi, m.LParam, false);
+                }
                 return;
             }
 

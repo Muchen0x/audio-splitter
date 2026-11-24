@@ -918,6 +918,13 @@ namespace StereoSplitter
 
                 dump("geom");
 
+                // 样式位: WS_THICKFRAME (0x00040000) 在 = 系统仍认为这窗口有可缩放边框,
+                // Snap / Win+方向键 / 系统阴影才有依据; 它不在就只能自己补一套热区。
+                int style = GetWindowLong(sf.Handle, -16);
+                Console.Out.WriteLine("TB style=0x" + style.ToString("X8")
+                    + " thickframe=" + ((style & 0x00040000) != 0 ? "yes" : "no")
+                    + " caption=" + ((style & 0x00C00000) == 0x00C00000 ? "yes" : "no"));
+
                 // 命中码: 拖动窗口 / 边缘缩放 / 双击最大化全靠它, 直接把 WM_NCHITTEST 发给窗口看回什么
                 Func<int, int, string> hit = (x, y) =>
                 {
@@ -962,6 +969,7 @@ namespace StereoSplitter
                 {
                     click.Invoke(max, new object[] { EventArgs.Empty });
                     Pump(); Pump();
+                    dump("restore1");   // 第一次还原: 与初始 875x1000 比, 看多出多少
                 }
 
                 // 最大化键: 状态 / 字形 / 最大化边界 (钉工作区, 不能盖住任务栏)
@@ -1790,6 +1798,9 @@ namespace StereoSplitter
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
         /// <summary>向数字框的箭头区投一次真实的左键按下/抬起。</summary>
         static void ClickSpin(Control buttons, bool up)
