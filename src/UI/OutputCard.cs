@@ -64,9 +64,9 @@ namespace StereoSplitter
         // 以下尺寸按 96 DPI 的设计值给出, 实际值由 ScaleForDpi 按系统缩放乘一次 (125% → ×1.25)。
         // 做成静态字段而非常量: 卡片宽度参与列数计算, 放大后若仍按设计值算, 卡片会比可视区宽
         // 或排成错误的列数; 常量没法在运行时改。
-        public static int CardHeight { get; private set; } = 56;   // 单声道卡片高度
+        public static int CardHeight { get; private set; } = 62;   // 单声道卡片高度
         public static int CardWidth { get; private set; } = 500;
-        public static int RowHeight { get; private set; } = 26;    // 多声道每行高度
+        public static int RowHeight { get; private set; } = 32;    // 多声道每行高度 (行内下拉 30 + 2 行距)
 
         /// <summary>卡片之间的竖向间隙 (与 MainForm 里卡片的 Margin.Bottom 对应)。</summary>
         public static int CardGap { get; private set; } = 4;
@@ -74,18 +74,27 @@ namespace StereoSplitter
         /// <summary>按 DPI 缩放卡片尺寸 (由 <see cref="Dpi.Init"/> 调一次)。100% 时保持原值。</summary>
         internal static void ScaleForDpi(float f)
         {
-            CardHeight = (int)Math.Round(56 * f);
-            RowTop = (int)Math.Round(58 * f);
+            CardHeight = (int)Math.Round(62 * f);
+            RowTop = (int)Math.Round(64 * f);
             CardWidth = (int)Math.Round(500 * f);
-            RowHeight = (int)Math.Round(26 * f);
+            RowHeight = (int)Math.Round(32 * f);
             CardGap = (int)Math.Round(4 * f);
         }
 
-        /// <summary>卡片边框色。下拉弹层也用这一个, 两处必须一致 (用户要求"弹层和卡片一样的框")。</summary>
+        /// <summary>卡片边框色。下拉框本体 / 弹层 / 延迟壳也用这一个, 全界面同一套框。</summary>
         internal static readonly Color BorderColor = Color.FromArgb(203, 208, 216);
         static readonly Color RowLabelColor = Color.FromArgb(120, 126, 136);
         static int CornerRadius { get { return Dpi.S(6); } }
-        static int RowTop = 58;                 // 多声道首行 y (按 DPI 缩放在 ScaleForDpi 里)
+        static int RowTop = 64;                 // 多声道首行 y (按 DPI 缩放在 ScaleForDpi 里)
+
+        /// <summary>
+        /// 卡片内控件高度 (设计像素)。设备下拉 / 声道下拉 / 延迟壳三者同高, 且与顶部
+        /// 「规格」下拉、「添加设备」按钮 (30) 一致 —— 用户要求"逻辑声道下拉和添加设备按钮一样大"。
+        /// <para>此前是 24: 24 是 100% 下的值, 而卡片是运行期创建的、不吃 ScaleForm, 125% 下
+        /// 它仍是 24 物理像素, 旁边的按钮已经放大到 38 —— 于是下拉明显"矮一截"。
+        /// 改走 Dpi.S 之后两头都对齐。</para>
+        /// </summary>
+        internal static int RowControlHeight { get { return Dpi.S(30); } }
 
         public OutputCardControl(OutputCardModel model)
         {
@@ -100,15 +109,15 @@ namespace StereoSplitter
 
             cmbDevice = new RoundedCombo
             {
-                Height = 24,
+                Height = RowControlHeight,
                 ItemHeight = 24,
                 MaxDropDownItems = 12
                 // 不设 DropDownWidth: 弹层与本体等宽, 设备名过长时行内省略
             };
             cmbChannel = new RoundedCombo
             {
-                Width = 92,
-                Height = 24,
+                Width = Dpi.S(92),
+                Height = RowControlHeight,
                 ItemHeight = 24,
                 MaxDropDownItems = 10,
                 // 运行中把「多声道」显示成灰色 (列表项本身没法单独禁用, 只能告诉绘制这行是灰的)。
@@ -129,7 +138,7 @@ namespace StereoSplitter
             // 描边画在壳身上, 数字框嵌 1px 内衬。壳的宽度在字体确定后会重算 (Recalc),
             // 布局按壳宽右起排, 所以壳变宽时要重跑一次布局。
             nudShell = new RoundNumericShell(nudDelay, "延迟", "ms");
-            // 壳高与旁边的声道圆角下拉取齐 (都是 24), 顶边/底边对齐 (用户指定)
+            // 壳高与旁边的声道圆角下拉取齐 (同 RowControlHeight), 顶边/底边对齐 (用户指定)
             nudShell.FixedHeight = cmbChannel.Height;
             nudShell.SizeChanged += (s, e) => LayoutControls();
             // 移除按钮: "×" 图标 (用户指定), 无边框, 悬停铺浅底; 摆在卡片最右上角 (见 LayoutControls)
@@ -293,12 +302,12 @@ namespace StereoSplitter
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = RowLabelColor
             };
-            // 与第一行的设备/声道下拉同一档 (ItemHeight 18 → 高 24): 卡片里混用 24/25 两种高度
+            // 与第一行的设备/声道下拉同一档 (同高 30, 同走 Dpi.S): 卡片里混用两种高度
             // 会让同一列控件的底边对不齐, 差 1px 也看得出来
             r.Cmb = new RoundedCombo
             {
-                Width = 92,
-                Height = 24,
+                Width = Dpi.S(92),
+                Height = RowControlHeight,
                 ItemHeight = 24,
                 MaxDropDownItems = 10,
                 Enabled = !channelLocked        // 启动中新建的行也要是禁用状态
@@ -385,19 +394,24 @@ namespace StereoSplitter
         void LayoutControls()
         {
             int w = Width;
+            // 第一行三个控件同高 (RowControlHeight): 设备下拉 / 声道下拉 / 延迟壳底边对齐,
+            // 顶端统一 5; 「×」20 高, 在 30 高的这一行里垂直居中。
+            int row1 = Dpi.S(5);
+            int ctrlH = RowControlHeight;
 
             // 第一行右起排: [×] ← [延迟圆角壳(字样+数字框+箭头+ms 单位)] ← [声道], 设备下拉占满左侧。
-            btnRemove.Location = new Point(w - Dpi.S(6) - btnRemove.Width, Dpi.S(3));
-            nudShell.Location = new Point(btnRemove.Left - Dpi.S(8) - nudShell.Width, Dpi.S(5));
-            cmbChannel.Location = new Point(nudShell.Left - Dpi.S(8) - cmbChannel.Width, Dpi.S(5));
-            cmbDevice.Location = new Point(Dpi.S(8), Dpi.S(5));
+            btnRemove.Location = new Point(w - Dpi.S(6) - btnRemove.Width,
+                row1 + (ctrlH - btnRemove.Height) / 2);
+            nudShell.Location = new Point(btnRemove.Left - Dpi.S(8) - nudShell.Width, row1);
+            cmbChannel.Location = new Point(nudShell.Left - Dpi.S(8) - cmbChannel.Width, row1);
+            cmbDevice.Location = new Point(Dpi.S(8), row1);
             cmbDevice.Width = Math.Max(Dpi.S(90), cmbChannel.Left - Dpi.S(14));
 
             // 第二行: 喇叭(静音开关) → 滑条(拉满可用宽度) → 百分比。
             // 喇叭 22 高放在 row2-1 处, 中心正好落在滑条轨道线上 (滑条 20 高, 轨道画在垂直中心);
             // 左缘 8 与第一行的设备下拉同列。
-            // 单声道卡片高 56 = 上边距4 + 第一行21 + 间隔5 + 第二行20 + 下边距6, 下方不再留空。
-            int row2 = Dpi.S(30);
+            // 单声道卡片高 62 = 上边距5 + 第一行30 + 间隔3 + 第二行20 + 下边距4, 下方不再留空。
+            int row2 = Dpi.S(38);
             btnMute.Location = new Point(Dpi.S(8), row2 - Dpi.S(1));
             int volX = btnMute.Right + Dpi.S(6);
             volTrack.Location = new Point(volX, row2);
@@ -406,15 +420,18 @@ namespace StereoSplitter
             lblVol.Location = new Point(volTrack.Right + Dpi.S(8), row2);
 
             // 多声道行: p0 [声道▾] [滑条] n%
+            // 行内下拉 30 高而滑条/标签 20 高, 后两者按"在下拉里居中"偏移 5, 于是
+            // 每行的文字中心、轨道线中心都落在下拉的垂直中线上。
             for (int i = 0; i < rows.Count; i++)
             {
                 int y = RowTop + i * RowHeight;
                 SlotRow r = rows[i];
-                r.Tag.Location = new Point(Dpi.S(10), y + Dpi.S(3));
+                int mid = (ctrlH - r.Vol.Height) / 2;
+                r.Tag.Location = new Point(Dpi.S(10), y + mid);
                 r.Cmb.Location = new Point(Dpi.S(38), y);
-                r.Vol.Location = new Point(Dpi.S(140), y + Dpi.S(3));
+                r.Vol.Location = new Point(Dpi.S(140), y + mid);
                 r.Vol.Width = Math.Max(Dpi.S(100), w - Dpi.S(140) - (Dpi.S(8) + r.Lbl.Width + Dpi.S(10)));
-                r.Lbl.Location = new Point(r.Vol.Right + Dpi.S(8), y + Dpi.S(3));
+                r.Lbl.Location = new Point(r.Vol.Right + Dpi.S(8), y + mid);
             }
         }
 

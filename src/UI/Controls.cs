@@ -337,6 +337,11 @@ namespace StereoSplitter
             Color edge = borderColor.IsEmpty ? Blend(c, Color.Black, 0.12f) : borderColor;
             float edgeFade = outline ? 0.30f : 0.45f;   // 描边时边框就是主体, 别淡到看不见
             if (!Enabled && !borderColor.IsEmpty) edge = Blend(edge, Color.White, edgeFade);
+            // 描边按钮的悬停/按下: 边框统一成卡片浅灰之后, 往边框色里混已经看不出来了
+            // (浅灰 7% 的色差 ≈ 2), 所以改成把边框本身压深一档 —— 与 RoundedCombo 的
+            // "悬停加深"同一套反馈, 白色底不脏。
+            else if (outline && Enabled && (hot || pressed))
+                edge = Blend(edge, Color.Black, pressed ? 0.28f : 0.18f);
 
             // 填充与描边走同一条圆角路径, 一并做抗锯齿。
             // <para>路径整体落在 Region (内缩 1px) 之内, 所以边缘那圈半透明像素不会被裁掉,
@@ -898,8 +903,9 @@ namespace StereoSplitter
     /// </summary>
     class RoundNumericShell : Panel
     {
-        static readonly Color BorderNormal = Color.Black;                      // 与 RoundedCombo 同一套黑色细边
-        static readonly Color BorderDisabled = Color.FromArgb(203, 208, 216);  // 禁用态: 黑边会让不可点的框看着仍可点
+        static Color BorderNormal { get { return OutputCardControl.BorderColor; } }   // 与下拉/卡片同一套浅灰
+        static readonly Color BorderHot = Color.FromArgb(146, 153, 164);              // 悬停: 浅灰加深一档
+        static readonly Color BorderDisabled = Color.FromArgb(226, 230, 235);         // 禁用: 比常态更淡
         static readonly Color BackDisabled = Color.FromArgb(244, 245, 247);
         static readonly Color TextDisabled = Color.FromArgb(150, 154, 160);
         // 设计值 (96 DPI), 访问时按系统缩放换算; SpinStrip 例外 —— 它是原生 UpDownButtons
@@ -1103,14 +1109,15 @@ namespace StereoSplitter
             using (var b = new SolidBrush(Inner.Enabled ? Color.White : BackDisabled))
                 g.FillRectangle(b, arrowX, 1, Math.Max(0, Width - arrowX - 1), Height - 2);
 
-            // 边框: 黑色细边 (与 RoundedCombo 同一套), 悬停时同一黑色加粗到 1.5px。
+            // 边框: 与 RoundedCombo / 输出卡片同一套浅灰细边, 悬停时加深一档并加粗到 1.5px。
             // 走半像素对齐路径, 否则 1px 会被抗锯齿拆成两条灰线 (看着比 1px 粗、发灰)。
             if (Width > 4 && Height > 4)
             {
                 float inset = strong ? 0.75f : 0.5f;
+                Color edge = !Inner.Enabled ? BorderDisabled : (strong ? BorderHot : BorderNormal);
                 using (var path = UiDraw.RoundRect(
                     new RectangleF(inset, inset, Width - inset * 2, Height - inset * 2), CornerRadius))
-                using (var pen = new Pen(Inner.Enabled ? BorderNormal : BorderDisabled, strong ? 1.5f : 1f))
+                using (var pen = new Pen(edge, strong ? 1.5f : 1f))
                     g.DrawPath(pen, path);
             }
             Color off = Color.FromArgb(178, 178, 178);

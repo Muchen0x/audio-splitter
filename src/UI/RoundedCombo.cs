@@ -26,10 +26,17 @@ namespace StereoSplitter
     class RoundedCombo : Control
     {
         // ---------- 配色 ----------
-        /// <summary>常态边框: 黑色细边 (用户指定)。黑色已是最深, 悬停/展开的反馈只能靠笔宽。</summary>
-        static readonly Color BorderNormal = Color.Black;
-        /// <summary>禁用态边框: 淡灰 —— 禁用控件用黑边会看着仍可点。</summary>
-        static readonly Color BorderDisabled = Color.FromArgb(203, 208, 216);
+        /// <summary>
+        /// 常态边框: 与输出卡片同一套浅灰 (203,208,216)。
+        /// <para>此前是纯黑细边, 与卡片、弹层、设置分组卡的浅灰框在同一屏里明显不是一套;
+        /// 用户要求"边框都改为和输出卡片一致", 于是下拉/延迟壳/描边按钮统一取
+        /// <see cref="OutputCardControl.BorderColor"/>, 黑色只留给文字。</para>
+        /// </summary>
+        static Color BorderNormal { get { return OutputCardControl.BorderColor; } }
+        /// <summary>悬停/展开: 同一浅灰加深一档。浅灰已不是最深色, 靠"加深"比靠"加粗"更明显。</summary>
+        static readonly Color BorderHot = Color.FromArgb(146, 153, 164);
+        /// <summary>禁用态边框: 比常态更淡 —— 常态已是浅灰, 再用同色就分不出禁用。</summary>
+        static readonly Color BorderDisabled = Color.FromArgb(226, 230, 235);
         static readonly Color BorderActive = Color.FromArgb(0, 120, 215);
         static readonly Color TextNormal = Color.FromArgb(32, 32, 32);
         static readonly Color DisabledBack = Color.FromArgb(244, 245, 247);
@@ -226,14 +233,15 @@ namespace StereoSplitter
                     g.FillRectangle(b, ClientRectangle);
             }
 
-            // 边框: 黑色细边 (用户指定)。展开/hover 用"同一黑色加粗到 1.5px"做反馈 ——
-            // 黑色已经是最深, 没法像浅灰那样靠加深区分; 蓝色只留给键盘焦点
+            // 边框: 与输出卡片同一套浅灰细边。展开/hover 用"加深一档 + 加粗到 1.5px"两件事
+            // 一起做反馈 (只加粗在浅灰上几乎看不出); 蓝色只留给键盘焦点
             // (鼠标点一下就变蓝、收起后蓝还挂在框上, 看起来就是"焦点框残留",
             //  见 keyboardFocusCues 的说明)。
             Color border = !Enabled ? BorderDisabled
                          : (Focused && keyboardFocusCues) ? BorderActive
                          : BorderNormal;
             bool strong = Enabled && (open || hot);
+            if (strong && border == BorderNormal) border = BorderHot;
 
             // 填充始终铺满: 若边框态用内缩矩形, hover 时四周会露出 1px 父容器底色
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);

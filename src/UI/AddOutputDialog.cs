@@ -110,7 +110,7 @@ namespace StereoSplitter
                 Size = new Size(76, 28),
                 Outline = true,
                 FillColor = Color.White,
-                BorderColor = Color.Black,
+                BorderColor = OutputCardControl.BorderColor,   // 与主界面下拉/卡片同一套浅灰框
                 TextColor = Color.FromArgb(64, 64, 64)
             };
             btnCancel.Click += (s, e) => { DialogResult = DialogResult.Cancel; };
