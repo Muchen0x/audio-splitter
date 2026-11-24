@@ -666,6 +666,167 @@ namespace StereoSplitter
                 return;
             }
 
+            // 滚动复现: 卡片列表滚动后延迟框出现"重影"(文字/箭头被画两次)。
+            // 用 BufferedFlowPanel + 8 张真卡片模拟, 逐步滚动并逐张截图, 看是哪一步开始糊。
+            if (args.Length >= 1 && args[0] == "scroll")
+            {
+                string path = args.Length >= 2 ? args[1] : "scroll.png";
+                var devs = new List<string>
+                {
+                    "[0] 扬声器 (Realtek(R) Audio)", "[1] 网易虚拟音频设备", "[2] OF24Q (NVIDIA High Definition Audio)"
+                };
+                var chans = new List<KeyValuePair<string, string>>
+                {
+                    new KeyValuePair<string, string>("FL", "左声道"),
+                    new KeyValuePair<string, string>("FR", "右声道")
+                };
+                using (var sform = new Form
+                {
+                    StartPosition = FormStartPosition.Manual, Location = new Point(40, 40),
+                    ClientSize = new Size(560, 150), BackColor = Color.White,
+                    Font = new Font("Microsoft YaHei UI", 9F)
+                })
+                {
+                    var host = new BufferedFlowPanel
+                    {
+                        Dock = DockStyle.Fill, AutoScroll = true, WrapContents = true,
+                        FlowDirection = FlowDirection.LeftToRight,
+                        Padding = new Padding(0, 4, 0, 6), BackColor = Color.White
+                    };
+                    sform.Controls.Add(host);
+                    for (int i = 0; i < 8; i++)
+                    {
+                        var m = new OutputCardModel { DeviceId = "dev" + i, DelayMs = 1950, Volume = 100 };
+                        var card = new OutputCardControl(m) { Margin = new Padding(0, 0, 0, OutputCardControl.CardGap) };
+                        card.SetDevices(devs);
+                        card.SetDeviceIndex(i % 3);
+                        card.SetChannels(chans);
+                        card.SyncFromModel(chans);
+                        host.Controls.Add(card);
+                    }
+                    sform.TopMost = true;
+                    sform.Show();
+                    sform.Activate();
+                    for (int i = 0; i < 12; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                    Console.Out.WriteLine("SCROLL host=" + host.ClientSize + " content=" + host.DisplayRectangle
+                        + " vscroll=" + host.VerticalScroll.Visible);
+                    // 把光标停在第一张卡片的延迟框上再滚: 滚轮扫过控件会触发 hover 重绘,
+                    // 用户报的重影就是在"鼠标停在延迟框上滚列表"时出现的
+                    var firstCard = host.Controls[0] as OutputCardControl;
+                    if (firstCard != null)
+                    {
+                        Point sp = firstCard.nudShell.PointToScreen(new Point(firstCard.nudShell.Width / 2, firstCard.nudShell.Height / 2));
+                        Cursor.Position = sp;
+                        Console.Out.WriteLine("CURSOR at shell " + sp);
+                        for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                    }
+                    // 走真实滚轮路径: WM_VSCROLL/SB_LINEDOWN (与 AutoScroll 的滚轮同一条路),
+                    // 每滚一格只泵一次消息就截图 —— 等太久的话重影早被重绘盖掉了
+                    for (int i = 0; i < 10; i++)
+                    {
+                        SendMessage(host.Handle, 0x0115 /*WM_VSCROLL*/, (IntPtr)1 /*SB_LINEDOWN*/, IntPtr.Zero);
+                        Application.DoEvents();
+                        Application.DoEvents();
+                        string file = System.IO.Path.GetFileNameWithoutExtension(path) + "-" + i + ".png";
+                        using (var bmp = new Bitmap(sform.Width, sform.Height))
+                        {
+                            using (var g = Graphics.FromImage(bmp))
+                                g.CopyFromScreen(sform.Location, Point.Empty, sform.Size);
+                            bmp.Save(file, System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                        Console.Out.WriteLine("  step=" + i + " pos=" + host.AutoScrollPosition + " -> " + file);
+                    }
+                }
+                return;
+            }
+
+            // 真实主窗体的滚动复现: 用用户自己的 ini (多张多声道卡片) 让卡片区出滚动条,
+            // 光标停在延迟框上, 逐格 WM_VSCROLL 并截图 —— 复现"滚动后延迟框重影"
+            if (args.Length >= 1 && args[0] == "realscroll")
+            {
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(40, 40);
+                mf.Size = new Size(640, 430);
+                mf.TopMost = true;
+                mf.Show();
+                mf.Activate();
+                for (int i = 0; i < 14; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+
+                var host = Field(mf, "cardHost") as Control;
+                Console.Out.WriteLine("HOST " + (host == null ? "null" : host.Bounds + " vscroll=" + ((ScrollableControl)host).VerticalScroll.Visible
+                    + " cards=" + host.Controls.Count));
+                if (host != null)
+                {
+                    // 光标压在第一张卡片的延迟框上 (hover 重绘 + 滚轮派发都在这条路上)
+                    OutputCardControl card0 = null;
+                    foreach (Control c in host.Controls) { card0 = c as OutputCardControl; if (card0 != null) break; }
+                    if (card0 != null)
+                    {
+                        Point sp = card0.nudShell.PointToScreen(new Point(card0.nudShell.Width / 2, card0.nudShell.Height / 2));
+                        Cursor.Position = sp;
+                        Console.Out.WriteLine("SHELL screen=" + sp);
+                        for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                    }
+                    // 真滚轮: 一次 -120 = 3 行 (~48px), 与用户划一下滚轮一致; 下到底再往回滚
+                    for (int i = 0; i < 16; i++)
+                    {
+                        int delta = i < 8 ? -120 : 120;
+                        IntPtr lp = (IntPtr)((Math.Max(0, Cursor.Position.Y) << 16) | Math.Max(0, Cursor.Position.X));
+                        SendMessage(host.Handle, 0x020A /*WM_MOUSEWHEEL*/,
+                             (IntPtr)((delta & 0xFFFF) << 16), lp);
+                        // 滚完立刻抓一帧 (不等重绘完成): 用户在滚动中按截图就是这一帧,
+                        // 撕裂/残影如果存在, 这里能抓到; 合成渲染下应该是完整的一帧
+                        using (var bmp = new Bitmap(mf.Width, mf.Height))
+                        {
+                            using (var g = Graphics.FromImage(bmp))
+                                g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
+                            bmp.Save("im-" + i + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                        Application.DoEvents();
+                        Application.DoEvents();
+                        using (var bmp = new Bitmap(mf.Width, mf.Height))
+                        {
+                            using (var g = Graphics.FromImage(bmp))
+                                g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
+                            bmp.Save("rs-" + i + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                        Console.Out.WriteLine("  step=" + i + " pos=" + ((ScrollableControl)host).AutoScrollPosition);
+                    }
+                }
+                mf.Close();
+                return;
+            }
+
+            // 边框采样: 壳高 24 (FixedHeight) 时数字框会不会把上下边框盖掉 ——
+            // 直接读屏幕像素, 不看截图 (截图里鼠标光标会干扰)
+            if (args.Length >= 1 && args[0] == "borderprobe")
+            {
+                using (var sform = new Form
+                {
+                    StartPosition = FormStartPosition.Manual, Location = new Point(60, 60),
+                    ClientSize = new Size(340, 90), BackColor = Color.White,
+                    Font = new Font("Microsoft YaHei UI", 9F)
+                })
+                {
+                    var n1 = new NoWheelNumeric { Minimum = 0, Maximum = 2000, Increment = 10, Value = 50 };
+                    var s1 = new RoundNumericShell(n1, "延迟", "ms") { FixedHeight = 24, Location = new Point(10, 10) };
+                    var n2 = new NoWheelNumeric { Minimum = 0, Maximum = 2000, Increment = 10, Value = 50 };
+                    var s2 = new RoundNumericShell(n2, "延迟", "ms") { Location = new Point(10, 50) };
+                    sform.Controls.Add(s1);
+                    sform.Controls.Add(s2);
+                    sform.TopMost = true;
+                    Cursor.Position = new Point(5, 5);
+                    sform.Show();
+                    sform.Activate();
+                    for (int i = 0; i < 12; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                    Console.Out.WriteLine("s1=" + s1.Bounds + " fixed=24  s2=" + s2.Bounds + " auto");
+                    DumpEdges(sform, s1, "FIXED24");
+                    DumpEdges(sform, s2, "AUTO");
+                }
+                return;
+            }
+
             var f = new MainForm();
             int w, h;
             if (args.Length >= 2 && int.TryParse(args[0], out w) && int.TryParse(args[1], out h))
@@ -1062,6 +1223,32 @@ namespace StereoSplitter
                     g.DrawImage(bmp, 0, 0, big.Width, big.Height);
                 }
                 big.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            }
+        }
+
+
+        /// <summary>采样外壳上/下边框那一行的像素: 数字段与文字段各取一点, 看是否还是边框灰。</summary>
+        static void DumpEdges(Form host, Control shell, string tag)
+        {
+            Point at = shell.PointToScreen(Point.Empty);
+            int w = shell.Width, h = shell.Height;
+            // 数字区在壳内偏右, 取 60% 处; 文字区取 12%
+            int[] xs = { (int)(w * 0.12), (int)(w * 0.33) };   // 33% 处正落在数字框窗口内
+            using (var bmp = new Bitmap(w, h))
+            {
+                using (var g = Graphics.FromImage(bmp))
+                    g.CopyFromScreen(at, Point.Empty, new Size(w, h));
+                bmp.Save("bp-" + tag + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                foreach (int x in xs)
+                {
+                    var sb = new StringBuilder();
+                    foreach (int y in new[] { 0, 1, h - 2, h - 1 })
+                    {
+                        Color c = bmp.GetPixel(x, y);
+                        sb.Append(" y" + y + "=" + c.R + "," + c.G + "," + c.B);
+                    }
+                    Console.Out.WriteLine(tag + " x=" + x + sb);
+                }
             }
         }
 

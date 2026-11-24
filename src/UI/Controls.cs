@@ -1028,9 +1028,17 @@ namespace StereoSplitter
         /// </summary>
         void PlaceInner(int x, int w, int shellH, int innerH)
         {
-            Inner.SetBounds(x, (shellH - innerH) / 2, w, innerH);
+            int y = (shellH - innerH) / 2;
+            Inner.SetBounds(x, y, w, innerH);
+            // 数字框是白底的原生窗口, 会整块盖在外壳上: 壳高 24 而数字框高 23 时
+            // (与声道下拉等高的那一版), y=0 正好压住外壳的顶边框, 底边框也被压掉 1px ——
+            // 边框在数字这一段"断"成缺口, 旁边又露出半截线头, 看着像重影/残线。
+            // 用 Region 把数字框的上下各 1px 裁掉, 让两条边框露出来; 裁掉的只是白边,
+            // 文字 (居中, 约 12px 高) 不受影响, 落在那两行上的点击交给外壳。
             Region old = Inner.Region;
-            Inner.Region = null;
+            Inner.Region = y == 0
+                ? new Region(new Rectangle(0, 1, w, Math.Max(1, innerH - 2)))
+                : null;
             if (old != null) old.Dispose();
             EnforceSpinHidden();
         }

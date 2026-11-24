@@ -23,8 +23,5 @@ SplitterGUI.ini
 docs/
 SplitterGUI.ini.bak
 
-# uidump 截图输出 (临时验证用)
-live.png
-icons.png
-adddlg.png
-shot.png
+# uidump 截图输出 (临时验证用): 根目录下的 png 全是探针产物
+/*.png
