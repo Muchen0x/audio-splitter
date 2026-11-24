@@ -141,7 +141,7 @@ namespace StereoSplitter
                 Lane("FR", "devB", 30, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 1, 0, null, out conflict);
+            var m = LaneRouting.Build(lanes, 1, 0, null, null, out conflict);
 
             Check("2 路", m.SinkSpecs.Count == 2);
             Check("每路 1ch", m.SinkSpecs[0].OutChannels == 1 && m.SinkSpecs[1].OutChannels == 1);
@@ -164,7 +164,7 @@ namespace StereoSplitter
                 Lane("FR", "devA", 0, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 1, 0, null, out conflict);
+            var m = LaneRouting.Build(lanes, 1, 0, null, null, out conflict);
 
             Check("合成 1 路", m.SinkSpecs.Count == 1);
             Check("2ch", m.SinkSpecs[0].OutChannels == 2);
@@ -187,7 +187,7 @@ namespace StereoSplitter
                 Lane("SR", "devC", 0, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
+            var m = LaneRouting.Build(lanes, 4, 6, null, null, out conflict);
 
             Check("3 路", m.SinkSpecs.Count == 3);
             Check("每路 2ch", m.SinkSpecs[0].OutChannels == 2 && m.SinkSpecs[2].OutChannels == 2);
@@ -210,7 +210,7 @@ namespace StereoSplitter
             string[] keys = { "FL", "FR", "C", "LFE", "SL", "SR" };
             for (int i = 0; i < keys.Length; i++) lanes.Add(Lane(keys[i], "devA", 0, 100));
             bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
+            var m = LaneRouting.Build(lanes, 4, 6, null, null, out conflict);
 
             Check("1 路 6ch", m.SinkSpecs.Count == 1 && m.SinkSpecs[0].OutChannels == 6);
             var c = m.Compile(m.SinkSpecs, 6);
@@ -232,7 +232,7 @@ namespace StereoSplitter
                 Lane("LFE", "devB", 0, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 2, 2, null, out conflict);
+            var m = LaneRouting.Build(lanes, 2, 2, null, null, out conflict);
 
             Check("2 路", m.SinkSpecs.Count == 2);
             Check("devB 1ch", m.SinkSpecs[1].OutChannels == 1);
@@ -246,7 +246,7 @@ namespace StereoSplitter
             Begin("单声道 / 单路");
             var lanes = new List<OutputLane> { Lane("M", "devA", 0, 100) };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 0, 2, null, out conflict);
+            var m = LaneRouting.Build(lanes, 0, 2, null, null, out conflict);
             var c = m.Compile(m.SinkSpecs, 2);
             Check("M = 0.5 L + 0.5 R",
                 Math.Abs(c.SinkMatrix[0][0, 0] - 0.5f) < 1e-6f && Math.Abs(c.SinkMatrix[0][0, 1] - 0.5f) < 1e-6f);
@@ -262,7 +262,7 @@ namespace StereoSplitter
                 Lane("C", "devB", 0, 100), Lane("LFE", "devB", 0, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 2, null, out conflict);
+            var m = LaneRouting.Build(lanes, 4, 2, null, null, out conflict);
             var c = m.Compile(m.SinkSpecs, 2);
             Check("中置 = 0.5 L + 0.5 R",
                 Math.Abs(c.SinkMatrix[1][0, 0] - 0.5f) < 1e-6f && Math.Abs(c.SinkMatrix[1][0, 1] - 0.5f) < 1e-6f);
@@ -282,7 +282,7 @@ namespace StereoSplitter
             };
             lanes[2].Mute = true;
             bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
+            var m = LaneRouting.Build(lanes, 4, 6, null, null, out conflict);
             var c = m.Compile(m.SinkSpecs, 6);
             Check("FL 增益 0.5", Math.Abs(c.SinkMatrix[0][0, 0] - 0.5f) < 1e-6f);
             Check("中置 增益 0.6", Math.Abs(c.SinkMatrix[1][0, 2] - 0.6f) < 1e-6f);
@@ -313,7 +313,7 @@ namespace StereoSplitter
             Check("另一台不受影响", !cards[1].Multi && cards[1].DeviceId == "devB");
 
             bool conflict;
-            var m = LaneRouting.Build(LaneRouting.Flatten(cards, null), 4, 6, null, out conflict);
+            var m = LaneRouting.Build(LaneRouting.Flatten(cards, null), 4, 6, null, null, out conflict);
             Check("2 路 sink", m.SinkSpecs.Count == 2);
             Check("devA 2ch", m.SinkSpecs[0].OutChannels == 2);
         }
@@ -379,7 +379,7 @@ namespace StereoSplitter
             Check("p1 占位行无 ChannelKey", lanes[1].ChannelKey == "");
 
             bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
+            var m = LaneRouting.Build(lanes, 4, 6, null, null, out conflict);
             Check("仍是 3ch (p1 留空不被压缩)", m.SinkSpecs[0].OutChannels == 3);
             var c = m.Compile(m.SinkSpecs, 6);
             Check("p1 全零", Math.Abs(c.SinkMatrix[0][1, 0]) < 1e-6f && Math.Abs(c.SinkMatrix[0][1, 3]) < 1e-6f);
@@ -399,7 +399,7 @@ namespace StereoSplitter
             tail[0].Slots.Add(new ChannelSlot { ChannelKey = "", Volume = 100 });
             var tailLanes = LaneRouting.Flatten(tail, null);
             bool conflict;
-            var mt = LaneRouting.Build(tailLanes, 1, 2, null, out conflict);
+            var mt = LaneRouting.Build(tailLanes, 1, 2, null, null, out conflict);
             Check("尾部空 → sink 保留", mt.SinkSpecs.Count == 1);
             Check("尾部空 → 仍 2ch", mt.SinkSpecs.Count == 1 && mt.SinkSpecs[0].OutChannels == 2);
             var ct = mt.Compile(mt.SinkSpecs, 2);
@@ -410,7 +410,7 @@ namespace StereoSplitter
             var empty = new List<OutputCardModel> { Card("devA", 0, true, "", 100) };
             empty[0].Slots.Add(new ChannelSlot { ChannelKey = "", Volume = 100 });
             var emptyLanes = LaneRouting.Flatten(empty, null);
-            var me = LaneRouting.Build(emptyLanes, 1, 2, null, out conflict);
+            var me = LaneRouting.Build(emptyLanes, 1, 2, null, null, out conflict);
             Check("全空 → sink 仍在", me.SinkSpecs.Count == 1);
             Check("全空 → 仍 2ch", me.SinkSpecs.Count == 1 && me.SinkSpecs[0].OutChannels == 2);
             var ce = me.Compile(me.SinkSpecs, 2);
@@ -423,7 +423,7 @@ namespace StereoSplitter
             // 单声道卡片声道置空 → sink 保留、全零、1ch
             var single = new List<OutputCardModel> { Card("devA", 0, false, "", 40) };
             var sl = LaneRouting.Flatten(single, null);
-            var ms = LaneRouting.Build(sl, 1, 2, null, out conflict);
+            var ms = LaneRouting.Build(sl, 1, 2, null, null, out conflict);
             Check("单声道空 → sink 保留 1ch", ms.SinkSpecs.Count == 1 && ms.SinkSpecs[0].OutChannels == 1);
             var cs = ms.Compile(ms.SinkSpecs, 2);
             Check("单声道空 → 全零", Math.Abs(cs.SinkMatrix[0][0, 0]) < 1e-6f && Math.Abs(cs.SinkMatrix[0][0, 1]) < 1e-6f);
@@ -431,7 +431,7 @@ namespace StereoSplitter
             // 链路形状稳定: 从"有内容"改到"尾部空"应通过 SameLinkShape(由 OutChannels 相等间接验证)
             var full = new List<OutputCardModel> { Card("devA", 0, true, "FL", 100) };
             full[0].Slots.Add(new ChannelSlot { ChannelKey = "FR", Volume = 100 });
-            var mf = LaneRouting.Build(LaneRouting.Flatten(full, null), 1, 2, null, out conflict);
+            var mf = LaneRouting.Build(LaneRouting.Flatten(full, null), 1, 2, null, null, out conflict);
             Check("链路形状: 有内容2ch == 尾部空2ch",
                 mf.SinkSpecs[0].OutChannels == mt.SinkSpecs[0].OutChannels);
         }
@@ -462,7 +462,7 @@ namespace StereoSplitter
             Check("FL 行音量 40", lanes[0].Volume == 40);
             Check("FR 行静音(音量0)", lanes[1].Volume == 0);
             bool conflict;
-            var m = LaneRouting.Build(lanes, 1, 2, null, out conflict);
+            var m = LaneRouting.Build(lanes, 1, 2, null, null, out conflict);
             var c = m.Compile(m.SinkSpecs, 2);
             Check("矩阵 p0 ← L 增益 0.4", Math.Abs(c.SinkMatrix[0][0, 0] - 0.4f) < 1e-6f);
             Check("矩阵 p1 全零", Math.Abs(c.SinkMatrix[0][1, 0]) < 1e-6f && Math.Abs(c.SinkMatrix[0][1, 1]) < 1e-6f);
@@ -489,7 +489,7 @@ namespace StereoSplitter
                 Lane("FL", "devC", 40, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 1, 0, null, out conflict);
+            var m = LaneRouting.Build(lanes, 1, 0, null, null, out conflict);
             Check("3 路", m.SinkSpecs.Count == 3);
             Check("全部 g0",
                 m.SinkSpecs[0].ClockGroupId == "g0" && m.SinkSpecs[1].ClockGroupId == "g0" &&
@@ -515,7 +515,7 @@ namespace StereoSplitter
                 lanes.Add(Lane("FR", dev, 0, 100));
             }
             bool conflict;
-            var m = LaneRouting.Build(lanes, 1, 0, null, out conflict);
+            var m = LaneRouting.Build(lanes, 1, 0, null, null, out conflict);
 
             Check("设备全部保留 " + n + " 路", m.SinkSpecs.Count == n);
 
@@ -554,7 +554,7 @@ namespace StereoSplitter
                 Lane("FR", "devA", 40, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 1, 2, null, out conflict);
+            var m = LaneRouting.Build(lanes, 1, 2, null, null, out conflict);
             Check("报冲突", conflict);
             Check("取最小 0ms", m.SinkSpecs[0].DelayMs == 0);
         }
@@ -569,7 +569,7 @@ namespace StereoSplitter
                 Lane("FR", "devB", 0, 100)
             };
             bool conflict;
-            var m = LaneRouting.Build(lanes, 4, 6, null, out conflict);
+            var m = LaneRouting.Build(lanes, 4, 6, null, null, out conflict);
             var issues = m.Validate(6, m.EnabledSinks());
             bool anyError = false, anyWarn = false;
             for (int i = 0; i < issues.Count; i++)
@@ -640,7 +640,7 @@ namespace StereoSplitter
 
             var lanes = new List<OutputLane> { Lane("FL", "devA", 0, 100) };
             bool conflict;
-            var model = LaneRouting.Build(lanes, 1, 2, null, out conflict);
+            var model = LaneRouting.Build(lanes, 1, 2, null, null, out conflict);
             var spec = model.SinkSpecs[0];
 
             spec.Volume = 1f;

@@ -1419,14 +1419,14 @@ namespace StereoSplitter
                         s += " 欠载" + u.Groups[1].Value + "/" + u.Groups[2].Value;
                     return s;
                 }
-                // 多输出: "设备1 66/29ms +496ppm 电平0.6% | 设备2 …" → 取前两台的调节/最低
-                var dv = System.Text.RegularExpressions.Regex.Matches(body, @"设备(\d+) (\d+)/(\d+)ms");
+                // 多输出: "[4] 66/29ms +496ppm 电平0.6% | [5] …" → 取前两台的调节/最低
+                var dv = System.Text.RegularExpressions.Regex.Matches(body, @"(\S+) (\d+)/(\d+)ms");
                 if (dv.Count >= 2)
-                    return "设备" + dv[0].Groups[1].Value + " " + dv[0].Groups[2].Value + "/" + dv[0].Groups[3].Value + "ms"
-                         + " 设备" + dv[1].Groups[1].Value + " " + dv[1].Groups[2].Value + "/" + dv[1].Groups[3].Value + "ms"
+                    return dv[0].Groups[1].Value + " " + dv[0].Groups[2].Value + "/" + dv[0].Groups[3].Value + "ms"
+                         + " " + dv[1].Groups[1].Value + " " + dv[1].Groups[2].Value + "/" + dv[1].Groups[3].Value + "ms"
                          + (dv.Count > 2 ? " +" + (dv.Count - 2) + "台" : "");
                 if (dv.Count == 1)
-                    return "设备" + dv[0].Groups[1].Value + " " + dv[0].Groups[2].Value + "/" + dv[0].Groups[3].Value + "ms";
+                    return dv[0].Groups[1].Value + " " + dv[0].Groups[2].Value + "/" + dv[0].Groups[3].Value + "ms";
                 if (ms.Count >= 2)
                     return "调节 " + ms[0].Groups[1].Value + "/" + ms[1].Groups[1].Value + "ms";
             }

@@ -247,7 +247,7 @@ namespace StereoSplitter
         /// <para>delayConflict: 同一设备上出现不同延迟时置 true（调用方据此打一条警告）。</para>
         /// </summary>
         public static RoutingModel Build(IList<OutputLane> lanes, int specIndex, int srcCh,
-            Func<string, string> deviceNameOf, out bool delayConflict)
+            Func<string, string> deviceNameOf, Func<string, int> deviceIndexOf, out bool delayConflict)
         {
             delayConflict = false;
             var model = new RoutingModel
@@ -297,7 +297,14 @@ namespace StereoSplitter
                 else
                 {
                     string key = "s" + sinkOfDevice.Count;
-                    string label = string.IsNullOrEmpty(lane.ChannelKey)
+                    // 标签用设备编号 (用户指定): 与设备下拉的 "[4] OF24Q…" 同一套编号
+                    // (catalog 索引), 界面、水位行、启动日志、校验告警里都是同一个 [N]。
+                    // 多声道卡的三行声道共用一路, 编号也回答了"这张卡是谁" —— 比挂第一行
+                    // 的声道名更准确。设备当前不可用 (IndexOf=-1) 时退回声道名占位。
+                    string label;
+                    int devIdx = deviceIndexOf != null ? deviceIndexOf(dev) : -1;
+                    if (devIdx >= 0) label = "[" + devIdx + "]";
+                    else label = string.IsNullOrEmpty(lane.ChannelKey)
                         ? "输出" + (sinkOfDevice.Count + 1)
                         : DisplayName(specIndex, lane.ChannelKey);
                     // 同名标签会让日志分不清是哪一路 → 显式补序号

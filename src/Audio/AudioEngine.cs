@@ -693,10 +693,9 @@ namespace StereoSplitter
                     var p = sinks[i].Provider;
                     if (p == null) continue;
                     if (sb.Length > 0) sb.Append(" | ");
-                    // 设备编号而非声道名 (用户指定): 这里的每一路都是"一台设备" —— 多声道卡
-                    // 的三行声道共用同一段数字, 标挂"左前"会让它看起来只带了那一个声道。
-                    // 编号按卡片顺序 (specs 的顺序就是卡片顺序), 与界面从左到右一致。
-                    sb.Append("设备").Append(i + 1).Append(' ')
+                    // 标签 = 设备编号 "[N]" (LaneRouting.Build 里定, 与设备下拉同一套编号);
+                    // 这里的每一路都是"一台设备" —— 多声道卡的三行声道共用同一段数字。
+                    sb.Append(specs[i].Label).Append(' ')
                       .Append(p.RegulatedMs).Append('/').Append(p.TakeMinBufferedMs()).Append("ms ")
                       .Append(Ppm(p.RatioPpm));
                     double lvl = p.TakeLevelRms();

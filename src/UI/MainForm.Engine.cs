@@ -170,6 +170,7 @@ namespace StereoSplitter
             bool conflict;
             var model = LaneRouting.Build(lanes, cmbSpec.SelectedIndex, srcCh,
                 delegate (string id) { return catalog == null ? "" : catalog.NameOf(id); },
+                delegate (string id) { return catalog == null ? -1 : catalog.IndexOf(id); },
                 out conflict);
             if (conflict && logDelayConflict)
                 Log("[提示] 同一设备上的多路延迟不一致，已按最小值生效（内核每台设备只有一条延迟线）");
