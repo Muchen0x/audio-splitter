@@ -154,13 +154,26 @@ namespace StereoSplitter
                             + " flyoutStill=" + fy.Visible);
                         if (pm != null && pm.Visible)
                         {
+                            // 悬停实拍: 把光标摆到第 2 项 (低延迟) 上, 记录项边界 + 拍悬停垫的样子
+                            Rectangle ib = pm.Items[Math.Min(1, pm.Items.Count - 1)].Bounds;
+                            var sbi = new StringBuilder("PROFILEITEMS");
+                            foreach (ToolStripItem it2 in pm.Items)
+                                sbi.Append(" [").Append(it2.Bounds.X).Append(',').Append(it2.Bounds.Y)
+                                   .Append(' ').Append(it2.Width).Append('x').Append(it2.Height).Append(']');
+                            Console.Out.WriteLine(sbi.ToString());
+                            Point hoverPt = pm.PointToScreen(new Point(ib.X + ib.Width / 2, ib.Y + ib.Height / 2));
+                            Point oldCur2 = Cursor.Position;
+                            Cursor.Position = hoverPt;
+                            for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
                             using (var bmp = new Bitmap(fy.Width + pm.Width + 20, fy.Height + pm.Height + 20))
                             {
                                 using (var g = Graphics.FromImage(bmp))
                                     g.CopyFromScreen(fy.PointToScreen(Point.Empty), Point.Empty, bmp.Size);
                                 bmp.Save("profilemenu-live.png", System.Drawing.Imaging.ImageFormat.Png);
                             }
-                            Console.Out.WriteLine("PROFILEMENU-SHOT -> profilemenu-live.png");
+                            Console.Out.WriteLine("PROFILEMENU-SHOT -> profilemenu-live.png  cursor@" + hoverPt);
+                            Cursor.Position = oldCur2;
+                            for (int i = 0; i < 3; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
                         }
                         int target = (SelOf(cmb) + 1) % Math.Max(1, pm == null ? 1 : pm.Items.Count);
                         if (pm != null && pm.Visible)
