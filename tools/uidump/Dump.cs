@@ -613,7 +613,7 @@ namespace StereoSplitter
                     // 插播桥验证: 模拟四条运行期 [状态] 日志走 Log(), 读回状态字
                     MethodInfo logM = typeof(MainForm).GetMethod("Log",
                         BindingFlags.Instance | BindingFlags.NonPublic, null, new[] { typeof(string) }, null);
-                    var lblM = (System.Windows.Forms.Label)Field(sf2, "lblRunState");
+                    var lblM = (System.Windows.Forms.Control)Field(sf2, "lblRunState");
                     var noteT = (System.Windows.Forms.Timer)Field(sf2, "runNoteTimer");
                     if (logM != null && lblM != null)
                     {
@@ -633,7 +633,8 @@ namespace StereoSplitter
                             Console.Out.WriteLine("MIRROR '" + fk.Substring(7, Math.Min(16, fk.Length - 7))
                                 + "…' -> '" + lblM.Text + "' color=" + lblM.ForeColor.R + ","
                                 + lblM.ForeColor.G + "," + lblM.ForeColor.B
-                                + " holdTimer=" + (noteT != null && noteT.Enabled));
+                                + " holdTimer=" + (noteT != null && noteT.Enabled)
+                                + " rect=" + lblM.Left + "," + lblM.Top + "x" + lblM.Width + "x" + lblM.Height);
                         }
                         // 迁移接管: 状态一变, 插播计时器必须停, 文案回到权威版
                         setState.Invoke(sf2, new object[] { AppState.Stopping });
@@ -651,6 +652,28 @@ namespace StereoSplitter
                             full2.Save("runnote-full.png", System.Drawing.Imaging.ImageFormat.Png);
                         }
                         Console.Out.WriteLine("RUNNOTE-FULL -> runnote-full.png");
+
+                    // 跑马灯断言: 塞进 80px 窄条 → 控件占满整条 + 滚动钟启动;
+                    // 隔 300ms 两帧差分 >0 证明真的在滚 (静止贴图恒为 0)
+                    ((RunNoteLabel)lblM).PlaceIn(new Rectangle(200, 151, 80, 20));
+                    Application.DoEvents();
+                    var mq = (System.Windows.Forms.Timer)Field(lblM, "marquee");
+                    using (var nf1 = new Bitmap(80, 20))
+                    using (var nf2 = new Bitmap(80, 20))
+                    {
+                        lblM.DrawToBitmap(nf1, new Rectangle(0, 0, 80, 20));
+                        System.Threading.Thread.Sleep(300);
+                        for (int k = 0; k < 10; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
+                        lblM.DrawToBitmap(nf2, new Rectangle(0, 0, 80, 20));
+                        int d = 0;
+                        for (int yy = 0; yy < 20; yy++) for (int xx = 0; xx < 80; xx++)
+                            if (nf1.GetPixel(xx, yy) != nf2.GetPixel(xx, yy)) d++;
+                        Console.Out.WriteLine("MARQUEE narrow W=" + lblM.Width + " scrollTimer=" + (mq != null && mq.Enabled)
+                            + " diff=" + d + " (0=静止贴图, >0=在滚)");
+                    }
+                    ((RunNoteLabel)lblM).PlaceIn(new Rectangle(191, 151, 258, 20));   // 还原宽档
+                    Application.DoEvents();
+
                     }
 
                     bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);

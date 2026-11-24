@@ -26,7 +26,8 @@ namespace StereoSplitter
         bool normalizing;        // 合并/行数校正期间屏蔽卡片事件重入
         FlowLayoutPanel cardHost;
         FlowLayoutPanel flwSpecChannels;
-        Label lblRunState;       // 规格行的运行状态字 (启动中…/运行中/正在停止…/启动失败), 空闲态隐藏
+        RunNoteLabel lblRunState;   // 规格行的运行状态字 (启动中…/运行中/正在停止…/启动失败), 空闲态隐藏;
+                                    // 超宽时占满空地滚动 (见 RunNoteLabel)
         bool fittingWidths;      // FitCardWidths 重入保护
         bool syncDictWarned;     // SyncSettingsDict 控件读取失败只提示一次
         int gridLogCols = -1;    // 上次记过日志的列数 (只在列数变化时打, 拖动窗口不刷屏)
@@ -467,14 +468,9 @@ namespace StereoSplitter
             // 运行状态字 (用户指定: 开始分流后状态显示在声道标注那一行): 规格下拉右侧,
             // 只有链路在动作 (启动中/运行中/正在停止/启动失败) 时才出现 —— 按钮图标化了,
             // "现在是什么状态"这半句话由这行字补上, 颜色与按钮图形同一支 (见 UpdateRunStateLabel)。
+            // 自绘控件 (RunNoteLabel): 放得下居中, 放不下占满空地滚动 —— Label 只有截断。
             // 位置由 LayoutTopRows 重算 (跟规格下拉的右缘走), 标注的居中范围也让给它 (CenterSpecBadges)。
-            lblRunState = new Label
-            {
-                Text = "运行中",
-                AutoSize = true,
-                Visible = false,
-                Location = new Point(100, 120)
-            };
+            lblRunState = new RunNoteLabel { Text = "运行中" };
             // 「添加设备」: 文字按钮, 大小与规格下拉一致 (76×30), 同一套描边样式 ——
             // 点开后选设备/负责声道再建卡片 (卡片构造即带默认选择), 按钮本身只负责加。
             // 贴右缘, 具体 Left 由 LayoutTopRows 按面板宽度重算 (这里只是构造期初值)。
@@ -1333,16 +1329,15 @@ namespace StereoSplitter
             PlaceRunStateLabel();   // 与声道标注同一个居中规则: 换的只是内容, 位置语言不变
         }
 
-        /// <summary>状态字落位: 在「规格下拉」与「添加设备」之间的空地里水平居中, 与声道标注
-        /// 同一条居中规则 (见 CenterSpecBadges), 垂直与下拉同一中线。窗口缩放时 LayoutTopRows
-        /// 也会调它 —— 标注和状态字用的是同一块空地, 谁在场谁占。</summary>
+        /// <summary>状态字落位: 交给 <see cref="RunNoteLabel.PlaceIn"/> —— 放得下按文字宽
+        /// 居中于空地 (与声道标注同一条居中语言), 放不下占满整块空地滚动。窗口缩放时
+        /// LayoutTopRows 也会调它 —— 标注和状态字用的是同一块空地, 谁在场谁占。</summary>
         void PlaceRunStateLabel()
         {
             if (lblRunState == null) return;
             int lb = cmbSpec.Right + Dpi.S(8);
             int rb = btnAddOutput.Left - Dpi.S(8);
-            lblRunState.Left = lb + Math.Max(0, (rb - lb - lblRunState.Width) / 2);
-            lblRunState.Top = cmbSpec.Top + (cmbSpec.Height - lblRunState.Height) / 2;
+            lblRunState.PlaceIn(new Rectangle(lb, cmbSpec.Top, Math.Max(0, rb - lb), cmbSpec.Height));
         }
 
         // 运行期事件插播的两档配色: 事件是"过程信息"不是"状态", 都比"运行中"的红退一档,
