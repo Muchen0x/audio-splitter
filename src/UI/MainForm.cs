@@ -341,7 +341,7 @@ namespace StereoSplitter
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
-                SplitterWidth = Dpi.S(12),
+                SplitterWidth = Dpi.S(10),
                 BackColor = Color.FromArgb(25, 25, 25),
                 FixedPanel = FixedPanel.Panel2,
                 Panel1MinSize = 0,
@@ -931,8 +931,9 @@ namespace StereoSplitter
         /// 面板朝缝隙一侧的圆角 (用户参考图): 上面板 (Panel1) 下缘两角、下面板 (Panel2) 上缘
         /// 两角, 各画一块"缝隙色补丁"盖出圆角轮廓 —— 补丁 = 方角块与四分之一圆盘之差。
         /// <para>挂在面板自己的 Paint 上: 面板先铺底色, 补丁随后盖角; 子控件 (日志标题行、
-        /// 卡片) 晚于补丁绘制, 不会被圆角裁掉。半径 10 (设计px): 参考图 R:缝 ≈ 20:24,
-        /// 缝宽 12 → 10。</para>
+        /// 卡片) 晚于补丁绘制, 不会被圆角裁掉。半径取 <see cref="WindowCornerRadiusPx"/>
+        /// (8 物理像素) —— 与窗口的 Win11 系统圆角一致 (用户要求"圆角与窗口一致");
+        /// 面板 Paint 的坐标就是物理像素, 与窗口圆角同一把尺子, 不走 Dpi.S。</para>
         /// </summary>
         void PaintPanelCornerSeam(object sender, PaintEventArgs e)
         {
@@ -940,7 +941,7 @@ namespace StereoSplitter
             SplitterPanel sp = sender as SplitterPanel;
             if (sp == null) return;
             bool bottom = sp == splitContainer.Panel1;      // Panel1 = 下缘两角, Panel2 = 上缘两角
-            float W = sp.Width, H = sp.Height, R = Dpi.S(10);
+            float W = sp.Width, H = sp.Height, R = WindowCornerRadiusPx;
             if (W < R * 2 || H < R) return;
             e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             using (var b = new SolidBrush(splitContainer.BackColor))
@@ -1174,6 +1175,14 @@ namespace StereoSplitter
 
         [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
         static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+        /// <summary>
+        /// 窗口的圆角半径 (物理像素): Win11 系统圆角固定 8 物理像素、**不随 DPI 缩放**
+        /// (ApplyWindowFrame 里 DWMWA_WINDOW_CORNER_PREFERENCE=2 交给系统画的就是它)。
+        /// 面板角补丁 (PaintPanelCornerSeam) 直接拿它用 —— 面板 Paint 的坐标本身就是
+        /// 物理像素 (bounds 全是 Dpi.S 过的设备值), 所以两边同一把尺子, 圆角才一致。
+        /// </summary>
+        const float WindowCornerRadiusPx = 8f;
 
         // —— 第 998 行起: 窗口几何的三处接管 ——
         [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]

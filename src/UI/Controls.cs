@@ -1242,8 +1242,9 @@ namespace StereoSplitter
         /// <summary>
         /// 分隔条: 深色缝隙 + 缝隙正中的悬浮圆角条 (用户参考图)。
         /// <para>Back色 = 缝隙 (深 #191919), 由 base.OnPaint 铺; 这里再叠一枚胶囊圆角条
-        /// —— 高 4 设计px、宽约 30% 容器宽、水平居中、色 #8C8C8C, 两端全圆
-        /// (半径 = 半高)。缝隙与条的配色直接取自用户给的参考图。</para>
+        /// —— 高 3 设计px、宽约 30% 容器宽、水平居中、色 #8C8C8C, 两端全圆
+        /// (半径 = 半高)。缝隙与条的配色直接取自用户给的参考图; 条高由 4 收到 3
+        /// (用户反馈"太粗" —— 150% 缩放下 6 物理像素比系统滚动条拇指条还粗)。</para>
         /// <para>日志面板整体收起 (Panel2Collapsed) 时 SplitterRectangle 为空, 自然不画。</para>
         /// </summary>
         protected override void OnPaint(PaintEventArgs e)
@@ -1251,7 +1252,7 @@ namespace StereoSplitter
             base.OnPaint(e);
             Rectangle sr = SplitterRectangle;
             if (sr.Height <= 0 || sr.Width <= 0) return;
-            float bh = Dpi.S(4);
+            float bh = Dpi.S(3);
             float bw = Width * 0.3f;
             float bx = (Width - bw) / 2f;
             float by = sr.Top + (sr.Height - bh) / 2f;
