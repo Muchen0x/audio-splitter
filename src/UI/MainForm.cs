@@ -26,6 +26,7 @@ namespace StereoSplitter
         bool normalizing;        // 合并/行数校正期间屏蔽卡片事件重入
         FlowLayoutPanel cardHost;
         FlowLayoutPanel flwSpecChannels;
+        Label lblRunState;       // 规格行的运行状态字 (启动中…/运行中/正在停止…/启动失败), 空闲态隐藏
         bool fittingWidths;      // FitCardWidths 重入保护
         bool syncDictWarned;     // SyncSettingsDict 控件读取失败只提示一次
         int gridLogCols = -1;    // 上次记过日志的列数 (只在列数变化时打, 拖动窗口不刷屏)
@@ -462,6 +463,17 @@ namespace StereoSplitter
             };
             cmbSpec.Items.AddRange(new object[] { "单声道", "立体声", "2.1", "四声道", "5.1" });
             cmbSpec.SelectedIndex = 1;
+            // 运行状态字 (用户指定: 开始分流后状态显示在声道标注那一行): 规格下拉右侧,
+            // 只有链路在动作 (启动中/运行中/正在停止/启动失败) 时才出现 —— 按钮图标化了,
+            // "现在是什么状态"这半句话由这行字补上, 颜色与按钮图形同一支 (见 UpdateRunStateLabel)。
+            // 位置由 LayoutTopRows 重算 (跟规格下拉的右缘走), 标注的居中范围也让给它 (CenterSpecBadges)。
+            lblRunState = new Label
+            {
+                Text = "运行中",
+                AutoSize = true,
+                Visible = false,
+                Location = new Point(100, 120)
+            };
             // 「添加设备」: 文字按钮, 大小与规格下拉一致 (76×30), 同一套描边样式 ——
             // 点开后选设备/负责声道再建卡片 (卡片构造即带默认选择), 按钮本身只负责加。
             // 贴右缘, 具体 Left 由 LayoutTopRows 按面板宽度重算 (这里只是构造期初值)。
@@ -581,7 +593,7 @@ namespace StereoSplitter
 
             // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
             // 都在设置页里 (控件由本类持有, 由 SettingsForm 搬入搬出)。
-            splitContainer.Panel1.Controls.AddRange(new Control[] { captureShell, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { captureShell, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, lblRunState, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterShell, lblWaterSec, btnClearLog, txtLog });
 
             // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。
@@ -1206,6 +1218,7 @@ namespace StereoSplitter
 
             running = (s == AppState.Running);
             UpdateStartButton(s);
+            UpdateRunStateLabel(s);
             ApplyUiLock();
 
             // 数值标签: 仅分流运行中(双向绑定生效)为黑, 其余灰色表示无效
@@ -1265,6 +1278,57 @@ namespace StereoSplitter
         void SetStartTint(Color c)
         {
             btnStart.BeginTint(c);
+        }
+
+        /// <summary>
+        /// 规格行的运行状态字 (用户指定: 开始分流后**替换掉**声道标注)。链路在途时声道标注
+        /// 整个让位 —— 那一行的信息重点变成了"链路现在在干什么", 标注在停止后原样回来
+        /// (FlowLayoutPanel 只是隐藏, 内容不重建)。四个在途状态各一行, 颜色与按钮图形同一支:
+        /// <list type="bullet">
+        /// <item>启动中… / 正在停止…: 蓝灰 / 浅红 (与图标同色)</item>
+        /// <item>运行中: 红 —— 与 ■ 图标呼应</item>
+        /// <item>启动失败: 浅红 + 指路日志 (按钮此刻已回到蓝色可点态)</item>
+        /// </list>
+        /// 空闲态 (就绪/已停止) 隐藏状态字、恢复标注。
+        /// </summary>
+        void UpdateRunStateLabel(AppState s)
+        {
+            if (lblRunState == null) return;
+            string txt; Color c; bool show = true;
+            switch (s)
+            {
+                case AppState.Starting: txt = "启动中…"; c = Color.FromArgb(0x47, 0x68, 0x8C); break;
+                case AppState.Running: txt = "运行中"; c = Color.FromArgb(0xC4, 0x2B, 0x1C); break;
+                case AppState.Stopping: txt = "正在停止…"; c = Color.FromArgb(0xB4, 0x50, 0x4A); break;
+                case AppState.Failed: txt = "启动失败（见日志）"; c = Color.FromArgb(0xB4, 0x50, 0x4A); break;
+                default: show = false; txt = ""; c = Color.Gray; break;
+            }
+            if (!show)
+            {
+                if (lblRunState.Visible)
+                {
+                    lblRunState.Visible = false;
+                    if (flwSpecChannels != null) flwSpecChannels.Visible = true;   // 标注原样回来 (内容一直都在, 只是藏了)
+                }
+                return;
+            }
+            lblRunState.Text = txt;
+            lblRunState.ForeColor = c;
+            if (flwSpecChannels != null && flwSpecChannels.Visible) flwSpecChannels.Visible = false;
+            if (!lblRunState.Visible) lblRunState.Visible = true;
+            PlaceRunStateLabel();   // 与声道标注同一个居中规则: 换的只是内容, 位置语言不变
+        }
+
+        /// <summary>状态字落位: 在「规格下拉」与「添加设备」之间的空地里水平居中, 与声道标注
+        /// 同一条居中规则 (见 CenterSpecBadges), 垂直与下拉同一中线。窗口缩放时 LayoutTopRows
+        /// 也会调它 —— 标注和状态字用的是同一块空地, 谁在场谁占。</summary>
+        void PlaceRunStateLabel()
+        {
+            if (lblRunState == null) return;
+            int lb = cmbSpec.Right + Dpi.S(8);
+            int rb = btnAddOutput.Left - Dpi.S(8);
+            lblRunState.Left = lb + Math.Max(0, (rb - lb - lblRunState.Width) / 2);
+            lblRunState.Top = cmbSpec.Top + (cmbSpec.Height - lblRunState.Height) / 2;
         }
 
         /// <summary>

@@ -521,10 +521,12 @@ namespace StereoSplitter
             captureShell.Height = OutputCardControl.RowControlHeight;
             captureShell.Width = Math.Max(Dpi.S(160), btnStart.Left - gap - captureShell.Left);
 
-            // —— 第 2 行: [规格下拉] 贴左, [添加设备] 贴右 ——
+            // —— 第 2 行: [规格下拉] 贴左, [添加设备] 贴右, 中间空地归「声道标注」或「运行状态字」 ——
             // 规格标签已删, 下拉自己说明是什么: 它当行首读起来才顺, 空出来的右端留给「添加设备」。
+            // 标注与状态字**互相替换** (用户指定: 开始分流后状态字替换掉标注), 谁在场谁居中。
             cmbSpec.Left = leftEdge;
             btnAddOutput.Left = Math.Max(cmbSpec.Right + gap, panelW - rightEdge - btnAddOutput.Width);
+            if (lblRunState != null && lblRunState.Visible) PlaceRunStateLabel();
 
             // —— 第 3 行 (声道名 + 角标): 单独一行水平居中 ——
             CenterSpecBadges();
@@ -1253,6 +1255,7 @@ namespace StereoSplitter
             int gap = Dpi.S(8);
             if (cmbSpec != null && cmbSpec.Parent == flwSpecChannels.Parent)
                 leftBound = Math.Max(leftBound, cmbSpec.Right + gap);
+            // 运行状态字在场时整条标注都是隐藏的 (互相替换), 两者不会争同一块空地
             if (btnAddOutput != null && btnAddOutput.Parent == flwSpecChannels.Parent)
                 rightBound = Math.Min(rightBound, btnAddOutput.Left - gap);
 

@@ -550,6 +550,7 @@ namespace StereoSplitter
 
                 MethodInfo setState = typeof(MainForm).GetMethod("SetAppState", BindingFlags.Instance | BindingFlags.NonPublic);
                 StartButton btn = Field(sf2, "btnStart") as StartButton;
+                Label runLbl = Field(sf2, "lblRunState") as Label;
                 if (setState == null || btn == null) { Console.Out.WriteLine("STATES unavailable"); return; }
 
                 string path = args.Length >= 2 ? args[1] : "states.png";
@@ -572,7 +573,8 @@ namespace StereoSplitter
                         Console.Out.WriteLine("STATE " + AppStateMachine.Text(states[i])
                             + " text='" + btn.Text + "' enabled=" + btn.Enabled
                             + " mode=" + btn.Mode
-                            + " tint=" + btn.Tint.R + "," + btn.Tint.G + "," + btn.Tint.B);
+                            + " tint=" + btn.Tint.R + "," + btn.Tint.G + "," + btn.Tint.B
+                            + " runLabel=" + (runLbl == null ? "(null)" : runLbl.Visible ? "'" + runLbl.Text + "'@" + runLbl.Left + "," + runLbl.Top : "(hidden)"));
                         using (var one = new Bitmap(bw, bh))
                         {
                             // 先铺白: RoundButton 用 Region 裁了圆角, 四个角不在绘制区内,
@@ -597,6 +599,16 @@ namespace StereoSplitter
                     for (int k = 0; k < 24; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
                     byte[, ,] f4 = ButtonGlyphZone(btn);
                     Console.Out.WriteLine("ANIM pulse   diff=" + ZoneDiff(f3, f4) + " (0=静止贴图, >0=呼吸点在动)");
+
+                    // 规格行实拍 (运行中): 状态字替换声道标注后的样子
+                    // DrawToBitmap 在高 DPI 下会把内容按 DPI 比例画进同样大小的位图 (偏移随之放大),
+                    // 所以整窗落盘、由外部按像素找红字裁剪, 不在探针里猜偏移
+                    using (var full = new Bitmap(sf2.Width, sf2.Height))
+                    {
+                        sf2.DrawToBitmap(full, new Rectangle(0, 0, sf2.Width, sf2.Height));
+                        full.Save("runstate-full.png", System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    Console.Out.WriteLine("RUNSTATE-FULL -> runstate-full.png");
 
                     bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
                 }
