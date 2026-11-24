@@ -85,14 +85,32 @@ namespace StereoSplitter
                     {
                         openDD.Invoke(cmbDefault, null);
                         for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                        // 悬停实拍: 光标摆到第 2 行上再截 (用户要求下拉行悬停 = 菜单行同款圆角垫)
+                        var popupDD = cmbDefault.GetType().GetField("popup", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cmbDefault) as ToolStripDropDown;
+                        Point oldCurDD = Cursor.Position;
+                        Control listDD = null;
+                        if (popupDD != null)
+                        {
+                            var fldList = popupDD.GetType().GetField("List",
+                                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                            if (fldList != null) listDD = fldList.GetValue(popupDD) as Control;
+                        }
+                        if (listDD != null)
+                        {
+                            int itemH = (int)cmbDefault.GetType().GetProperty("ItemHeight").GetValue(cmbDefault, null);
+                            Cursor.Position = listDD.PointToScreen(new Point(listDD.Width / 2, itemH + itemH / 2));
+                            for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                        }
                         using (var bmp = new Bitmap(400, 260))
                         {
                             using (var g = Graphics.FromImage(bmp))
                                 g.CopyFromScreen(cmbDefault.PointToScreen(new Point(-20, -20)), Point.Empty, bmp.Size);
                             bmp.Save("dropdown-live.png", System.Drawing.Imaging.ImageFormat.Png);
                         }
-                        Console.Out.WriteLine("DROPDOWN-SHOT -> dropdown-live.png");
-                        var popupCtl = cmbDefault.GetType().GetField("popup", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cmbDefault) as ToolStripDropDown;
+                        Console.Out.WriteLine("DROPDOWN-SHOT -> dropdown-live.png  hoverList=" + (listDD != null));
+                        if (listDD != null) Cursor.Position = oldCurDD;
+                        for (int i = 0; i < 3; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                        var popupCtl = popupDD;
                         if (popupCtl != null) sampleEdges(popupCtl, "comboPopup");
                         else Console.Out.WriteLine("EDGE comboPopup: field null");
                         if (closeDD != null) closeDD.Invoke(cmbDefault, null);

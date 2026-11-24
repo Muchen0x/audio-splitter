@@ -1262,8 +1262,7 @@ namespace StereoSplitter
                             : i == hot ? RoundedCombo.RowHover
                             : Color.White;
                 if (back != Color.White)
-                    using (var b2 = new SolidBrush(back))
-                        g.FillRectangle(b2, row);
+                    DrawRowPad(g, r * rowH, rowH, back);
 
                 bool gray = !Owner.Enabled
                     || (Owner.ItemGrayedFilter != null && Owner.ItemGrayedFilter(i));
@@ -1277,6 +1276,24 @@ namespace StereoSplitter
             }
 
             DrawScrollBar(g, count, visible);
+        }
+
+        /// <summary>
+        /// 行高亮垫 (用户要求: 下拉选择框的悬停也做成菜单行那款)。
+        /// <para>原来是贴满整行的直角色块, 与"更多"弹层菜单行 / 档位子菜单的圆角悬停垫
+        /// 观感不一致。现在同一套: 四边内缩 2px 的圆角垫, 半径同 MenuRow 的
+        /// 6×(行高/34) 比例; 悬停 RowHover / 选中 RowSelected 色值都不变, 只换形状。
+        /// 列表自身已在弹层内缩 2px, 再缩 2px 垫不贴弹层描边。</para>
+        /// </summary>
+        void DrawRowPad(Graphics g, float y, float h, Color back)
+        {
+            float pad = Dpi.S(2);
+            float radius = Math.Min(6f * h / 34f, (h - pad * 2) / 2f);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var path = UiDraw.RoundRect(
+                new RectangleF(pad, y + pad, Width - pad * 2, h - pad * 2), radius))
+            using (var b = new SolidBrush(back))
+                g.FillPath(b, path);
         }
 
         /// <summary>
