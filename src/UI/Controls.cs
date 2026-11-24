@@ -153,7 +153,7 @@ namespace StereoSplitter
     }
 
     /// <summary><see cref="RoundButton"/> 可以画的自绘符号 (不依赖字体)。</summary>
-    enum ButtonGlyph { None, Plus, Nut, SquarePlus, Cross, Refresh }
+    enum ButtonGlyph { None, Plus, Nut, SquarePlus, Cross, Refresh, TriangleDown, TriangleRight }
 
     /// <summary>
     /// 自绘圆角矩形按钮。
@@ -1381,6 +1381,8 @@ namespace StereoSplitter
         static readonly Color PressBack = Color.FromArgb(216, 216, 216);
 
         bool hot, down;
+        /// <summary>焦点提示是否该显示 (键盘进来才显示, 鼠标点进来不显示)。与 RoundedCombo 同一套判定。</summary>
+        bool keyboardFocusCues = true;
         ButtonGlyph glyph = ButtonGlyph.Nut;
 
         /// <summary>
@@ -1410,9 +1412,64 @@ namespace StereoSplitter
             TabStop = false;
         }
 
+        // 自绘 Control 默认把空格当"滚动/默认按钮"处理, 拿不到 KeyDown; 声明成输入键才行。
+        // 只对 TabStop 的实例有意义 (齿轮/× 都是 TabStop=false, 不受影响)。
+        protected override bool IsInputKey(Keys keyData)
+        {
+            Keys k = keyData & Keys.KeyCode;
+            if (k == Keys.Space || k == Keys.Enter) return true;
+            return base.IsInputKey(keyData);
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if ((e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) && Enabled)
+            {
+                down = true;                 // 与鼠标按下同一套按下态, 反馈一致
+                Invalidate();
+                e.Handled = true;
+            }
+            base.OnKeyDown(e);
+        }
+
+        protected override void OnKeyUp(KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter)
+            {
+                if (down)
+                {
+                    down = false;
+                    Invalidate();
+                    OnClick(EventArgs.Empty);
+                }
+                e.Handled = true;
+            }
+            base.OnKeyUp(e);
+        }
+
         protected override void OnMouseEnter(EventArgs e) { hot = true; Invalidate(); base.OnMouseEnter(e); }
         protected override void OnMouseLeave(EventArgs e) { hot = false; down = false; Invalidate(); base.OnMouseLeave(e); }
-        protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { down = true; Invalidate(); } base.OnMouseDown(e); }
+
+        protected override void OnGotFocus(EventArgs e)
+        {
+            // 到这一刻左键还按着 → 是"点进来"的, 别画焦点框; 键已松开 → Tab 进来的, 要画
+            keyboardFocusCues = Control.MouseButtons == MouseButtons.None;
+            Invalidate();
+            base.OnGotFocus(e);
+        }
+
+        protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                down = true;
+                // 焦点已经在本控件上时 (Tab 进来再点鼠标) 不会再有 GotFocus, 这里必须自己关掉焦点框
+                keyboardFocusCues = false;
+                Invalidate();
+            }
+            base.OnMouseDown(e);
+        }
         protected override void OnMouseUp(MouseEventArgs e) { if (down) { down = false; Invalidate(); } base.OnMouseUp(e); }
         protected override void OnEnabledChanged(EventArgs e) { if (!Enabled) { hot = false; down = false; } Invalidate(); base.OnEnabledChanged(e); }
 
@@ -1467,6 +1524,22 @@ namespace StereoSplitter
                     }
                     break;
 
+                case ButtonGlyph.TriangleDown:
+                case ButtonGlyph.TriangleRight:
+                    // 多声道行的折叠标记。用**实心**三角而不是描边钩:
+                    // 延迟框右缘就是它自带的上下微调箭头 (细描边), 旁边再来一个描边的 "v"
+                    // 会被读成那个微调器的第三个箭头 (试过, 3 倍放大下确实分不清)。
+                    // 实心块在整排描边图标里一眼就是"另一种东西"。
+                    {
+                        bool rightward = glyph == ButtonGlyph.TriangleRight;
+                        PointF[] tri = rightward
+                            ? new[] { new PointF(cx - 2.2f, cy - 4.2f), new PointF(cx - 2.2f, cy + 4.2f), new PointF(cx + 3.4f, cy) }
+                            : new[] { new PointF(cx - 4.2f, cy - 2.2f), new PointF(cx + 4.2f, cy - 2.2f), new PointF(cx, cy + 3.4f) };
+                        using (var b = new SolidBrush(icon))
+                            g.FillPolygon(b, tri);
+                    }
+                    break;
+
                 case ButtonGlyph.Refresh:
                     // 「刷新设备」: 圆环 + 右上角实心直角旗标 (照用户给的 SVG 描的)。
                     // 原图 1024 视图: 圆环外径 382 内径 287 (中线 334.5, 笔宽 95.6),
@@ -1474,6 +1547,15 @@ namespace StereoSplitter
                     // 22px 下: 半径 7.18、笔宽 2.05、旗标顶点见 DrawRefresh。
                     DrawRefresh(g, cx, cy, Math.Min(Width, Height) / 22f, icon);
                     break;
+            }
+
+            // 键盘焦点: 一圈蓝色细框 (与下拉框的焦点色同一支蓝)。只在键盘进来时画 ——
+            // 鼠标点一下就把蓝框挂在图标上, 看着像"没取消的选中态"
+            if (Focused && keyboardFocusCues && Enabled)
+            {
+                using (var path = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), 4))
+                using (var pen = new Pen(Color.FromArgb(0, 120, 215), 1.4f))
+                    g.DrawPath(pen, path);
             }
 
             // 最后补画父容器外框: 既盖住按钮方角露到父容器圆角外的那点白, 也把被压住的

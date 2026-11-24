@@ -795,6 +795,101 @@ namespace StereoSplitter
                 return;
             }
 
+            // 多声道行的收起/展开: 点一下折叠键, 打印两态几何 + 各存一张实屏图。
+            // 状态是"看的方式", 没有配置可以断言 —— 只能看行是不是真的藏了、卡片高度有没有跟着收。
+            if (args.Length >= 1 && args[0] == "toggle")
+            {
+                var sf = new MainForm();
+                sf.StartPosition = FormStartPosition.Manual;
+                sf.Location = new Point(40, 40);
+                sf.Size = new Size(700, 800);
+                sf.TopMost = true;
+                sf.Show();
+                sf.Activate();
+                Pump();
+
+                var host = Field(sf, "cardHost") as Control;
+                OutputCardControl card = null;
+                if (host != null)
+                    foreach (Control c in host.Controls)
+                    {
+                        var oc = c as OutputCardControl;
+                        if (oc != null) { card = oc; break; }
+                    }
+                if (card == null) { Console.Out.WriteLine("TOGGLE no card"); sf.Close(); return; }
+
+                Action<string> dump = tag =>
+                {
+                    Console.Out.WriteLine("TOGGLE " + tag
+                        + " rowsVisible=" + (card.ChildRowCount == 0 ? "n/a" : (card.RowsVisible ? "yes" : "no"))
+                        + " cardH=" + card.Height
+                        + " shell=" + card.nudShell.Bounds
+                        + " ch=" + card.cmbChannel.Bounds
+                        + " dev=" + card.cmbDevice.Bounds
+                        + " tgl=" + card.btnRowsToggle.Bounds
+                        + " x=" + card.btnRemove.Bounds
+                        + " accessible='" + card.btnRowsToggle.AccessibleName + "'/'"
+                        + card.btnRowsToggle.AccessibleDescription + "'");
+                };
+
+                Action<string> shot = path =>
+                {
+                    for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+                    using (var bmp = new Bitmap(sf.Width, sf.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(sf.Location, Point.Empty, sf.Size);
+                        bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                };
+
+                dump("expanded");
+                shot("toggle-expanded.png");
+
+                MethodInfo click = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
+                click.Invoke(card.btnRowsToggle, new object[] { EventArgs.Empty });
+                Pump();
+                dump("collapsed");
+                shot("toggle-collapsed.png");
+
+                // 收起状态在整批重建后必须还在 (state 存在静态集合里, 靠 SetMulti 重新落到控件上)
+                MethodInfo rb = typeof(MainForm).GetMethod("RebuildCards", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (rb != null)
+                {
+                    rb.Invoke(sf, null);
+                    Pump();
+                    OutputCardControl again = null;
+                    if (host != null)
+                        foreach (Control c in host.Controls)
+                        {
+                            var oc = c as OutputCardControl;
+                            if (oc != null) { again = oc; break; }
+                        }
+                    if (again != null)
+                    {
+                        card = again;
+                        dump("after-rebuild");
+                    }
+                }
+
+
+                // 重建后旧控件已被 Dispose, 下面的点击必须落在新卡片上 (card 已在上面换成 again)
+
+                // 再点一次: 必须回到原样 (状态是二值的, 不能点两次卡在中间)
+                click.Invoke(card.btnRowsToggle, new object[] { EventArgs.Empty });
+                Pump();
+                dump("expanded2");
+
+                // 键盘焦点: Tab 进来要能看到焦点框 (AccessibleRole=PushButton 也要求有可见焦点)
+                card.btnRowsToggle.Focus();
+                Pump();
+                Console.Out.WriteLine("TOGGLE focus focused=" + card.btnRowsToggle.Focused
+                    + " role=" + card.btnRowsToggle.AccessibleRole);
+                shot("toggle-focus.png");
+                sf.Close();
+                return;
+            }
+
             // 滚动复现: 卡片列表滚动后延迟框出现"重影"(文字/箭头被画两次)。
             // 用 BufferedFlowPanel + 8 张真卡片模拟, 逐步滚动并逐张截图, 看是哪一步开始糊。
             if (args.Length >= 1 && args[0] == "scroll")

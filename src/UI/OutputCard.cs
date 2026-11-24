@@ -26,6 +26,87 @@ namespace StereoSplitter
         /// <summary>喇叭按钮: 该设备的静音开关 (原「静音」勾选框, 点图标即切换)。</summary>
         public readonly SpeakerButton btnMute;
         public readonly GearButton btnRemove;
+        /// <summary>
+        /// 多声道卡片的「声道行」收起/展开按钮 (夹在延迟壳与「×」之间, 无边框)。
+        /// <para>只有多声道卡片才有: 单声道卡片没有"下面那些行"可收。</para>
+        /// </summary>
+        public readonly GearButton btnRowsToggle;
+
+        /// <summary>
+        /// 声道行已收起的设备 id (进程内视图状态)。
+        /// <para><b>为什么不放实例字段</b>: 卡片会随结构变化整批重建 (RebuildCards), 实例字段跟着丢,
+        /// 用户收起来切一下规格又全摊开。<b>为什么不写配置</b>: 这是看的方式, 不是设置内容, 不该
+        /// 跟着设置文件在机器之间跑。</para>
+        /// </summary>
+        static readonly HashSet<string> rowsCollapsed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// 这张卡片的多声道行是否收起 (只看显示: 行里的选择/音量/延迟全都照旧生效)。
+        /// <para>单声道卡片恒为 false —— 它没有"下面的行"可收。</para>
+        /// </summary>
+        bool RowsCollapsed
+        {
+            get { return Model.Multi && rowsCollapsed.Contains(Model.DeviceId); }
+            set
+            {
+                bool now = value;
+                if (now == RowsCollapsed) return;
+                if (now) rowsCollapsed.Add(Model.DeviceId);
+                else rowsCollapsed.Remove(Model.DeviceId);
+                ApplyRowsCollapse();
+            }
+        }
+
+        /// <summary>多声道行数 (探针/自检用, 界面不直接读)。</summary>
+        internal int ChildRowCount { get { return rows.Count; } }
+
+        /// <summary>多声道行此刻是否显示 (收起时为 false, 探针用来断言状态真的落到了控件上)。</summary>
+        internal bool RowsVisible { get { return rows.Count > 0 && rows[0].Cmb.Visible; } }
+
+        /// <summary>
+        /// 按当前收起状态摆行控件的显隐与卡片高度。
+        /// <para>收起 = 那些行不显示, 卡片高度跟着回落到单声道高度 —— 只藏控件不改高度的话,
+        /// 卡片底部会留一块空白, 收起来就没意义了。行控件不销毁: 收起再展开要保住已选声道和音量。</para>
+        /// </summary>
+        void ApplyRowsCollapse()
+        {
+            bool collapsed = RowsCollapsed;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                rows[i].Cmb.Visible = !collapsed;
+                rows[i].Vol.Visible = !collapsed;
+                rows[i].Lbl.Visible = !collapsed;
+            }
+
+            int h = collapsed ? CardHeight : HeightFor(rows.Count);
+            if (Height != h)
+            {
+                // FlowLayoutPanel 按控件高度排列, 改高度后必须重排 (滚动条也会跟着显隐)
+                SuspendLayout();
+                Height = h;
+                ResumeLayout();
+            }
+
+            SyncRowsToggle();
+            LayoutControls();
+        }
+
+        /// <summary>收起按钮的图标方向 / 提示 / 无障碍描述随状态一起换 —— 三者说的必须是同一件事。</summary>
+        void SyncRowsToggle()
+        {
+            bool collapsed = RowsCollapsed;
+            // 内容在按钮**下面**, 用通用折叠符号: 摊开时朝下 (还有内容展着), 收起时朝右
+            btnRowsToggle.Glyph = collapsed ? ButtonGlyph.TriangleRight : ButtonGlyph.TriangleDown;
+            string state = collapsed ? "已收起" : "已展开";
+            // tip 在构造函数末尾才建; 卡片被重建时这里可能先被调到 —— 没有 tip 就只更新图标
+            if (tip != null) tip.SetToolTip(btnRowsToggle,
+                "多声道行" + state + "。\n点击" + (collapsed ? "展开" : "收起")
+                + "下面各物理声道的声道选择与音量条。\n"
+                + "只影响显示: 行里的声道/音量/静音照常生效, 收起后卡片会变矮。");
+            // 无障碍: 读屏软件读的是这里, 状态和动作都要说清楚 (不依赖箭头形状)
+            btnRowsToggle.AccessibleName = "多声道行";
+            btnRowsToggle.AccessibleDescription = "多声道行" + state + "，按下可" + (collapsed ? "展开" : "收起");
+        }
 
         /// <summary>多声道行: 每个物理声道一行 (声道下拉 + 音量条 + 百分比)。</summary>
         sealed class SlotRow
@@ -224,9 +305,20 @@ namespace StereoSplitter
                 TextAlign = ContentAlignment.MiddleLeft
             };
 
+            // 多声道行的收起/展开: 无边框小按钮 (与「×」同一套 GearButton), 夹在延迟壳与「×」之间。
+            // TabStop = true: 键盘用户要能走到它; Space/Enter 在 GearButton 里接成点击。
+            btnRowsToggle = new GearButton
+            {
+                Glyph = ButtonGlyph.TriangleDown,   // 初值 = 展开态, 由 SyncRowsToggle 校正
+                Size = new Size(20, 20),
+                TabStop = true,
+                AccessibleRole = AccessibleRole.PushButton
+            };
+            btnRowsToggle.Click += (s, e) => RowsCollapsed = !RowsCollapsed;
+
             Controls.AddRange(new Control[]
             {
-                cmbDevice, cmbChannel, nudShell, btnRemove,
+                cmbDevice, cmbChannel, nudShell, btnRowsToggle, btnRemove,
                 btnMute, volTrack, lblVol
             });
 
@@ -295,6 +387,7 @@ namespace StereoSplitter
             tip.SetToolTip(volTrack, "主音量。\n单声道卡片: 写该设备的端点音量(与系统音量条双向同步, 停止时还原)。\n多声道卡片: 同样是设备端点音量; 各声道的微调在下方各行。\n双击百分比可复位 100%。\n运行中可调。");
             tip.SetToolTip(btnMute, "点击静音 / 取消静音这台设备 (写设备端点 Mute, 停止时还原)。\n音量拖到 0 会自动静音, 拖回去自动恢复。\n运行中可调。");
             tip.SetToolTip(btnRemove, "移除这张输出卡片 (整台设备)。\n运行中不可移除（会改变链路），需先停止分流。");
+            SyncRowsToggle();       // 初始图标方向 / 提示 / 无障碍描述 (要先有 tip 才能设)
         }
 
         /// <summary>
@@ -328,16 +421,10 @@ namespace StereoSplitter
             while (rows.Count < want) AddRow(rows.Count);
             foreach (var r in rows) FillSlotChannels(r, channels);
 
-            int h = HeightFor(rows.Count);
-            if (Height != h)
-            {
-                // FlowLayoutPanel 按控件高度排列, 改高度后必须重排
-                SuspendLayout();
-                Height = h;
-                LayoutControls();
-                ResumeLayout();
-            }
-            LayoutControls();
+            // 高度与行的显隐一起定: 收起状态下重建 (换规格/设备) 也要保持收起, 不能弹回展开
+            SuspendLayout();
+            ApplyRowsCollapse();
+            ResumeLayout();
         }
 
         void AddRow(int index)
@@ -448,12 +535,26 @@ namespace StereoSplitter
             int row1 = pad;
             int ctrlH = RowControlHeight;
 
-            // 第一行右起排: [×] ← [延迟圆角壳(字样+数字框+箭头+ms 单位)] ← [声道], 设备下拉占满左侧。
+            // 第一行右起排: [×] ← [折叠键] ← [延迟圆角壳(字样+数字框+箭头+ms 单位)] ← [声道],
+            // 设备下拉占满左侧。
             // 「×」钉在卡片**最右上角**: (卡宽 - 键宽, 0), 两条边都直接贴卡片边缘, 不参与四周留白。
             // 它不受 pad 影响 —— 以后改留白、加内容都不会把这个键推离角上 (用户要求)。
             // 卡片那一段边框由它自己补画 (见构造函数里的 OwnerFrame)。
             btnRemove.Location = new Point(w - btnRemove.Width, 0);
-            nudShell.Location = new Point(btnRemove.Left - Dpi.S(8) - nudShell.Width, row1);
+
+            // 折叠键: 夹在「延迟」壳与「×」之间, 两者各留同一个 5px 缝; 20 高的键在第一行 26 高里
+            // 垂直居中, 与延迟壳同一条中线 —— 横向夹在中间、纵向对齐, 看着才是"这一组"的成员。
+            // 只有多声道卡片有它 (单声道没有"下面的行"可收), 单声道时这块位置直接还回给延迟壳。
+            int tglGap = Dpi.S(5);
+            int tglX = btnRemove.Left - tglGap - btnRowsToggle.Width;
+            btnRowsToggle.Location = new Point(tglX, row1 + (ctrlH - btnRowsToggle.Height) / 2);
+
+            bool multi = rows.Count > 0;
+            btnRowsToggle.Visible = multi;
+            // 单声道时这块位置直接还回延迟壳 (不占位): 那边没有"下面的行", 留个空档只会让人找按钮
+            int chainRight = multi ? tglX - tglGap : btnRemove.Left - Dpi.S(8);
+
+            nudShell.Location = new Point(chainRight - nudShell.Width, row1);
             cmbChannel.Location = new Point(nudShell.Left - Dpi.S(8) - cmbChannel.Width, row1);
             cmbDevice.Location = new Point(pad, row1);
             cmbDevice.Width = Math.Max(Dpi.S(90), cmbChannel.Left - Dpi.S(14));
