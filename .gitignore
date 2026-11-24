@@ -22,3 +22,9 @@ SplitterGUI.ini
 # 文档与代码审查报告: 只在本地保留, 不纳入版本库 / 不上传
 docs/
 SplitterGUI.ini.bak
+
+# uidump 截图输出 (临时验证用)
+live.png
+icons.png
+adddlg.png
+shot.png

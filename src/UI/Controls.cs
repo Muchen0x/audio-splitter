@@ -900,9 +900,10 @@ namespace StereoSplitter
         static readonly Color TextDisabled = Color.FromArgb(150, 154, 160);
         const int CornerRadius = 6;
         const int PadX = 7;          // 文字距左缘 (与 RoundedCombo.TextPadX 对齐)
-        const int GapCapInner = 5;   // 文字与数字框的间隔
-        const int GapNumUnit = 4;    // 数字与单位的间隔
-        const int GapUnitArrow = 5;  // 单位与箭头区的间隔
+        const int GapCapInner = 4;   // 文字与数字框的间隔
+        const int GapNumUnit = 3;    // 数字与单位的间隔
+        const int GapUnitArrow = 4;  // 单位与箭头区的间隔
+        const int NumPad = 4;        // 数字文字两侧的余量 (光标/边距)
         const int ArrowW = 20;       // 上下箭头区宽度
         const int SpinStrip = 16;    // 数字框内部给 (已藏) 原生按钮留的条宽, 见 Recalc
 
@@ -961,11 +962,9 @@ namespace StereoSplitter
                 if (unit != null) unit.ForeColor = inner.Enabled ? UnitColor : TextDisabled;
                 Invalidate();
             };
-            // 字体是环境继承的: 挂进父级后才定, caption 宽度跟着变, 定了之后要重排;
-            // 数值位数变化 (0→10→100→1000) 时数字区跟着伸缩, 用 BeginInvoke 避开
-            // ValueChanged 处理中途改布局的重入
+            // 字体是环境继承的: 挂进父级后才定, caption 宽度跟着变, 定了之后要重排。
+            // 数字区按最大值固定宽度 (用户指定), 不随当前值伸缩, 所以值变化不用重排
             FontChanged += (s, e) => { if (IsHandleCreated) BeginInvoke((Action)Recalc); };
-            Inner.ValueChanged += (s, e) => { if (IsHandleCreated) BeginInvoke((Action)Recalc); };
         }
 
         /// <summary>单位后缀的常态色 (与 OutputCard 行标签同色, 禁用时换灰)。</summary>
@@ -974,8 +973,8 @@ namespace StereoSplitter
         /// <summary>
         /// 按内容重排: 外壳尺寸、文字/数字框/单位/箭头区的位置一次到位。
     /// <para>顺序 (用户指定): [文字][数字][单位][上下箭头], 彼此紧靠 ——
-    /// 数字区宽度按当前值量出 (位数变了才伸缩), 数字右对齐后正好贴住单位;
-    /// 没有按最大值预留的空位, 也就没有「延迟 …… 0」那种大空隙。</para>
+    /// 数字区宽度按最大值固定量出 (用户指定「固定长度」), 无论当前值是几位数都不伸缩,
+    /// 数字右对齐后正好贴住单位。</para>
         /// </summary>
         void Recalc()
         {
@@ -987,7 +986,8 @@ namespace StereoSplitter
                 caption.Location = new Point(PadX, (Height - caption.PreferredHeight) / 2);
                 x = PadX + caption.PreferredWidth + GapCapInner;
             }
-            int numberW = TextRenderer.MeasureText(Inner.Value.ToString("0"), Inner.Font).Width + 6;
+            // 固定宽度: 按最大值量 (如延迟 0..2000 → 按 "2000" 量), 当前值是几位数都一样宽
+            int numberW = TextRenderer.MeasureText(Inner.Maximum.ToString("0"), Inner.Font).Width + NumPad;
             // 数字框窗口比文字区宽出一条 SpinStrip: 基类布局会把编辑框压到「客户区-按钮宽」,
             // 与它抢 bounds 是打不赢的 (非托管侧直接摆回来, 实测拉锯到 StackOverflow) ——
             // 干脆把这条宽度算进窗口: 编辑框正好铺到文字右缘, 数字右对齐后紧贴单位;
