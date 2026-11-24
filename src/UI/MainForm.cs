@@ -81,7 +81,12 @@ namespace StereoSplitter
         // 单实例进程退出即回收, 但"隐藏到托盘再真正退出"不该靠这个假设。
         readonly System.Collections.Generic.List<IMessageFilter> msgFilters =
             new System.Collections.Generic.List<IMessageFilter>();
-        GearButton btnSettings;            // 主面板右上角的齿轮
+        GearButton btnSettings;            // 标题栏里的齿轮 (在最小化左边)
+        // 自绘标题栏的三个窗口键。系统标题栏已收掉 (见构造函数), 这三个是它唯一的替代品。
+        CaptionButton btnMin, btnMax, btnClose;
+        Icon titleBarIcon;                 // 标题栏左侧的小图标 (16px), 由窗体图标缩放而来
+        /// <summary>标题栏高度 (设计像素)。实际高度用 <c>Padding.Top</c> —— 它已被 ScaleForm 缩放。</summary>
+        const int TitleBarDesignHeight = 32;
         SettingsForm settingsForm;         // 打开中的设置页 (null = 未打开)
         ToolTip tipTop;                    // 顶部控件提示 (需要随状态刷新设置按钮的文案)
         Infrastructure.SessionLog sessionLog;
@@ -282,6 +287,21 @@ namespace StereoSplitter
             Text = "Audio Splitter - 多路音频分流";
             // 图标: 取 exe 内嵌的 app.ico (标题栏/任务栏/托盘共用同一个)
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+
+            // —— 自绘标题栏 ——
+            // 系统标题栏是一条与内容区分色的横带 (深色主题下甚至是对比极强的黑条), 与下面浅灰的
+            // 面板分成两截。用户要"融为一体": 于是把边框收掉、客户区盖满整窗, 标题栏自己画 ——
+            // 底色与内容区同一支 SystemColors.Control, 不画分隔线, 看上去就是内容区往上多留了
+            // 一条 32px 的顶边。
+            // 窗口本身仍可拖动、可缩放、可最大化: 拖动与边缘缩放由 WndProc 的 WM_NCHITTEST 手工给出
+            // (HTCAPTION / HTLEFT…), 最大化交给系统的 WindowState (窗口带了 WS_MAXIMIZEBOX)。
+            FormBorderStyle = FormBorderStyle.None;
+            // 用**设计像素**写, ScaleForm 的 Scale() 会再乘一次因子 —— 这里若也走 Dpi.S 会双倍。
+            // 之后一律读 Padding.Top 当标题栏高度。
+            Padding = new Padding(0, TitleBarDesignHeight, 0, 0);
+            // 窗口尺寸变化时重画标题栏 (否则拉宽后标题栏右侧留一条旧底色)
+            SetStyle(ControlStyles.ResizeRedraw, true);
+
             // 窗体本身双缓冲: 缩放/拖动分隔条时背景不会先刷成白的再画控件 (整窗闪一下的来源)
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
             DoubleBuffered = true;
@@ -358,9 +378,25 @@ namespace StereoSplitter
             };
             btnRefresh.Click += (s2, e2) => OnRefreshClick();
             captureShell = new ComboButtonShell(cmbDefault, btnRefresh);
-            // 设置入口: 右上角齿轮 (位置由 LayoutTopRows 按面板宽度贴右)
-            btnSettings = new GearButton { Location = new Point(440, 8) };
+            // 设置入口: 从主面板右上角移到标题栏, 放在最小化左边 (用户指定)。
+            // GlyphScale: 标题栏里它与 10px 级的系统窗口键并排, 按原尺寸画的齿轮会大出一圈。
+            btnSettings = new GearButton
+            {
+                Glyph = ButtonGlyph.Nut,
+                Size = new Size(26, 26),
+                GlyphScale = 0.62f,
+                TabStop = true
+            };
             btnSettings.Click += (s2, e2) => OpenSettings();
+
+            // 自绘标题栏的三个窗口键: 自右向左 [×][□][—], 设置齿轮在最小化左边。
+            // (系统标题栏里塞不进自定义控件, 所以这一组只能自己画)
+            btnMin = new CaptionButton(CaptionGlyph.Minimize) { AccessibleName = "最小化" };
+            btnMin.Click += (s2, e2) => WindowState = FormWindowState.Minimized;
+            btnMax = new CaptionButton(CaptionGlyph.Maximize) { AccessibleName = "最大化" };
+            btnMax.Click += (s2, e2) => ToggleMaximize();
+            btnClose = new CaptionButton(CaptionGlyph.Close) { AccessibleName = "关闭" };
+            btnClose.Click += (s2, e2) => Close();
 
             // 消音 / 缓冲档位 / 时钟校正 / 关闭行为 / 延迟校准 都已移入设置页:
             // 控件照旧在这里创建 (事件与持久化路径全留在 MainForm), 但不加入主面板,
@@ -544,7 +580,7 @@ namespace StereoSplitter
 
             // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
             // 都在设置页里 (控件由本类持有, 由 SettingsForm 搬入搬出)。
-            splitContainer.Panel1.Controls.AddRange(new Control[] { captureShell, btnSettings, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { captureShell, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterShell, lblWaterSec, btnClearLog, txtLog });
 
             // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。
@@ -714,6 +750,17 @@ namespace StereoSplitter
             sinkRetryTimer = new System.Windows.Forms.Timer { Interval = 5000 };
             sinkRetryTimer.Tick += (s, e) => SinkRetryTick();
 
+            // —— 标题栏的四个键挂在窗体上 (不在任何面板里): 它们的坐标系是窗体客户区 ——
+            // 最后加 = z-order 最上, 不会被 Dock Fill 的 splitContainer 盖住。
+            Controls.AddRange(new Control[] { btnMin, btnMax, btnClose, btnSettings });
+
+            // 标题栏左侧的小图标: 由窗体图标缩到 16 设计像素 (DrawIcon 不缩放, 得自己生成一个尺寸)
+            try
+            {
+                if (Icon != null) titleBarIcon = new Icon(Icon, Dpi.S(16), Dpi.S(16));
+            }
+            catch { }
+
             Load += MainForm_Load;
             FormClosing += MainForm_FormClosing;
         }
@@ -729,6 +776,209 @@ namespace StereoSplitter
         {
             Dpi.ScaleForm(this);
             base.OnLoad(e);
+            // 缩放之后才知道标题栏的实际高度与按钮尺寸 —— 位置按当前客户区排一次
+            LayoutCaption();
+            SyncCaptionState();
+        }
+
+        // ================= 自绘标题栏 =================
+        //
+        // 系统标题栏已收掉 (FormBorderStyle.None + WM_NCCALCSIZE 返回 0), 下面这组方法接管了它:
+        // 画底与标题、摆四个键、把"拖窗口 / 双击最大化 / 边缘缩放"还给系统。
+
+        /// <summary>
+        /// 按客户区宽度摆标题栏的键, 自右向左: [×] [□] [—] [⚙]。
+        /// <para>设置齿轮在最小化**左边** (用户指定)。系统标题栏里塞不进自定义控件, 这也是必须自绘
+        /// 标题栏的原因之一。</para>
+        /// </summary>
+        void LayoutCaption()
+        {
+            if (btnClose == null || btnMin == null || btnMax == null || btnSettings == null) return;
+
+            int h = Padding.Top;                 // 已缩放过的真实高度
+            if (h <= 0) return;
+            int w = ClientSize.Width;
+            int bw = Dpi.S(46);                  // 与系统窗口键同宽 (46@96dpi)
+            int sw = Dpi.S(26);                  // 齿轮
+            int gap = Dpi.S(6);                  // 齿轮与最小化之间的缝
+
+            // 整组从右往左排, 左端用 max(0) 兜底: 窗口被拖到比这组键还窄时, 键退成贴左,
+            // 至少齿轮与最小化还在窗内 (拖动、缩放、关闭都还能用), 而不是整组飘到窗口外。
+            int need = sw + gap + bw * 3;
+            int left = Math.Max(0, w - need);
+
+            btnSettings.SetBounds(left, (h - sw) / 2, sw, sw);
+            btnMin.SetBounds(left + sw + gap, 0, bw, h);
+            btnMax.SetBounds(left + sw + gap + bw, 0, bw, h);
+            btnClose.SetBounds(left + sw + gap + bw * 2, 0, bw, h);
+        }
+
+        /// <summary>画标题栏: 底色与内容区同色、无分隔线, 左边图标 + 标题文字。</summary>
+        void PaintCaption(Graphics g)
+        {
+            int h = Padding.Top;
+            if (h <= 0) return;
+
+            // 用窗体自己的底色 (默认 SystemColors.Control, 与两个面板一致): 系统换主题/高对比度时
+            // 标题栏与内容区仍是一块颜色, 不会一边 Control 一边 Window。
+            using (var b = new SolidBrush(BackColor))
+                g.FillRectangle(b, 0, 0, ClientSize.Width, h);
+
+            int x = Dpi.S(12);
+            if (titleBarIcon != null)
+            {
+                int isz = Dpi.S(16);
+                g.DrawIcon(titleBarIcon, new Rectangle(x, (h - isz) / 2, isz, isz));
+                x += isz + Dpi.S(8);
+            }
+
+            // 文字止于最左边的那个键 (齿轮) 之前: 窗口拉窄时标题先省略, 不会钻到按钮底下
+            int limit = btnSettings != null ? btnSettings.Left - Dpi.S(8) : ClientSize.Width - Dpi.S(8);
+            var rect = new Rectangle(x, 0, Math.Max(0, limit - x), h);
+            TextRenderer.DrawText(g, Text, Font, rect, Color.FromArgb(32, 32, 32),
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter
+                | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            PaintCaption(e.Graphics);
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            LayoutCaption();
+            SyncCaptionState();
+        }
+
+        /// <summary>最大化/还原键的字形与可访问名跟着窗口状态走; 顺带更新圆角偏好。</summary>
+        void SyncCaptionState()
+        {
+            if (btnMax == null) return;
+            bool max = WindowState == FormWindowState.Maximized;
+            btnMax.Glyph = max ? CaptionGlyph.Restore : CaptionGlyph.Maximize;
+            btnMax.AccessibleName = max ? "向下还原" : "最大化";
+            if (tipTop != null)
+                tipTop.SetToolTip(btnMax, max ? "向下还原" : "最大化");
+            ApplyWindowFrame();
+        }
+
+        void ToggleMaximize()
+        {
+            WindowState = WindowState == FormWindowState.Maximized
+                ? FormWindowState.Normal
+                : FormWindowState.Maximized;
+        }
+
+        /// <summary>
+        /// 最大化边界与 Win11 圆角。
+        /// <para><b>为什么必须钉 MaximizedBounds</b>: 窗口保留了 WS_THICKFRAME (缩放热区由系统给),
+        /// 系统最大化时会按"有边框"的尺寸算, 结果四周多出几像素、把任务栏盖住一截。</para>
+        /// <para>圆角: 常态圆角、最大化方角 —— 最大化时若还圆角, 四角会透出桌面。</para>
+        /// </summary>
+        void ApplyWindowFrame()
+        {
+            if (!IsHandleCreated) return;
+
+            var scr = Screen.FromControl(this);
+            if (MaximizedBounds != scr.WorkingArea) MaximizedBounds = scr.WorkingArea;
+
+            // DWMWA_WINDOW_CORNER_PREFERENCE = 33; 1 = 不要圆角, 2 = 圆角
+            try
+            {
+                int pref = WindowState == FormWindowState.Maximized ? 1 : 2;
+                DwmSetWindowAttribute(Handle, 33, ref pref, sizeof(int));
+            }
+            catch { }   // Windows 10 没有这个属性: 调用失败即可, 窗口保持方角
+        }
+
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+        static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+        // 窗口样式位 (Win32 常量, 只在本文件用)
+        const int WS_MINIMIZEBOX = 0x00020000;
+        const int WS_MAXIMIZEBOX = 0x00010000;
+        const int WS_SYSMENU = 0x00080000;
+        const int CS_DROPSHADOW = 0x00020000;
+
+        const int WM_NCCALCSIZE = 0x0083;
+        const int WM_NCHITTEST = 0x0084;
+        const int WM_NCACTIVATE = 0x0086;
+
+        const int HTCLIENT = 1;
+        const int HTCAPTION = 2;
+        const int HTLEFT = 10, HTRIGHT = 11, HTTOP = 12, HTBOTTOM = 15;
+        const int HTTOPLEFT = 13, HTTOPRIGHT = 14, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                // 只留"这窗口能被最大化 / 最小化 / 有系统菜单", 不要 WS_CAPTION 与 WS_THICKFRAME。
+                // 那两个会把窗口框成"有 8px 不可见边框": 系统按边框算最大化矩形与还原尺寸,
+                // 而我们的客户区已经盖满整窗 → 最大化比工作区大 18px、还原回来尺寸还多一圈。
+                // 二者都在 NCHITTEST 里手工实现了 (边缘缩放 + HTCAPTION), 不需要系统那层边框。
+                cp.Style |= WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+                cp.ClassStyle |= CS_DROPSHADOW;
+                return cp;
+            }
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            // 客户区盖满整个窗口: 系统标题栏与边框一条都不留, 全部由 PaintCaption 自己画。
+            // wParam=0 的那次是"算客户区矩形"的询问, 必须照常走 (返回 0 会破坏坐标)。
+            if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
+            {
+                m.Result = IntPtr.Zero;
+                return;
+            }
+
+            base.WndProc(ref m);
+
+            // 系统在 NC 区缺失时把所有点都当客户区。这里把它掰回来:
+            // 边缘 → 缩放热区, 标题栏空白 → 可拖动 (双击自动最大化、右键系统菜单一并回来)。
+            if (m.Msg == WM_NCHITTEST && (int)m.Result == HTCLIENT)
+            {
+                var cursor = new Point((short)(m.LParam.ToInt64() & 0xFFFF),
+                                       (short)((m.LParam.ToInt64() >> 16) & 0xFFFF));
+                m.Result = (IntPtr)HitTestCaption(PointToClient(cursor));
+            }
+        }
+
+        /// <summary>窗口左上角起算的点 → 命中码。按钮区域返回 HTCLIENT, 让控件自己收点击。</summary>
+        int HitTestCaption(Point p)
+        {
+            int w = ClientSize.Width, h = ClientSize.Height;
+
+            // 边缘缩放: 最大化时不该有 (那时没有"边框"可拖)
+            if (WindowState != FormWindowState.Maximized)
+            {
+                int grip = Dpi.S(6);
+                bool left = p.X < grip, right = p.X >= w - grip;
+                bool top = p.Y < grip, bottom = p.Y >= h - grip;
+                if (top && left) return HTTOPLEFT;
+                if (top && right) return HTTOPRIGHT;
+                if (bottom && left) return HTBOTTOMLEFT;
+                if (bottom && right) return HTBOTTOMRIGHT;
+                if (left) return HTLEFT;
+                if (right) return HTRIGHT;
+                if (top) return HTTOP;
+                if (bottom) return HTBOTTOM;
+            }
+
+            if (p.Y < Padding.Top)
+            {
+                // 落在键上就交还给控件 (否则 HTCAPTION 会把点击吞掉, 键按不动)
+                foreach (var c in new Control[] { btnMin, btnMax, btnClose, btnSettings })
+                    if (c != null && c.Visible && c.Bounds.Contains(p)) return HTCLIENT;
+                return HTCAPTION;
+            }
+
+            return HTCLIENT;
         }
 
         void SetAppState(AppState s)
@@ -1786,6 +2036,13 @@ namespace StereoSplitter
             DisposeTimer(ref deviceReturnTimer);   // R-10 补
             DisposeTimer(ref sinkRetryTimer);      // R-10 补
             DisposeTimer(ref refreshKickTimer);    // 刷新动画的延迟启动
+
+            // 标题栏图标: 由窗体图标缩放生成的一份副本 (Icon 每 new 一次都要自己释放)
+            if (titleBarIcon != null)
+            {
+                try { titleBarIcon.Dispose(); } catch { }
+                titleBarIcon = null;
+            }
 
             try { Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged; } catch { }
 

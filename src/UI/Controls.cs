@@ -1384,6 +1384,9 @@ namespace StereoSplitter
         /// <summary>焦点提示是否该显示 (键盘进来才显示, 鼠标点进来不显示)。与 RoundedCombo 同一套判定。</summary>
         bool keyboardFocusCues = true;
         ButtonGlyph glyph = ButtonGlyph.Nut;
+        /// <summary>图标相对按钮边长的缩放 (默认 1)。给"按钮热区要够大、图案却要小"的场合用 ——
+        /// 标题栏的齿轮就是: 26px 的热区配 10px 级的图案, 才和旁边的系统窗口键一个重量。</summary>
+        public float GlyphScale = 1f;
 
         // —— 刷新图标的旋转: 点一次转满一圈, 回到原位 ——
         System.Windows.Forms.Timer spinTimer;
@@ -1588,7 +1591,9 @@ namespace StereoSplitter
                 case ButtonGlyph.Nut:
                     // 设置: 六角螺母 —— 六边形一圈墙 + 中心一个圆环 (照用户给的 SVG 描的)。
                     // 原图坐标: 六角对宽 824×903 (k = 24/903), 墙 85 (≈2.3px), 圆环外径 170.7 内径 85.3。
-                    DrawNut(g, cx, cy, Math.Min(Width, Height) * 0.0266f, icon,
+                    // GlyphScale: 标题栏里的齿轮要与旁边 10px 的系统窗口键同一视觉重量,
+                    // 按默认比例 (≈0.85 倍按钮边长) 画出来会大出一圈, 抢掉标题的注意力。
+                    DrawNut(g, cx, cy, Math.Min(Width, Height) * 0.0266f * GlyphScale, icon,
                         (hot || down) ? (down ? PressBack : HoverBack) : back);
                     break;
 

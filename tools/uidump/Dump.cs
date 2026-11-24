@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Drawing;
 using System.Reflection;
@@ -874,6 +874,120 @@ namespace StereoSplitter
                 while (sw.ElapsedMilliseconds < 2200) { Application.DoEvents(); System.Threading.Thread.Sleep(15); }
                 dump("spin-end angle=" + SpinAngle(refresh));
                 shot("top-spin-end.png");
+
+                sf.Close();
+                return;
+            }
+
+            // 自绘标题栏: 几何 / WM_NCHITTEST 命中码 / 最大化-还原 / 窄窗标题省略
+            if (args.Length >= 1 && args[0] == "titlebar")
+            {
+                var sf = new MainForm();
+                sf.StartPosition = FormStartPosition.Manual;
+                sf.Location = new Point(40, 40);
+                sf.Size = new Size(700, 800);
+                sf.TopMost = true;
+                sf.Show();
+                sf.Activate();
+                Pump();
+
+                var min = Field(sf, "btnMin") as Control;
+                var gear = Field(sf, "btnSettings") as Control;
+                var max = Field(sf, "btnMax") as Control;
+                var close = Field(sf, "btnClose") as Control;
+                if (min == null || gear == null || max == null || close == null)
+                { Console.Out.WriteLine("TB no controls"); sf.Close(); return; }
+
+                Action<string> dump = tag =>
+                    Console.Out.WriteLine("TB " + tag
+                        + " win=" + sf.Size + " client=" + sf.ClientSize + " captionH=" + sf.Padding.Top
+                        + " gear=" + gear.Bounds + " min=" + min.Bounds
+                        + " max=" + max.Bounds + " close=" + close.Bounds
+                        + " glyph=" + Field(max, "glyph"));
+
+                Action<string> shot = path =>
+                {
+                    for (int i = 0; i < 3; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    using (var bmp = new Bitmap(sf.Width, sf.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(sf.Location, Point.Empty, sf.Size);
+                        bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                };
+
+                dump("geom");
+
+                // 命中码: 拖动窗口 / 边缘缩放 / 双击最大化全靠它, 直接把 WM_NCHITTEST 发给窗口看回什么
+                Func<int, int, string> hit = (x, y) =>
+                {
+                    Point scr = sf.PointToScreen(new Point(x, y));
+                    IntPtr lp = (IntPtr)((scr.Y << 16) | (scr.X & 0xFFFF));
+                    long r = SendMessage(sf.Handle, 0x0084, IntPtr.Zero, lp).ToInt64();
+                    switch (r)
+                    {
+                        case 1: return "CLIENT";
+                        case 2: return "CAPTION";
+                        case 10: return "LEFT";
+                        case 11: return "RIGHT";
+                        case 12: return "TOP";
+                        case 13: return "TOPLEFT";
+                        case 14: return "TOPRIGHT";
+                        case 15: return "BOTTOM";
+                        case 16: return "BOTTOMLEFT";
+                        case 17: return "BOTTOMRIGHT";
+                        default: return r.ToString();
+                    }
+                };
+                Console.Out.WriteLine("TB hit edge-tl=" + hit(3, 3)
+                    + " edge-top=" + hit(sf.ClientSize.Width / 2, 2)
+                    + " edge-right=" + hit(sf.ClientSize.Width - 3, 200)
+                    + " edge-bottom=" + hit(400, sf.ClientSize.Height - 3)
+                    + " caption-blank=" + hit(240, 12)
+                    + " gear=" + hit(gear.Left + gear.Width / 2, gear.Top + gear.Height / 2)
+                    + " close=" + hit(close.Left + close.Width / 2, close.Top + close.Height / 2)
+                    + " body=" + hit(400, 400));
+
+                shot("title-normal.png");
+
+                MethodInfo click = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
+
+                // 双击标题栏空白: 系统应把窗口最大化 (HTCAPTION 上的默认行为)
+                Point cap = sf.PointToScreen(new Point(240, 12));
+                SendMessage(sf.Handle, 0x00A3, (IntPtr)2,
+                    (IntPtr)((cap.Y << 16) | (cap.X & 0xFFFF)));   // WM_NCLBUTTONDBLCLK / HTCAPTION
+                Pump(); Pump();
+                dump("dblclick state=" + sf.WindowState);
+                if (sf.WindowState == FormWindowState.Maximized)
+                {
+                    click.Invoke(max, new object[] { EventArgs.Empty });
+                    Pump(); Pump();
+                }
+
+                // 最大化键: 状态 / 字形 / 最大化边界 (钉工作区, 不能盖住任务栏)
+                click.Invoke(max, new object[] { EventArgs.Empty });
+                Pump(); Pump();
+                // MaximizedBounds 是 Form 的 protected 属性, 探针只能反射读
+                Func<Form, Rectangle> maxBounds = fm =>
+                {
+                    var pi = typeof(Form).GetProperty("MaximizedBounds",
+                        BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    return pi == null ? Rectangle.Empty : (Rectangle)pi.GetValue(fm, null);
+                };
+
+                dump("maximized state=" + sf.WindowState + " maxBounds=" + maxBounds(sf)
+                    + " closeGapRight=" + (sf.ClientSize.Width - close.Right));
+                shot("title-max.png");
+
+                click.Invoke(max, new object[] { EventArgs.Empty });
+                Pump(); Pump();
+                dump("restored state=" + sf.WindowState);
+
+                // 窄窗口: 标题要让位给按钮 (EndEllipsis), 不能钻到齿轮底下
+                sf.Width = 470;
+                Pump();
+                dump("narrow");
+                shot("title-narrow.png");
 
                 sf.Close();
                 return;

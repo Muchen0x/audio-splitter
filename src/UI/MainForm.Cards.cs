@@ -489,11 +489,13 @@ namespace StereoSplitter
         /// 窗口缩到 500 宽 (客户区约 484) 时右侧控件会被挤出客户区截断。
         /// 这里改为「右侧控件贴面板右缘、中间下拉吃掉剩余宽度」, 任意宽度都不越界。</para>
         /// <para>缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准 已迁入设置页,
-        /// 不再参与这里的布局 —— 主面板顶部由齿轮按钮收口。</para>
+        /// 不再参与这里的布局。</para>
+        /// <para>设置齿轮也已搬去标题栏 (见 MainForm.LayoutCaption) —— 第一行不再有它,
+        /// 捕获壳直接铺到右缘。</para>
         /// </summary>
         void LayoutTopRows()
         {
-            if (captureShell == null || btnAddOutput == null || btnSettings == null) return;
+            if (captureShell == null || btnAddOutput == null) return;
             if (btnStart == null || cmbSpec == null) return;
             Control host = captureShell.Parent;
             if (host == null) return;
@@ -506,14 +508,13 @@ namespace StereoSplitter
             int leftEdge = Dpi.S(15);               // 与其它行左缘一致
             int gap = Dpi.S(8);
 
-            // —— 第 1 行: [捕获下拉 | 刷新] 一个圆角壳, [设置(齿轮, 贴右)] ——
-            // 「捕获:」标签已删, 壳直接顶到左缘; 壳高与卡片第一行控件同高 (RowControlHeight),
-            // 与设置齿轮垂直居中对齐。
-            btnSettings.Left = panelW - rightEdge - btnSettings.Width;
+            // —— 第 1 行: [捕获下拉 | 刷新] 一个圆角壳, 一直铺到右缘 ——
+            // 「捕获:」标签与右端的设置齿轮都已不在这一行 (前者删了, 后者搬去标题栏),
+            // 壳独占整行宽度, 与下方「立体声」行左缘对齐。
             captureShell.Left = leftEdge;
             captureShell.Height = OutputCardControl.RowControlHeight;
-            captureShell.Top = btnSettings.Top + (btnSettings.Height - captureShell.Height) / 2;
-            captureShell.Width = Math.Max(Dpi.S(160), btnSettings.Left - gap - captureShell.Left);
+            captureShell.Top = Dpi.S(6);
+            captureShell.Width = Math.Max(Dpi.S(160), panelW - rightEdge - captureShell.Left);
 
             // —— 第 2 行: [开始分流] 独占一行, 水平居中 ——
             // 它是这一屏唯一的主操作, 居中比贴左更稳: 窗口拉宽时不会飘到角落里去。
