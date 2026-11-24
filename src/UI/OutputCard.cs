@@ -63,7 +63,7 @@ namespace StereoSplitter
         // 以下尺寸按 96 DPI 的设计值给出, 实际值由 ScaleForDpi 按系统缩放乘一次 (125% → ×1.25)。
         // 做成静态字段而非常量: 卡片宽度参与列数计算, 放大后若仍按设计值算, 卡片会比可视区宽
         // 或排成错误的列数; 常量没法在运行时改。
-        public static int CardHeight { get; private set; } = 62;   // 单声道卡片高度
+        public static int CardHeight { get; private set; } = 58;   // 单声道卡片高度
         public static int CardWidth { get; private set; } = 500;
         public static int RowHeight { get; private set; } = 24;    // 多声道每行高度 (行内下拉 22 + 2 行距)
 
@@ -73,8 +73,8 @@ namespace StereoSplitter
         /// <summary>按 DPI 缩放卡片尺寸 (由 <see cref="Dpi.Init"/> 调一次)。100% 时保持原值。</summary>
         internal static void ScaleForDpi(float f)
         {
-            CardHeight = (int)Math.Round(62 * f);
-            RowTop = (int)Math.Round(64 * f);
+            CardHeight = (int)Math.Round(58 * f);
+            RowTop = (int)Math.Round(60 * f);
             CardWidth = (int)Math.Round(500 * f);
             RowHeight = (int)Math.Round(24 * f);
             CardGap = (int)Math.Round(4 * f);
@@ -83,16 +83,16 @@ namespace StereoSplitter
         /// <summary>卡片边框色。下拉框本体 / 弹层 / 延迟壳也用这一个, 全界面同一套框。</summary>
         internal static readonly Color BorderColor = Color.FromArgb(203, 208, 216);
         static int CornerRadius { get { return Dpi.S(6); } }
-        static int RowTop = 64;                 // 多声道首行 y (按 DPI 缩放在 ScaleForDpi 里)
+        static int RowTop = 60;                 // 多声道首行 y (按 DPI 缩放在 ScaleForDpi 里)
 
         /// <summary>
-        /// 卡片内控件高度 (设计像素)。设备下拉 / 声道下拉 / 延迟壳三者同高, 且与顶部
-        /// 「规格」下拉、「添加设备」按钮 (30) 一致 —— 用户要求"逻辑声道下拉和添加设备按钮一样大"。
-        /// <para>此前是 24: 24 是 100% 下的值, 而卡片是运行期创建的、不吃 ScaleForm, 125% 下
-        /// 它仍是 24 物理像素, 旁边的按钮已经放大到 38 —— 于是下拉明显"矮一截"。
-        /// 改走 Dpi.S 之后两头都对齐。</para>
+        /// 卡片第一行控件高度 (设计像素): 设备下拉 / 声道下拉 / 延迟壳三者同高、同顶同底。
+        /// <para>一度是 30 —— 为了跟顶部「规格」下拉、「添加设备」按钮(95×38 物理像素)齐平。
+        /// 后来用户要求"这三个的高度也缩小一点": 卡片里三块比行内的声道下拉(22)高出一大截,
+        /// 显得头重; 收到 26 (125% 下 32 物理像素) 之后一行更紧凑, 与顶部按钮的差距也不再抢眼。</para>
+        /// <para>注意这个值不随"与按钮同高"走: 按钮在窗体顶部, 卡片在滚动区里, 两者不并排。</para>
         /// </summary>
-        internal static int RowControlHeight { get { return Dpi.S(30); } }
+        internal static int RowControlHeight { get { return Dpi.S(26); } }
 
         /// <summary>
         /// 多声道行内下拉的高度 (设计像素)。比第一行的 30 矮一档 —— 用户要求"这两个下拉框高度缩小一点"。
@@ -399,7 +399,7 @@ namespace StereoSplitter
         {
             int w = Width;
             // 第一行三个控件同高 (RowControlHeight): 设备下拉 / 声道下拉 / 延迟壳底边对齐,
-            // 顶端统一 5; 「×」20 高, 在 30 高的这一行里垂直居中。
+            // 顶端统一 5; 「×」20 高, 在 26 高的这一行里垂直居中。
             int row1 = Dpi.S(5);
             int ctrlH = RowControlHeight;
 
@@ -414,8 +414,8 @@ namespace StereoSplitter
             // 第二行: 喇叭(静音开关) → 滑条(拉满可用宽度) → 百分比。
             // 喇叭 22 高放在 row2-1 处, 中心正好落在滑条轨道线上 (滑条 20 高, 轨道画在垂直中心);
             // 左缘 8 与第一行的设备下拉同列。
-            // 单声道卡片高 62 = 上边距5 + 第一行30 + 间隔3 + 第二行20 + 下边距4, 下方不再留空。
-            int row2 = Dpi.S(38);
+            // 单声道卡片高 58 = 上边距5 + 第一行26 + 间隔3 + 第二行20 + 下边距4, 下方不再留空。
+            int row2 = Dpi.S(34);
             btnMute.Location = new Point(Dpi.S(8), row2 - Dpi.S(1));
             int volX = btnMute.Right + Dpi.S(6);
             volTrack.Location = new Point(volX, row2);
