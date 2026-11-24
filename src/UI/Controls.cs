@@ -1745,6 +1745,11 @@ namespace StereoSplitter
         static readonly Color BorderDisabled = Color.FromArgb(226, 230, 235);
         /// <summary>键盘焦点: 与下拉框/按钮同一支蓝。</summary>
         static readonly Color BorderActive = Color.FromArgb(0, 120, 215);
+        /// <summary>
+        /// 中间那条分隔线。比边框深一档 (203→186): 与边框同色时 1px 白底上几乎看不见,
+        /// 那两个区域就又糊成一个长条了。
+        /// </summary>
+        static readonly Color SepNormal = Color.FromArgb(186, 192, 202);
         static readonly Color DisabledBack = Color.FromArgb(244, 245, 247);
         /// <summary>本体与壳内边缘的呼吸 (1~2px): 内嵌控件铺满会压住壳的圆角弧。</summary>
         static int Inset { get { return Dpi.S(2); } }
@@ -1836,7 +1841,7 @@ namespace StereoSplitter
             int sepPad = Dpi.S(6);
             if (sepX > 0 && Height > sepPad * 2)
             {
-                using (var pen = new Pen(border))
+                using (var pen = new Pen(strong ? BorderHot : SepNormal))
                     g.DrawLine(pen, sepX + 0.5f, sepPad, sepX + 0.5f, Height - sepPad);
             }
 
