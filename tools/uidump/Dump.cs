@@ -2081,6 +2081,73 @@ namespace StereoSplitter
                 return;
             }
 
+            // 分隔条观感 + 拉到最底自动收起日志面板 + 标题栏日志按钮开合 (批72)
+            if (args.Length >= 1 && args[0] == "seam")
+            {
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(40, 40);
+                mf.Size = new Size(760, 640);
+                mf.TopMost = true;
+                mf.Show();
+                mf.Activate();
+                for (int i = 0; i < 16; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+
+                var scc = Field(mf, "splitContainer") as SplitContainer;
+                var btnLog = Field(mf, "btnLog") as Control;
+                MethodInfo onClick = typeof(Control).GetMethod("OnClick",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                Func<string> glyphOf = () =>
+                {
+                    if (btnLog == null) return "?";
+                    object g = btnLog.GetType().GetField("glyph",
+                        BindingFlags.Instance | BindingFlags.NonPublic).GetValue(btnLog);
+                    return g == null ? "?" : g.ToString();
+                };
+                Action<string> shot = tag =>
+                {
+                    using (var bmp = new Bitmap(mf.Width, mf.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
+                        bmp.Save("seam-" + tag + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    Console.Out.WriteLine("SEAM-SHOT -> seam-" + tag + ".png");
+                };
+
+                Console.Out.WriteLine("SPLIT W=" + scc.SplitterWidth + " back=" + scc.BackColor
+                    + " dist=" + scc.SplitterDistance + " collapsed=" + scc.Panel2Collapsed
+                    + " glyph=" + glyphOf());
+                shot("normal");
+
+                // 拉到最底 = SplitterDistance 拉满 → SplitterMoved 应自动整体收起日志面板
+                try { scc.SplitterDistance = scc.Height - scc.SplitterWidth; } catch (Exception ex) { Console.Out.WriteLine("DRAG-BOTTOM set failed: " + ex.Message); }
+                for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("DRAG-BOTTOM collapsed=" + scc.Panel2Collapsed + " (期望 True)"
+                    + " panel2Visible=" + scc.Panel2.Visible
+                    + " glyph=" + glyphOf() + " (期望 LogOff)");
+                shot("collapsed");
+
+                // 点日志按钮 = 恢复
+                onClick.Invoke(btnLog, new object[] { EventArgs.Empty });
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("LOG-CLICK restored collapsed=" + scc.Panel2Collapsed + " (期望 False)"
+                    + " dist=" + scc.SplitterDistance + " panel2H=" + scc.Panel2.Height
+                    + " glyph=" + glyphOf() + " (期望 LogOn)");
+                shot("restored");
+
+                // 再点两次 = 收起 / 恢复 (幂等开关)
+                onClick.Invoke(btnLog, new object[] { EventArgs.Empty });
+                for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("LOG-CLICK2 collapsed=" + scc.Panel2Collapsed + " (期望 True) glyph=" + glyphOf());
+                onClick.Invoke(btnLog, new object[] { EventArgs.Empty });
+                for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("LOG-CLICK3 collapsed=" + scc.Panel2Collapsed + " (期望 False) glyph=" + glyphOf());
+
+                mf.Close();
+                return;
+            }
+
             // DPI 适配自检: 打印缩放相关的实际值 (uidump 自己也要 Init, 否则 Dpi.S() 恒为 1)
             if (args.Length >= 1 && args[0] == "dpiprobe")
             {

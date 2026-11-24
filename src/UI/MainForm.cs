@@ -84,6 +84,9 @@ namespace StereoSplitter
         readonly System.Collections.Generic.List<IMessageFilter> msgFilters =
             new System.Collections.Generic.List<IMessageFilter>();
         GearButton btnSettings;            // 标题栏里的齿轮 (在最小化左边)
+        GearButton btnLog;                 // 标题栏里的日志面板开关 (在更多按钮左边, 双状态图标)
+        /// <summary>日志面板上次"非收起"的分隔距离 (拖到最下自动收起前记录, 恢复时用)。0 = 没记过。</summary>
+        int lastLogDist;
         // 自绘标题栏的三个窗口键。系统标题栏已收掉 (见构造函数), 这三个是它唯一的替代品。
         CaptionButton btnMin, btnMax, btnClose;
         Icon titleBarIcon;                 // 标题栏左侧的小图标 (16px), 由窗体图标缩放而来
@@ -327,27 +330,32 @@ namespace StereoSplitter
             // 点到空白处 (标签/面板/卡片底色) 时把焦点交回整个窗口, 别让它赖在最后那个输入框里
             AddMessageFilter(new FocusParkRouter());
 
-            // 上下可拖动面板: 内容区 | 6px灰分隔条 | 日志区 (参照 tk.PanedWindow)
+            // 上下可拖动面板: 内容区 | 深色缝隙 | 日志区 (参照 tk.PanedWindow)
             // FixedPanel=Panel2: 窗口变矮时先收缩上面的内容区, 日志区高度保持不变
             // (以前是 Panel1 固定 → 变矮时日志直接被压扁)。
             // Panel1MinSize=Panel2MinSize=0: **两个面板都不设下限**, 分隔条可以任意拖 ——
-            // 日志区能一路拉到顶(只看内容)，也能一路压到底(只看日志)。
+            // 日志区能一路拉到顶(只看内容)，也能一路压到底(只看日志, 拉到最底自动整体收起)。
             // 窗口整体变矮的情况由 KeepContentOnShrink() 兜底, 不会把内容区缩没。
+            // 缝隙宽 12 (设计px): 参考图的缝:条 ≈ 4:1, 中间悬 4px 圆角条 (NoFocusSplitContainer.OnPaint)。
             splitContainer = new NoFocusSplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
-                SplitterWidth = 6,
-                BackColor = Color.FromArgb(0x88, 0x88, 0x88),
+                SplitterWidth = Dpi.S(12),
+                BackColor = Color.FromArgb(25, 25, 25),
                 FixedPanel = FixedPanel.Panel2,
                 Panel1MinSize = 0,
                 Panel2MinSize = 0,
                 Size = new Size(500, 500),
                 TabStop = false
             };
-            // 显式恢复浅色面板, 阻断 BackColor(#888) 传播 → #888 只作用于分隔条
+            // 显式恢复浅色面板, 阻断 BackColor(#191919 缝隙色) 传播 → 缝色只作用于分隔条
             splitContainer.Panel1.BackColor = SystemColors.Control;
             splitContainer.Panel2.BackColor = SystemColors.Control;
+            // 面板朝缝隙的一侧做成圆角 (参考图): 上面板下缘两角、下面板上缘两角,
+            // 由角上的"缝隙色补丁"盖出圆角轮廓 (见 PaintPanelCornerSeam)
+            splitContainer.Panel1.Paint += PaintPanelCornerSeam;
+            splitContainer.Panel2.Paint += PaintPanelCornerSeam;
             // Panel1 自己不能滚: 否则窗口一缩, 整个内容区先冒出滚动条 (还带横向),
             // 而不是卡片区内部滚动。
             splitContainer.Panel1.AutoScroll = false;
@@ -356,8 +364,9 @@ namespace StereoSplitter
             splitContainer.SplitterDistance = 386;
             // 窗口整体变矮时把内容区拽回来 (分隔条拖动本身不受限, 见 KeepContentOnShrink)
             splitContainer.SizeChanged += (s, e) => KeepContentOnShrink();
-            // 分隔条位置变了, 左右那两截"补到边"的分隔线要跟着重画
-            splitContainer.SplitterMoved += (s, e) => InvalidateSplitterBleed();
+            // 分隔条位置变了: 左右那两截"补到边"的分隔线要跟着重画;
+            // 拖到最底 (日志面板高度归零) 时整体收起日志面板 (用户指定, 由标题栏日志按钮恢复)
+            splitContainer.SplitterMoved += (s, e) => OnSplitterMoved();
             Controls.Add(splitContainer);
 
             // 捕获行: 原来行首有「捕获:」标签, 已删 (用户要求) —— 这一行只有"选哪台设备被抓取"
@@ -393,6 +402,17 @@ namespace StereoSplitter
                 TabStop = true
             };
             btnSettings.Click += (s2, e2) => OpenSettings();
+
+            // 「日志面板」开关: 更多按钮左边 (用户指定), 双状态图标 ——
+            // 圆角窗+文字行 = 显示中, 同一扇窗+斜杠 = 已收起。点击开合;
+            // 把分隔条拉到最底也会直接收起 (OnSplitterMoved, 用户指定)。
+            btnLog = new GearButton
+            {
+                Glyph = ButtonGlyph.LogOn,
+                Size = new Size(26, 26),
+                TabStop = true
+            };
+            btnLog.Click += (s2, e2) => ToggleLogPanel();
 
             // 自绘标题栏的三个窗口键: 自右向左 [×][□][—] | [☰], 「更多」在最小化左边。
             // (系统标题栏里塞不进自定义控件, 所以这一组只能自己画)
@@ -607,6 +627,7 @@ namespace StereoSplitter
             tipTop.SetToolTip(volGain, "总增益，作用在采样层。\n运行中可调。");
             tipTop.SetToolTip(volMaster, "总音量，作用在采样层。\n运行中可调。");
             tipTop.SetToolTip(btnMuteMaster, "点击静音 / 取消静音（总静音，作用在采样层，不写设备端点）。\n音量拖到 0 会自动静音，拖回去自动恢复。\n运行中可调。");
+            tipTop.SetToolTip(btnLog, LogTip());   // 文案随状态换 (显示中/已收起), SetLogPanelVisible 里同步
             tipTop.SetToolTip(nudWaterInterval, "水位监控的刷新间隔（秒，1~3600；0 = 关闭监控）。\n随时可改，回车提交。");
             RefreshSettingsTip();
             // 增益/主音量两行的滑条宽度跟面板宽度走 (窗口拉宽自动变长);
@@ -772,9 +793,9 @@ namespace StereoSplitter
             sinkRetryTimer = new System.Windows.Forms.Timer { Interval = 5000 };
             sinkRetryTimer.Tick += (s, e) => SinkRetryTick();
 
-            // —— 标题栏的四个键挂在窗体上 (不在任何面板里): 它们的坐标系是窗体客户区 ——
+            // —— 标题栏的五个键挂在窗体上 (不在任何面板里): 它们的坐标系是窗体客户区 ——
             // 最后加 = z-order 最上, 不会被 Dock Fill 的 splitContainer 盖住。
-            Controls.AddRange(new Control[] { btnMin, btnMax, btnClose, btnSettings });
+            Controls.AddRange(new Control[] { btnMin, btnMax, btnClose, btnSettings, btnLog });
 
             // 标题栏左侧的小图标: 由窗体图标缩到 16 设计像素 (DrawIcon 不缩放, 得自己生成一个尺寸)
             try
@@ -830,10 +851,11 @@ namespace StereoSplitter
         /// 把 6px 灰分隔条补进左右那一圈让出去的空隙, 让分隔线仍然通到窗口边缘。
         /// <para>颜色取容器自己的 BackColor, 与它画的分隔条是同一支; 位置取 Panel1 的下缘,
         /// 所以用户上下拖分隔条时补丁跟着走 (SplitterMoved 里重画)。</para>
+        /// <para>日志面板整体收起后没有分隔条, 不再补 (避免在窗口底缘留一截深色带)。</para>
         /// </summary>
         void PaintSplitterBleed(Graphics g)
         {
-            if (splitContainer == null) return;
+            if (splitContainer == null || splitContainer.Panel2Collapsed) return;
             int grip = Padding.Left;
             if (grip <= 0) return;
 
@@ -843,6 +865,126 @@ namespace StereoSplitter
             {
                 g.FillRectangle(b, 0, y, grip, h);
                 g.FillRectangle(b, splitContainer.Right, y, grip, h);
+            }
+        }
+
+        /// <summary>
+        /// 分隔条位置变化的三件事: 补边重画 / 记住日志区"像样"的档位 / 拖到最底直接收起。
+        /// <para>拖到最底 = Panel2 高度归零 (Panel2MinSize=0, 分隔条可以一路压到底) ——
+        /// 此时按用户要求<b>整体收起</b>日志面板 (Panel2Collapsed, 连同深色缝隙一起消失),
+        /// 由标题栏的日志按钮恢复。收起前的档位记在 <see cref="lastLogDist"/>, 恢复时还原。</para>
+        /// </summary>
+        void OnSplitterMoved()
+        {
+            InvalidateSplitterBleed();
+            if (splitContainer == null || splitContainer.Panel2Collapsed) return;
+            if (splitContainer.Panel2.Height > Dpi.S(40))
+                lastLogDist = splitContainer.SplitterDistance;   // 只记"像样"的档位 (拖动途中 >=40px 的最后一站)
+            else if (splitContainer.Panel2.Height <= 0)
+                SetLogPanelVisible(false);                       // 拉到最底 = 日志面板整体隐藏
+        }
+
+        /// <summary>日志按钮标题栏提示 (随状态换文案)。</summary>
+        string LogTip()
+        {
+            bool shown = splitContainer != null && !splitContainer.Panel2Collapsed;
+            return shown
+                ? "隐藏日志面板。\n把分隔条拉到最底也会直接收起。"
+                : "显示日志面板。";
+        }
+
+        /// <summary>
+        /// 日志面板整体开合 (标题栏日志按钮 / 分隔条拉到最底)。
+        /// <para>收起用 <see cref="SplitContainer.Panel2Collapsed"/>: 面板与分隔条一起消失,
+        /// 内容区顶到窗口底。恢复时先还原面板再摆回收起前的档位 (没记过就用启动默认的
+        /// "日志区 110 高"), 图标随状态切换 (窗+文字行 / 窗+斜杠)。</para>
+        /// </summary>
+        void SetLogPanelVisible(bool show)
+        {
+            if (splitContainer == null || btnLog == null) return;
+            if (show == !splitContainer.Panel2Collapsed)
+            {
+                btnLog.Glyph = show ? ButtonGlyph.LogOn : ButtonGlyph.LogOff;   // 幂等: 只同步图标
+                if (tipTop != null) tipTop.SetToolTip(btnLog, LogTip());
+                return;
+            }
+            splitContainer.Panel2Collapsed = !show;
+            if (show)
+            {
+                int maxDist = splitContainer.Height - splitContainer.SplitterWidth - splitContainer.Panel2MinSize;
+                int want = lastLogDist > 0 && lastLogDist <= maxDist
+                    ? lastLogDist
+                    : Math.Max(0, splitContainer.Height - Dpi.S(110) - splitContainer.SplitterWidth);
+                try { splitContainer.SplitterDistance = want; } catch { }
+            }
+            btnLog.Glyph = show ? ButtonGlyph.LogOn : ButtonGlyph.LogOff;
+            if (tipTop != null) tipTop.SetToolTip(btnLog, LogTip());
+        }
+
+        void ToggleLogPanel()
+        {
+            if (splitContainer == null) return;
+            SetLogPanelVisible(splitContainer.Panel2Collapsed);
+        }
+
+        /// <summary>
+        /// 面板朝缝隙一侧的圆角 (用户参考图): 上面板 (Panel1) 下缘两角、下面板 (Panel2) 上缘
+        /// 两角, 各画一块"缝隙色补丁"盖出圆角轮廓 —— 补丁 = 方角块与四分之一圆盘之差。
+        /// <para>挂在面板自己的 Paint 上: 面板先铺底色, 补丁随后盖角; 子控件 (日志标题行、
+        /// 卡片) 晚于补丁绘制, 不会被圆角裁掉。半径 10 (设计px): 参考图 R:缝 ≈ 20:24,
+        /// 缝宽 12 → 10。</para>
+        /// </summary>
+        void PaintPanelCornerSeam(object sender, PaintEventArgs e)
+        {
+            if (splitContainer == null || splitContainer.Panel2Collapsed) return;
+            SplitterPanel sp = sender as SplitterPanel;
+            if (sp == null) return;
+            bool bottom = sp == splitContainer.Panel1;      // Panel1 = 下缘两角, Panel2 = 上缘两角
+            float W = sp.Width, H = sp.Height, R = Dpi.S(10);
+            if (W < R * 2 || H < R) return;
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var b = new SolidBrush(splitContainer.BackColor))
+            {
+                // 四块补丁的公共结构: 两条沿面板边缘的直线 + 一段四分之一圆弧 (圆心在面板内
+                // 部距角 R 处, 弧朝角外鼓) —— 先走线到弧的起点, 弧画回来即闭合。
+                for (int side = 0; side < 2; side++)        // 0 = 左角, 1 = 右角
+                {
+                    bool right = side == 1;
+                    using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+                    {
+                        if (bottom)
+                        {
+                            if (!right)   // 左下: (0,H-R)→(0,H)→(R,H)→弧回
+                            {
+                                path.AddLine(0f, H - R, 0f, H);
+                                path.AddLine(0f, H, R, H);
+                                path.AddArc(0f, H - 2 * R, 2 * R, 2 * R, 90f, 90f);
+                            }
+                            else          // 右下: (W-R,H)→(W,H)→(W,H-R)→弧回
+                            {
+                                path.AddLine(W - R, H, W, H);
+                                path.AddLine(W, H, W, H - R);
+                                path.AddArc(W - 2 * R, H - 2 * R, 2 * R, 2 * R, 0f, 90f);
+                            }
+                        }
+                        else
+                        {
+                            if (!right)   // 左上: (R,0)→(0,0)→(0,R)→弧回
+                            {
+                                path.AddLine(R, 0f, 0f, 0f);
+                                path.AddLine(0f, 0f, 0f, R);
+                                path.AddArc(0f, 0f, 2 * R, 2 * R, 180f, 90f);
+                            }
+                            else          // 右上: (W,R)→(W,0)→(W-R,0)→弧回
+                            {
+                                path.AddLine(W, R, W, 0f);
+                                path.AddLine(W, 0f, W - R, 0f);
+                                path.AddArc(W - 2 * R, 0f, 2 * R, 2 * R, 270f, 90f);
+                            }
+                        }
+                        e.Graphics.FillPath(b, path);
+                    }
+                }
             }
         }
 
@@ -861,31 +1003,32 @@ namespace StereoSplitter
         // 画底与标题、摆四个键、把"拖窗口 / 双击最大化 / 边缘缩放"还给系统。
 
         /// <summary>
-        /// 按客户区宽度摆标题栏的键, 自右向左: [×] [□] [—] | [☰]。
+        /// 按客户区宽度摆标题栏的键, 自右向左: [×] [□] [—] | [☰] [日志]。
         /// <para>「更多」图标 (原设置齿轮, 用户指定替换) 在最小化**左边**, 它与窗口键组之间
-        /// 画一条竖线分隔 (用户指定) —— 功能键与系统键是两类东西。系统标题栏里塞不进
-        /// 自定义控件, 这也是必须自绘标题栏的原因之一。</para>
+        /// 画一条竖线分隔 (用户指定) —— 功能键与系统键是两类东西。「日志面板」开关在更多
+        /// 左边 (用户指定)。系统标题栏里塞不进自定义控件, 这也是必须自绘标题栏的原因之一。</para>
         /// </summary>
         void LayoutCaption()
         {
-            if (btnClose == null || btnMin == null || btnMax == null || btnSettings == null) return;
+            if (btnClose == null || btnMin == null || btnMax == null || btnSettings == null || btnLog == null) return;
 
             int h = Padding.Top;                 // 已缩放过的真实高度
             if (h <= 0) return;
             int w = ClientSize.Width;
             int bw = Dpi.S(46);                  // 与系统窗口键同宽 (46@96dpi)
-            int sw = Dpi.S(26);                  // 「更多」图标
+            int sw = Dpi.S(26);                  // 「更多」/「日志」图标
             int gap = Dpi.S(14);                 // 图标与最小化之间的缝, 正中画竖线分隔 (原 6px 无分隔线)
 
             // 整组从右往左排, 左端用 max(0) 兜底: 窗口被拖到比这组键还窄时, 键退成贴左,
             // 至少图标与最小化还在窗内 (拖动、缩放、关闭都还能用), 而不是整组飘到窗口外。
-            int need = sw + gap + bw * 3;
+            int need = sw * 2 + gap + bw * 3;
             int left = Math.Max(0, w - need);
 
-            btnSettings.SetBounds(left, (h - sw) / 2, sw, sw);
-            btnMin.SetBounds(left + sw + gap, 0, bw, h);
-            btnMax.SetBounds(left + sw + gap + bw, 0, bw, h);
-            btnClose.SetBounds(left + sw + gap + bw * 2, 0, bw, h);
+            btnLog.SetBounds(left, (h - sw) / 2, sw, sw);
+            btnSettings.SetBounds(left + sw, (h - sw) / 2, sw, sw);
+            btnMin.SetBounds(left + sw * 2 + gap, 0, bw, h);
+            btnMax.SetBounds(left + sw * 2 + gap + bw, 0, bw, h);
+            btnClose.SetBounds(left + sw * 2 + gap + bw * 2, 0, bw, h);
         }
 
         /// <summary>画标题栏: 底色与内容区同色、无分隔线, 左边图标 + 标题文字。</summary>

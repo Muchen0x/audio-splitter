@@ -153,7 +153,7 @@ namespace StereoSplitter
     }
 
     /// <summary><see cref="RoundButton"/> 可以画的自绘符号 (不依赖字体)。</summary>
-    enum ButtonGlyph { None, Plus, Nut, SquarePlus, Cross, Refresh, TriangleDown, TriangleRight, More }
+    enum ButtonGlyph { None, Plus, Nut, SquarePlus, Cross, Refresh, TriangleDown, TriangleRight, More, LogOn, LogOff }
 
     /// <summary>
     /// 自绘圆角矩形按钮。
@@ -1238,6 +1238,28 @@ namespace StereoSplitter
             }
             base.WndProc(ref m);
         }
+
+        /// <summary>
+        /// 分隔条: 深色缝隙 + 缝隙正中的悬浮圆角条 (用户参考图)。
+        /// <para>Back色 = 缝隙 (深 #191919), 由 base.OnPaint 铺; 这里再叠一枚胶囊圆角条
+        /// —— 高 4 设计px、宽约 30% 容器宽、水平居中、色 #8C8C8C, 两端全圆
+        /// (半径 = 半高)。缝隙与条的配色直接取自用户给的参考图。</para>
+        /// <para>日志面板整体收起 (Panel2Collapsed) 时 SplitterRectangle 为空, 自然不画。</para>
+        /// </summary>
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            Rectangle sr = SplitterRectangle;
+            if (sr.Height <= 0 || sr.Width <= 0) return;
+            float bh = Dpi.S(4);
+            float bw = Width * 0.3f;
+            float bx = (Width - bw) / 2f;
+            float by = sr.Top + (sr.Height - bh) / 2f;
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var path = UiDraw.RoundRect(new RectangleF(bx, by, bw, bh), bh / 2f))
+            using (var b = new SolidBrush(Color.FromArgb(140, 140, 140)))
+                e.Graphics.FillPath(b, path);
+        }
     }
 
     /// <summary>
@@ -1661,6 +1683,35 @@ namespace StereoSplitter
                         }
                     }
                     break;
+                case ButtonGlyph.LogOn:
+                case ButtonGlyph.LogOff:
+                    // 「日志面板」开关 (标题栏, 更多按钮左边): 圆角小窗 + 两条文字行 = 显示;
+                    // 同一扇窗加一道斜杠 = 隐藏 (与捕获消音的 MicSlash 同一套斜杠语言)。
+                    // 与 More 三条线同一笔画 (1.7~1.9px 圆头), 不过 GlyphScale (只在标题栏用)。
+                    using (var p = new Pen(icon, 1.7f))
+                    {
+                        p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                        p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                        p.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
+                        using (var path = UiDraw.RoundRect(new RectangleF(cx - 7f, cy - 6f, 14f, 12f), 3f))
+                            g.DrawPath(p, path);
+                        if (glyph == ButtonGlyph.LogOn)
+                        {
+                            g.DrawLine(p, cx - 3.5f, cy - 2f, cx + 3.5f, cy - 2f);
+                            g.DrawLine(p, cx - 3.5f, cy + 2f, cx + 1.5f, cy + 2f);
+                        }
+                        else
+                        {
+                            using (var ps = new Pen(icon, 1.9f)
+                            {
+                                StartCap = System.Drawing.Drawing2D.LineCap.Round,
+                                EndCap = System.Drawing.Drawing2D.LineCap.Round
+                            })
+                                g.DrawLine(ps, cx - 6.5f, cy - 7f, cx + 6.5f, cy + 7f);
+                        }
+                    }
+                    break;
+
             }
 
             if (spun) g.Restore(spinState);
