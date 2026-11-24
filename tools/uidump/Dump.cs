@@ -29,7 +29,7 @@ namespace StereoSplitter
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            // 设置页: 量分组卡片的内边距/重叠/溢出, 并验证"借出→归还"后状态没变
+            // 设置弹层: 量菜单行的边界/重叠/溢出, 并验证"菜单行驱动原控件 + 改动保留"语义
             if (args.Length >= 1 && args[0] == "settings")
             {
                 var mf = new MainForm();
@@ -45,6 +45,7 @@ namespace StereoSplitter
                 bool t0 = tray is CheckBox && ((CheckBox)tray).Checked;
                 bool m0 = muteCap is CheckBox && ((CheckBox)muteCap).Checked;
                 Console.Out.WriteLine("BEFORE idx=" + idx0 + " drift=" + d0 + " tray=" + t0 + " muteCap=" + m0);
+                int idxExpect = int.MinValue;   // 子菜单选档后应有的档位 (int.MinValue = 没选过)
 
                 MethodInfo scMethod = mf.GetType().GetMethod("SettingsControls", BindingFlags.Instance | BindingFlags.NonPublic);
                 var arr = (Control[])scMethod.Invoke(mf, null);
@@ -68,25 +69,75 @@ namespace StereoSplitter
                         + " visible=" + fy.Visible);
                     foreach (Control c in content.Controls)
                     {
-                        sb2.AppendLine("  " + c.GetType().Name + " '" + Trim(c.Text) + "' bounds=" + c.Bounds
+                        string rowTag = c is MenuRow ? "ROW '" + c.Text + "' enabled=" + c.Enabled : "host '" + c.GetType().Name + "' hidden=" + !c.Visible;
+                        sb2.AppendLine("  " + c.GetType().Name + " " + rowTag + " bounds=" + c.Bounds
                             + (c.Right > content.ClientSize.Width ? "  <<< OVERFLOW " + (c.Right - content.ClientSize.Width) : "")
                             + (c.Bottom > content.ClientSize.Height ? "  <<< OVERFLOW-B " + (c.Bottom - content.ClientSize.Height) : ""));
-                        foreach (Control k in c.Controls)
-                            sb2.AppendLine("      " + k.GetType().Name + " '" + Trim(k.Text) + "' bounds=" + k.Bounds
-                                + (k.Right > c.Width ? "  <<< CLIPPED " + (k.Right - c.Width) : "")
-                                + (k.Bottom > c.Height ? "  <<< CLIPPED-B " + (k.Bottom - c.Height) : ""));
-                        if (c is SoftCard) DumpOverlaps(c, "card", sb2);
                     }
                     DumpOverlaps(content, "content", sb2);
                     DumpTextFit(content, "content", sb2);
                     Console.Out.Write(sb2.ToString());
 
-                    // 借用期间故意改一下延迟档位: 归还时必须被还原成借用前的值,
-                    // 否则"打开设置弹层 → 关掉 → 档位莫名其妙变了"这类问题看不出来
-                    int nItems = Math.Max(1, ItemCountOf(cmb));
-                    SetSel(cmb, (SelOf(cmb) + 1) % nItems);
-                    Application.DoEvents();
-                    Console.Out.WriteLine("DISTURB idx=" + SelOf(cmb) + " (借用期间改值, 归还后应回到 " + idx0 + ")");
+                    MethodInfo onClick = typeof(Control).GetMethod("OnClick",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+
+                    // 档位子菜单: 点"缓冲档位"行 → 子菜单弹出 → 点选另一档 → 档位写回 + 弹层仍开着
+                    MenuRow bufRow = null;
+                    foreach (Control c in content.Controls)
+                        if (c is MenuRow && c.Text == "缓冲档位") bufRow = (MenuRow)c;
+                    if (bufRow == null)
+                    {
+                        Console.Out.WriteLine("PROFILEMENU  <<< NO BUF ROW");
+                    }
+                    else
+                    {
+                        int bIdx0 = SelOf(cmb);
+                        onClick.Invoke(bufRow, new object[] { EventArgs.Empty });
+                        for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                        var pm = fy.GetType().GetField("profileMenu", BindingFlags.Instance | BindingFlags.NonPublic)
+                            .GetValue(fy) as ToolStripDropDown;
+                        Console.Out.WriteLine("PROFILEMENU open=" + (pm != null && pm.Visible)
+                            + " items=" + (pm == null ? 0 : pm.Items.Count)
+                            + " flyoutStill=" + fy.Visible);
+                        if (pm != null && pm.Visible)
+                        {
+                            using (var bmp = new Bitmap(fy.Width + pm.Width + 20, fy.Height + pm.Height + 20))
+                            {
+                                using (var g = Graphics.FromImage(bmp))
+                                    g.CopyFromScreen(fy.PointToScreen(Point.Empty), Point.Empty, bmp.Size);
+                                bmp.Save("profilemenu-live.png", System.Drawing.Imaging.ImageFormat.Png);
+                            }
+                            Console.Out.WriteLine("PROFILEMENU-SHOT -> profilemenu-live.png");
+                        }
+                        int target = (SelOf(cmb) + 1) % Math.Max(1, pm == null ? 1 : pm.Items.Count);
+                        if (pm != null && pm.Visible)
+                        {
+                            pm.Items[target].PerformClick();
+                            for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                        }
+                        Console.Out.WriteLine("PICK idx " + bIdx0 + " -> " + SelOf(cmb)
+                            + " (期望 " + target + ")  flyoutStill=" + fy.Visible);
+                        idxExpect = target;
+                    }
+
+                    // 借用期间点"自动时钟校正"菜单行 (走 OnClick 反射触发真实 Click 路径):
+                    // 勾选必须翻转, 且归还后保持翻转值 —— 弹层是"改动立即生效"语义, 不还原。
+                    MenuRow driftRow = null;
+                    foreach (Control c in content.Controls)
+                        if (c is MenuRow && c.Text == "自动时钟校正") driftRow = (MenuRow)c;
+                    if (driftRow == null)
+                    {
+                        Console.Out.WriteLine("DISTURB  <<< NO DRIFT ROW");
+                    }
+                    else
+                    {
+                        MethodInfo onClickRow = onClick;
+                        onClickRow.Invoke(driftRow, new object[] { EventArgs.Empty });
+                        Application.DoEvents();
+                        bool dNow = ((CheckBox)drift).Checked;
+                        Console.Out.WriteLine("DISTURB drift " + d0 + " -> " + dNow
+                            + (dNow != d0 ? "  (menu row drove real checkbox, good)" : "  <<< NOT FLIPPED"));
+                    }
 
                     fy.ReturnControls();
                     fy.Close();
@@ -99,7 +150,8 @@ namespace StereoSplitter
                 bool m1 = muteCap is CheckBox && ((CheckBox)muteCap).Checked;
                 Console.Out.WriteLine("AFTER  idx=" + idx1 + " drift=" + d1 + " tray=" + t1 + " muteCap=" + m1
                     + " parent=" + (cmb.Parent == null ? "null" : cmb.Parent.GetType().Name)
-                    + ((idx1 == idx0 && d1 == d0 && t1 == t0 && m1 == m0) ? "  (state kept, good)" : "  <<< STATE CHANGED"));
+                    + ((d1 != d0 && t1 == t0 && m1 == m0 && (idxExpect == int.MinValue || idx1 == idxExpect))
+                        ? "  (changes kept, good)" : "  <<< UNEXPECTED"));
                 Console.Out.Flush();
                 Environment.Exit(0);
             }
