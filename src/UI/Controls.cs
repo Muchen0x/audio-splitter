@@ -3095,8 +3095,10 @@ namespace StereoSplitter
         /// 对准控件中心 —— 喇叭占左半边, 声波/×占右半边。</para>
         /// <para>喇叭轮廓: (512,102.4)→(224.768,269.312)→(102.4,269.312)→(102.4,754.688)
         /// →(224.768,754.688)→(512,921.6) 闭合; 折算后 409.6→10.0、287.232→7.01、242.688→5.93。</para>
-        /// <para>声波: 两道圆弧 (圆心在喇叭口 (563.2,512) → 控件中心右 1.25px), 内弧中径 2.8、
-        /// 外弧中径 7.5, 都是右半圆 (±90°); 笔画一律 2.2, 与喇叭轮廓/×/增益圆环同一粗细。</para>
+        /// <para>声波: 两道圆弧 (圆心右移到控件中心右 3.2 —— 批112: 原圆心 1.25 太贴喇叭口,
+        /// 弧端与锥口只隔 0.15px, 用户要求中间留缝; 右移后弧端离喇叭轮廓约 1~1.3px),
+        /// 内弧中径 2.6、笔宽 1.5 (用户要求小音波比喇叭/大波细一档), 外弧中径 6.6、
+        /// 笔宽 2.2 与喇叭轮廓/×/增益圆环同粗; 都是右半圆 (±90°)。</para>
         /// </summary>
         static void DrawSpeaker(Graphics g, float cx, float cy, float s, Color ink, Color back, SpeakerLook look)
         {
@@ -3120,14 +3122,14 @@ namespace StereoSplitter
 
             if (look == SpeakerLook.Waves)
             {
-                // 两道声波弧: 圆心在喇叭口右侧 1.25px, 都取右半圆, 平头端帽。
-                // 笔画与喇叭轮廓同宽 (2.2), 三种状态四条线一个粗细。
-                float acx = cx + 1.25f * s;
+                // 两道声波弧: 圆心右移到 3.2 (原 1.25 时弧端几乎贴住喇叭锥口, 无缝),
+                // 都取右半圆, 平头端帽。小波 1.5 比大波 2.2 细一档 (批112 用户要求);
+                // 大波仍与喇叭轮廓/增益圆环同粗。
+                float acx = cx + 3.2f * s;
+                using (var p = new Pen(ink, Math.Max(1f, 1.5f * s)))
+                    g.DrawArc(p, acx - 2.6f * s, cy - 2.6f * s, 5.2f * s, 5.2f * s, -90f, 180f);
                 using (var p = new Pen(ink, Math.Max(1f, 2.2f * s)))
-                {
-                    g.DrawArc(p, acx - 2.8f * s, cy - 2.8f * s, 5.6f * s, 5.6f * s, -90f, 180f);
-                    g.DrawArc(p, acx - 7.5f * s, cy - 7.5f * s, 15f * s, 15f * s, -90f, 180f);
-                }
+                    g.DrawArc(p, acx - 6.6f * s, cy - 6.6f * s, 13.2f * s, 13.2f * s, -90f, 180f);
                 return;
             }
 
