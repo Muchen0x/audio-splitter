@@ -574,7 +574,9 @@ namespace StereoSplitter
             // 整组包进与卡片「延迟」框同一套的圆角壳: [水位][N][秒] —— 用户要求视觉风格
             // 与延迟模块一致, 原来的「水位监控:」+「间隔」两个散标签按"更简单的描述"并入
             // 壳内文字, 不再单独占位。
-            nudWaterInterval = new NoWheelNumeric { Location = new Point(397, 5), Width = 60, Minimum = 0, Maximum = 3600, Value = 30 };
+            // 壳的数字区按最大值量宽 (用户要求"两位数就行, 缩短一点"): 最大收到 99, 壳宽随之变短。
+            // 旧上限 3600 是四位数, 把整组拉得很长; 水位监控常用 30 秒, 两位数足够。
+            nudWaterInterval = new NoWheelNumeric { Location = new Point(397, 5), Minimum = 0, Maximum = 99, Value = 30 };
             nudWaterShell = new RoundNumericShell(nudWaterInterval, "水位", "秒") { Location = new Point(397, 5) };
 
             lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true, Font = new Font("Microsoft YaHei UI", 10F) };
@@ -643,7 +645,7 @@ namespace StereoSplitter
             tipTop.SetToolTip(volMaster, "总音量，作用在采样层。\n运行中可调。");
             tipTop.SetToolTip(btnMuteMaster, "点击静音 / 取消静音（总静音，作用在采样层，不写设备端点）。\n音量拖到 0 会自动静音，拖回去自动恢复。\n运行中可调。");
             tipTop.SetToolTip(btnLog, LogTip());   // 文案随状态换 (显示中/已收起), SetLogPanelVisible 里同步
-            tipTop.SetToolTip(nudWaterInterval, "水位监控的刷新间隔（秒，1~3600；0 = 关闭监控）。\n随时可改，回车提交。");
+            tipTop.SetToolTip(nudWaterInterval, "水位监控的刷新间隔（秒，1~99；0 = 关闭监控）。\n随时可改，回车提交。");
             RefreshSettingsTip();
             // 增益/主音量两行的滑条宽度跟面板宽度走 (窗口拉宽自动变长);
             // 顶部三行与日志标题行同理, 窗口变窄时右侧控件贴右缘, 不会越界截断

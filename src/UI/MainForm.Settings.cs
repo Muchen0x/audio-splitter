@@ -42,7 +42,7 @@ namespace StereoSplitter
             chkMinimizeToTray.Checked = GetInt("MinimizeToTray", 0) != 0;
             cmbLatency.SelectedIndex = Math.Max(0, Math.Min(4, GetInt("LatencyProfile", 0)));
             int wi = GetInt("WaterIntervalSec", 30);
-            if (wi != 0) wi = Math.Max(1, Math.Min(3600, wi)); // 0=关闭; 其余 1~3600 秒原样用
+            if (wi != 0) wi = Math.Max(1, Math.Min((int)nudWaterInterval.Maximum, wi)); // 0=关闭; 其余 1~上限秒原样用 (上限已收到99)
             nudWaterInterval.Value = wi;
 
             int mode = Math.Max(0, Math.Min(2, GetInt("DriftMode", 1)));

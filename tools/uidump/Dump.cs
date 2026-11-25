@@ -2120,7 +2120,10 @@ namespace StereoSplitter
                     if (c.Text == "水位监控:" || c.Text == "间隔" || (c.Text == "秒" && c.Parent == scc2.Panel2))
                         looseLabels++;
                 Console.Out.WriteLine("WATER shell=" + (waterShell != null) + " caption=" + hasCap
-                    + " unit=" + hasUnit + " looseLabels=" + looseLabels + " (期望 False/True/True/0)");
+                    + " unit=" + hasUnit + " looseLabels=" + looseLabels + " (期望 False/True/True/0)"
+                    + " shellW=" + (waterShell != null ? waterShell.Width.ToString() : "?")
+                    + " numericW=" + (waterShell != null ? InnerNumericW(waterShell).ToString() : "?")
+                    + " (数字框两位数宽, 期望明显小于旧值60)");
 
                 // 2) 日志壳结构: Region 非空 (原生滚动条被窗口区域裁掉), 日志框挂在壳里, 边框 None
                 var ls = Field(mf, "logShell") as Control;
@@ -2164,6 +2167,32 @@ namespace StereoSplitter
                     }
                     Console.Out.WriteLine("BAR thumbPx=" + thumbPx + " (期望>30) sysBarPx=" + sysPx
                         + " (期望0, 原生滚动条已被窗口区域裁掉)");
+                }
+                // 批81: 原生滚动条泄漏断言 —— 它画在 Inner 窗口矩形右缘之内 ([W-SB, W) 列),
+                // Region 必须切在它左边才算裁掉。扫描裁掉区 (文本右缘 .. 壳右缘-2, 中段避开圆角),
+                // 深色像素 (<100 灰, 原生滑块/箭头特征) 应为 0; 壳底色/描边都是浅色不误报。
+                {
+                    int iw2 = ls.Width - 2;
+                    int cut = Math.Max(1, Math.Min(lt.ClientSize.Width, iw2 - Dpi.S(10)));
+                    Point sp2 = ls.PointToScreen(new Point(cut, 0));
+                    int darkPx = 0;
+                    using (var bmp = new Bitmap(ls.Width - 2 - cut, ls.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(sp2, Point.Empty, bmp.Size);
+                        for (int y = Dpi.S(10); y < bmp.Height - Dpi.S(10); y++)
+                            for (int x = 0; x < bmp.Width; x++)
+                            {
+                                var p = bmp.GetPixel(x, y);
+                                if (p.R < 100 && p.G < 100 && p.B < 100) darkPx++;
+                            }
+                    }
+                    Console.Out.WriteLine("LEAK cut=" + cut + " darkPx=" + darkPx
+                        + " (期望0 —— 裁掉区内无原生滑块/箭头残迹)");
+                    Console.Out.WriteLine("GEO shell=" + ls.Bounds.ToString()
+                        + " inner=" + lt.Bounds.ToString() + " clientW=" + lt.ClientSize.Width
+                        + " sbMetric=" + GetSystemMetrics(2)   // SM_CXVSCROLL
+                        + " factor=" + Dpi.Factor.ToString("0.###"));
                 }
                 shotL("filled");
 
@@ -2751,11 +2780,22 @@ namespace StereoSplitter
             ty = trackTop + (maxTop > 0 ? (int)((long)(trackLen - th) * si.nPos / maxTop) : 0);
         }
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern int GetSystemMetrics(int nIndex);
+
         /// <summary>反射读 int 字段 (internal 诊断计数)。</summary>
         static int RefInt(object o, string name)
         {
             var f = o.GetType().GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             return f == null ? -1 : (int)f.GetValue(o);
+        }
+
+        /// <summary>反射找壳内第一个 NumericUpDown 的宽 (探针不用 Linq)。</summary>
+        static int InnerNumericW(Control shell)
+        {
+            foreach (Control c in shell.Controls)
+                if (c is NumericUpDown) return c.Width;
+            return -1;
         }
 
         static int CountHandles(Control root)

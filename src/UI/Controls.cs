@@ -1253,6 +1253,8 @@ namespace StereoSplitter
         static extern bool GetScrollInfo(IntPtr hWnd, int nBar, ref SCROLLINFO si);
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern int GetSystemMetrics(int nIndex);
 
         public RoundLogShell(LogTextBox log)
         {
@@ -1266,26 +1268,49 @@ namespace StereoSplitter
             log.ScrollBars = ScrollBars.Vertical;
             log.ScrollChanged += (s, e) => RefreshBar();
             log.TextChanged += (s, e) => RefreshBar();
+            log.HandleCreated += OnInnerHandleCreated;   // 句柄重建时 Region 会丢, 兜底重裁
             Size = new Size(559, 90);
         }
 
-        /// <summary>摆日志框 + 裁区域: 左侧跟随外壳圆角, 右侧整条排除滚动条带。</summary>
+        /// <summary>
+        /// 摆日志框 + 裁区域。核心认知: WS_VSCROLL 是**非客户区**滚动条, 占据窗口右缘
+        /// 一条固定宽度 (client 之外) —— Region 只要切在 client 右缘, 它就整条不可见、点不到。
+        /// <para>布局分两步: 先把 Inner 窗口比可视区加宽一条滚动条宽 (初值取系统量度
+        /// SM_CXVSCROLL, 再按实测 ClientSize **自校正一次**, 不依赖任何 DPI 假设), 让正文
+        /// (client) 铺满到可视区右缘; 然后 Region 切在 min(client宽, 可视区-条带宽)。
+        /// 被切掉的部分由外壳接管 (画自绘细条), 滚动机制 (滚轮/键盘/ScrollInfo) 原样保留。</para>
+        /// </summary>
         void Recalc()
         {
             if (Inner == null || IsDisposed) return;
-            // 条带宽随 DPI 缩放, 但壳极窄时保底不留 (总得有地方放正文)
-            int strip = StripW * 3 < Width ? StripW : 0;
-            int w = Math.Max(1, Width - 2 - strip), h = Math.Max(1, Height - 2);
-            Inner.SetBounds(1, 1, w, h);
-            // 区域在 Inner 自己的坐标里: 外壳内衬圆角 (0..W-2) 平移 (-1,-1) 后与文本区矩形求交 ——
-            // 左侧两个方角被圆角弧裁掉, 右缘在条带左边界处切成直线 (原生滚动条落在这条线右侧,
-            // 整个不可见、鼠标事件也穿不过去, 全部落在壳上由外壳处理)。
+            int iw = Math.Max(1, Width - 2), ih = Math.Max(1, Height - 2);
+            // 目标文本宽: 可视区右缘留出自绘条带 StripW, 正文正好铺到条带左缘 (多一像素都被裁)
+            int textW = Math.Max(StripW + 40, iw - StripW);
+            if (Inner.IsHandleCreated)
+            {
+                // Inner 窗口宽 = 文本宽 + 原生滚动条宽 (初值取系统量度 SM_CXVSCROLL,
+                // 再按实测 ClientSize 自校正一次, 不依赖 DPI 假设) —— client == textW 时正文铺满
+                int w = textW + Math.Max(1, GetSystemMetrics(2));
+                Inner.SetBounds(1, 1, w, ih);
+                int cw = Inner.ClientSize.Width;
+                if (cw != textW)
+                {
+                    w = Math.Max(1, w + textW - cw);
+                    Inner.SetBounds(1, 1, w, ih);
+                }
+            }
+            // Region 切在 client 右缘 (原生滚动条在 client 之外的非客户区, 整条被排除);
+            // 兜底不超过 textW, 防止窗口加宽没生效时滚动条露进可视区。
+            int cut = Math.Max(1, Math.Min(Inner.IsHandleCreated ? Inner.ClientSize.Width : textW, textW));
+            // 区域在 Inner 自己的坐标里: 外壳内衬圆角 (0..W-2) 平移 (-1,-1) 后与 [0, cut) 求交 ——
+            // 左侧两个方角被圆角弧裁掉, 右缘把原生滚动条整条排除 (看不见、鼠标事件也穿不过去,
+            // 全部落在壳上由外壳处理)。
             Region old = Inner.Region;
             using (var path = UiDraw.RoundRect(
                 new System.Drawing.RectangleF(-1f, -1f, Width - 2f, Height - 2f), CornerRadius - 1f))
             {
                 var reg = new Region(path);
-                reg.Intersect(new Rectangle(0, 0, w, h));
+                reg.Intersect(new Rectangle(0, 0, cut, ih));
                 Inner.Region = reg;
             }
             if (old != null) old.Dispose();
@@ -1295,6 +1320,13 @@ namespace StereoSplitter
         {
             base.OnHandleCreated(e);
             BeginInvoke((Action)Recalc);   // 与 RoundNumericShell 同理: 等消息循环走起来再摆
+        }
+
+        void OnInnerHandleCreated(object sender, EventArgs e)
+        {
+            // TextBox 句柄重建 (字体/边框等属性变更) 会换新 HWND, Region 随旧句柄一起丢 ——
+            // 原生滚动条会整条漏出来; 这里兜底重裁。BeginInvoke 等布局稳定后再做。
+            if (IsHandleCreated) BeginInvoke((Action)Recalc);
         }
 
         protected override void OnResize(System.EventArgs eventargs)
