@@ -1682,8 +1682,8 @@ namespace StereoSplitter
     /// <para>② 自绘细条: <see cref="CardBarOverlay"/> 盖在卡片区窗口之上 (父窗口被
     /// WS_CLIPCHILDREN 裁进子矩形, 画不到留白带, 必须用顶层兄弟控件画), 4px 圆头灰条,
     /// 拖拽 / 点击翻页 / 滚轮全在覆盖层处理。</para>
-    /// <para>四边留白一致 (批89): 卡片可视区距壳缘上下左右各 PadX, 滑条算在右侧留白里
-    /// (不占内容宽), 滑条右缘贴壳右缘。不加边框 (批90: 用户看过圆角框后要求撤掉)。</para>
+    /// <para>留白 (批89/91): 左右下各 PadX, 上 PadX/2 (用户要求上留白缩一半), 滑条算在
+    /// 右侧留白里 (不占内容宽), 滑条右缘贴壳右缘。不加边框 (批90: 用户看过圆角框后要求撤掉)。</para>
     /// </summary>
     class CardScrollShell : Panel
     {
@@ -1738,21 +1738,22 @@ namespace StereoSplitter
         void Recalc()
         {
             if (Inner == null || IsDisposed) return;
-            // 四边留白一致 (批89): 卡片可视区距框线上下左右都是 PadX —— 上面/下面
-            // 也各让一条 (原来 Y=0 ih=Height 上下顶死), 右侧那条留白带装自绘滑条。
-            int ih = Math.Max(1, Height - 2 * PadX);
+            // 四边留白 (批89), 批91 调整: 上留白缩一半 (用户要求) —— 上 PadX/2,
+            // 左/右/下仍 PadX。滑条带依旧算在右侧留白里。
+            int padTop = PadX / 2;
+            int ih = Math.Max(1, Height - padTop - PadX);
             int textW = Math.Max(StripW + 40, Width - 2 * PadX);
             if (Inner.IsHandleCreated)
             {
                 // Inner 窗口宽 = 可视宽 + 原生滚动条宽 (client 实测自校正一次) —— client ==
                 // textW 时卡片铺满到可视区右缘, 原生条落在 client 之外的非客户区
                 int w = textW + Math.Max(1, GetSystemMetrics(2));
-                Inner.SetBounds(PadX, PadX, w, ih);
+                Inner.SetBounds(PadX, padTop, w, ih);
                 int cw = Inner.ClientSize.Width;
                 if (cw != textW)
                 {
                     w = Math.Max(1, w + textW - cw);
-                    Inner.SetBounds(PadX, PadX, w, ih);
+                    Inner.SetBounds(PadX, padTop, w, ih);
                 }
             }
             // 窗口区域切在 client 右缘 (原生条在 client 之外, 整条被排除; 兜底不超过 textW)
@@ -1761,11 +1762,10 @@ namespace StereoSplitter
             Region old = Inner.Region;
             Inner.Region = new Region(new Rectangle(0, 0, cut, ih));
             if (old != null) old.Dispose();
-            // 覆盖层恰好盖住右侧留白带 (卡片可视区右缘 .. 框线内缘, 右让 1px 给框线):
-            // 画滑条、接条带鼠标事件。高只到内容区 (上下留白带归壳的框线/底色)
-            int barW = Math.Max(1, Width - 1 - textEnd);
-            if (Bar.Left != textEnd || Bar.Top != PadX || Bar.Width != barW || Bar.Height != ih)
-                Bar.SetBounds(textEnd, PadX, barW, ih);
+            // 覆盖层恰好盖住右侧留白带 (卡片可视区右缘 .. 壳右缘): 画滑条、接条带鼠标事件
+            int barW = Math.Max(1, Width - textEnd);
+            if (Bar.Left != textEnd || Bar.Top != padTop || Bar.Width != barW || Bar.Height != ih)
+                Bar.SetBounds(textEnd, padTop, barW, ih);
         }
 
         /// <summary>
