@@ -2082,6 +2082,130 @@ namespace StereoSplitter
             }
 
             // 分隔条观感 + 拉到最底自动收起日志面板 + 标题栏日志按钮开合 (批72)
+            // 批80: 日志圆角壳 + 自绘无边框滚动条 + 水位壳结构断言
+            if (args.Length >= 1 && args[0] == "logshell")
+            {
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(40, 40);
+                mf.Size = new Size(760, 640);
+                mf.TopMost = true;
+                mf.Show();
+                mf.Activate();
+                for (int i = 0; i < 16; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+
+                Action<string> shotL = tag =>
+                {
+                    using (var bmp = new Bitmap(mf.Width, mf.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
+                        bmp.Save("log-" + tag + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    Console.Out.WriteLine("LOG-SHOT -> log-" + tag + ".png");
+                };
+
+                // 1) 水位壳: caption「水位」+ unit「秒」在壳内; Panel2 不再有散标签
+                var waterShell = Field(mf, "nudWaterShell") as Control;
+                bool hasCap = false, hasUnit = false;
+                if (waterShell != null)
+                    foreach (Control c in waterShell.Controls)
+                    {
+                        if (c.Text == "水位") hasCap = true;
+                        if (c.Text == "秒") hasUnit = true;
+                    }
+                var scc2 = Field(mf, "splitContainer") as SplitContainer;
+                int looseLabels = 0;
+                foreach (Control c in scc2.Panel2.Controls)
+                    if (c.Text == "水位监控:" || c.Text == "间隔" || (c.Text == "秒" && c.Parent == scc2.Panel2))
+                        looseLabels++;
+                Console.Out.WriteLine("WATER shell=" + (waterShell != null) + " caption=" + hasCap
+                    + " unit=" + hasUnit + " looseLabels=" + looseLabels + " (期望 False/True/True/0)");
+
+                // 2) 日志壳结构: Region 非空 (原生滚动条被窗口区域裁掉), 日志框挂在壳里, 边框 None
+                var ls = Field(mf, "logShell") as Control;
+                var lt = Field(mf, "txtLog") as TextBox;
+                Console.Out.WriteLine("LOGSHELL shell=" + (ls != null)
+                    + " region=" + (lt != null && lt.Region != null) + " (期望 True, 裁在文本框上)"
+                    + " innerInShell=" + (ls != null && lt != null && lt.Parent == ls) + " (期望 True)"
+                    + " border=" + (lt != null ? lt.BorderStyle.ToString() : "?") + " (期望 None)");
+                shotL("empty");
+
+                // 3) 填满日志让滚动条出现: 条带像素应有自绘滑块 (198,203,211), 没有原生滚动条特征块
+                MethodInfo logM = mf.GetType().GetMethod("Log",
+                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public, null,
+                    new Type[] { typeof(string) }, null);
+                for (int i = 0; i < 90; i++)
+                    logM.Invoke(mf, new object[] { "[状态] 滚动条实拍填充行 " + i.ToString("000") + " —— 圆角壳自绘滑条断言" });
+                for (int i = 0; i < 12; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+
+                var siF = VertScrollInfo(lt);
+                Console.Out.WriteLine("SCROLL-FILLED " + (siF.HasValue
+                    ? ("max=" + siF.Value.nMax + " page=" + siF.Value.nPage + " pos=" + siF.Value.nPos)
+                    : "no-scroll"));
+                {
+                    int strip = Dpi.S(10);
+                    Point sp = ls.PointToScreen(new Point(ls.Width - strip, 0));
+                    int thumbPx = 0, sysPx = 0;
+                    using (var bmp = new Bitmap(strip, ls.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(sp, Point.Empty, bmp.Size);
+                        // 只扫壳内条带的中段 (避开上下圆角处的面板底色补角)
+                        for (int y = Dpi.S(10); y < bmp.Height - Dpi.S(10); y++)
+                            for (int x = 0; x < bmp.Width; x++)
+                            {
+                                var p = bmp.GetPixel(x, y);
+                                bool thumb = (p.R == 198 && p.G == 203 && p.B == 211)   // 常态
+                                          || (p.R == 172 && p.G == 178 && p.B == 188); // 悬停/拖拽加深
+                                if (thumb) thumbPx++;
+                                if (p.R == 240 && p.G == 240 && p.B == 240) sysPx++;
+                            }
+                    }
+                    Console.Out.WriteLine("BAR thumbPx=" + thumbPx + " (期望>30) sysBarPx=" + sysPx
+                        + " (期望0, 原生滚动条已被窗口区域裁掉)");
+                }
+                shotL("filled");
+
+                // 4) 真实鼠标拖拽自绘滑块: 先滚回顶部 (滑块在顶), 按住往下拖 → nPos 必须跟着走。
+                //    偶发一击不中时重试一次, 诊断计数区分"没按上滑块"和"按上了但没滚"。
+                int dragPos = -1;
+                for (int attempt = 0; attempt < 2 && dragPos <= 0; attempt++)
+                {
+                    if (attempt > 0) Console.Out.WriteLine("DRAG-RETRY attempt=" + attempt);
+                    SendMessage(lt.Handle, 0x115, (IntPtr)0x0006, IntPtr.Zero);   // WM_VSCROLL SB_TOP
+                    for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    var si0 = VertScrollInfo(lt);
+                    int ty0, th0;
+                    ThumbGeom(ls, si0.Value, out ty0, out th0);
+                    Point thumbSp = ls.PointToScreen(new Point(ls.Width - Dpi.S(6), ty0 + th0 / 2));
+                    Cursor.Position = thumbSp;
+                    for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);                   // LEFTDOWN
+                    for (int i = 0; i < 3; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    for (int k = 1; k <= 10; k++)
+                    {
+                        Cursor.Position = new Point(thumbSp.X, thumbSp.Y + k * 6);
+                        Application.DoEvents();
+                        System.Threading.Thread.Sleep(30);
+                        Application.DoEvents();
+                    }
+                    mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);                   // LEFTUP
+                    for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    var si1 = VertScrollInfo(lt);
+                    dragPos = si1.HasValue ? si1.Value.nPos : 0;
+                    Console.Out.WriteLine("DRAG-BAR pos " + (si0.HasValue ? si0.Value.nPos.ToString() : "?")
+                        + " -> " + dragPos + " (期望显著增大) starts=" + RefInt(ls, "DragStarts")
+                        + " moves=" + RefInt(ls, "DragMoves") + " (诊断: 按上滑块次数/拖拽发消息次数)");
+                    shotL("dragged");
+                }
+
+                mf.Close();
+                for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                Console.Out.WriteLine("LOGSHELL-DONE");
+                return;
+            }
+
             if (args.Length >= 1 && args[0] == "seam")
             {
                 var mf = new MainForm();
@@ -2599,6 +2723,39 @@ namespace StereoSplitter
             IntPtr lp = (IntPtr)((y << 16) | 4);
             SendMessage(buttons.Handle, 0x0201, (IntPtr)1, lp);   // WM_LBUTTONDOWN
             SendMessage(buttons.Handle, 0x0202, (IntPtr)0, lp);   // WM_LBUTTONUP
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool GetScrollInfo(IntPtr hWnd, int nBar, ref ScrollInfo si);
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct ScrollInfo { public int cbSize, fMask, nMin, nMax, nPage, nPos, nTrackPos; }
+
+        /// <summary>读控件竖向滚动信息; 不需要滚动 (全文可见) 返回 null。</summary>
+        static ScrollInfo? VertScrollInfo(Control c)
+        {
+            if (c == null || !c.IsHandleCreated) return null;
+            var si = new ScrollInfo();
+            si.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(ScrollInfo));
+            si.fMask = 0x1 | 0x2 | 0x4;   // SIF_RANGE | SIF_PAGE | SIF_POS
+            if (!GetScrollInfo(c.Handle, 1, ref si) || si.nMax <= 0 || si.nPage >= si.nMax + 1) return null;
+            return si;
+        }
+
+        /// <summary>按 RoundLogShell 的几何算滑块顶边 y (壳局部) 与滑块高。</summary>
+        static void ThumbGeom(Control ls, ScrollInfo si, out int ty, out int th)
+        {
+            int trackTop = Dpi.S(6), trackLen = ls.Height - 1 - trackTop * 2;
+            th = Math.Max(Dpi.S(18), (int)((long)trackLen * si.nPage / (si.nMax + 1)));
+            int maxTop = si.nMax + 1 - si.nPage;
+            ty = trackTop + (maxTop > 0 ? (int)((long)(trackLen - th) * si.nPos / maxTop) : 0);
+        }
+
+        /// <summary>反射读 int 字段 (internal 诊断计数)。</summary>
+        static int RefInt(object o, string name)
+        {
+            var f = o.GetType().GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return f == null ? -1 : (int)f.GetValue(o);
         }
 
         static int CountHandles(Control root)

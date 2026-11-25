@@ -1187,6 +1187,250 @@ namespace StereoSplitter
         }
     }
 
+    /// <summary>
+    /// 日志文本框: 把会改变滚动位置的原生输入转成事件, 供圆角壳 (<see cref="RoundLogShell"/>)
+    /// 重绘自绘滚动条 —— 原生 TextBox 不提供任何滚动通知。
+    /// </summary>
+    class LogTextBox : TextBox
+    {
+        public event EventHandler ScrollChanged;
+
+        void Raise()
+        {
+            var h = ScrollChanged;
+            if (h != null) h(this, EventArgs.Empty);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+            // WM_VSCROLL (点滚动条/键盘翻页) / WM_MOUSEWHEEL (滚轮) / EM_SCROLLCARET
+            // (追加日志后 ScrollToCaret 追到底) —— 三条路径都会改变滚动位置
+            if (m.Msg == 0x115 || m.Msg == 0x20A || m.Msg == 0x00B7) Raise();
+        }
+
+        protected override void OnTextChanged(EventArgs e)
+        {
+            base.OnTextChanged(e);
+            Raise();   // AppendText/Clear 后位置都可能变; ScrollToCaret 那条消息随后再触发一次, 幂等
+        }
+    }
+
+    /// <summary>
+    /// 日志圆角壳: TextBox 是原生控件, 自己画不了圆角描边 —— 外壳按 <see cref="RoundNumericShell"/>
+    /// 同一套框色画圆角边框, 日志框嵌在 1px 内衬里并把窗口裁成圆角 (同一手法, 方角不会盖住弧线)。
+    /// <para>右侧留一条竖向滚动条带: 原生滚动条被窗口区域裁掉 —— 看不见也点不到 (用户要求
+    /// "滑动条无边框、去掉明显外框"), 滚动机制本身保留 (滚轮/键盘/ScrollInfo 全照旧);
+    /// 滚动条改由外壳自绘成 4px 圆头细条 (与下拉列表的滚动条同一套), 拖拽滑块 / 点击翻页 /
+    /// 条带上的滚轮都在外壳处理。</para>
+    /// </summary>
+    class RoundLogShell : Panel
+    {
+        static Color BorderCol { get { return OutputCardControl.BorderColor; } }   // 与延迟壳/卡片同一套浅灰框
+        static readonly Color ThumbColor = Color.FromArgb(198, 203, 211);          // 与下拉列表滚动条同一支灰
+        static readonly Color ThumbHotColor = Color.FromArgb(172, 178, 188);       // 悬停/拖拽加深一档
+        static int CornerRadius { get { return Dpi.S(6); } }
+        static int BarW { get { return Dpi.S(4); } }      // 滑条粗细 (设计 px, 与下拉列表一致)
+        static int StripW { get { return Dpi.S(10); } }   // 右侧滚动条带总宽 (细条 + 两侧留白)
+
+        public readonly LogTextBox Inner;
+        bool barHot;                 // 鼠标悬停在滚动条带上
+        bool dragThumb;              // 正在拖拽滑块
+        int dragGrabY;               // 按下点相对滑块顶边的偏移 (拖拽中保持不跳)
+        /// <summary>诊断: 按下滑块成功的次数 / 拖拽中实际发送滚动消息的次数 (探针读)。</summary>
+        internal int DragStarts, DragMoves;
+
+        const int SB_VERT = 1;
+        const int SB_PAGEUP = 2, SB_PAGEDOWN = 3, SB_THUMBTRACK = 5;
+        const int WM_VSCROLL = 0x115, WM_MOUSEWHEEL = 0x20A;
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct SCROLLINFO
+        {
+            public int cbSize, fMask, nMin, nMax, nPage, nPos, nTrackPos;
+        }
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool GetScrollInfo(IntPtr hWnd, int nBar, ref SCROLLINFO si);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        public RoundLogShell(LogTextBox log)
+        {
+            Inner = log;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.ResizeRedraw, true);
+            Controls.Add(log);
+            // 滚动机制保留原生的 (滚轮/键盘/GetScrollInfo 都依赖它), 只把外观藏掉:
+            // 3D 边框不要 (圆角描边由外壳画), 原生滚动条靠窗口区域裁剪 (见 Recalc)。
+            log.BorderStyle = BorderStyle.None;
+            log.ScrollBars = ScrollBars.Vertical;
+            log.ScrollChanged += (s, e) => RefreshBar();
+            log.TextChanged += (s, e) => RefreshBar();
+            Size = new Size(559, 90);
+        }
+
+        /// <summary>摆日志框 + 裁区域: 左侧跟随外壳圆角, 右侧整条排除滚动条带。</summary>
+        void Recalc()
+        {
+            if (Inner == null || IsDisposed) return;
+            // 条带宽随 DPI 缩放, 但壳极窄时保底不留 (总得有地方放正文)
+            int strip = StripW * 3 < Width ? StripW : 0;
+            int w = Math.Max(1, Width - 2 - strip), h = Math.Max(1, Height - 2);
+            Inner.SetBounds(1, 1, w, h);
+            // 区域在 Inner 自己的坐标里: 外壳内衬圆角 (0..W-2) 平移 (-1,-1) 后与文本区矩形求交 ——
+            // 左侧两个方角被圆角弧裁掉, 右缘在条带左边界处切成直线 (原生滚动条落在这条线右侧,
+            // 整个不可见、鼠标事件也穿不过去, 全部落在壳上由外壳处理)。
+            Region old = Inner.Region;
+            using (var path = UiDraw.RoundRect(
+                new System.Drawing.RectangleF(-1f, -1f, Width - 2f, Height - 2f), CornerRadius - 1f))
+            {
+                var reg = new Region(path);
+                reg.Intersect(new Rectangle(0, 0, w, h));
+                Inner.Region = reg;
+            }
+            if (old != null) old.Dispose();
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            BeginInvoke((Action)Recalc);   // 与 RoundNumericShell 同理: 等消息循环走起来再摆
+        }
+
+        protected override void OnResize(System.EventArgs eventargs)
+        {
+            base.OnResize(eventargs);
+            Recalc();                      // 拖分隔条/缩窗时日志框每步跟随
+        }
+
+        /// <summary>只重画右侧滚动条带 (滚动位置变了, 正文由文本框自己重画)。</summary>
+        void RefreshBar()
+        {
+            Invalidate(new Rectangle(Width - StripW - 1, 0, StripW + 1, Height));
+        }
+
+        /// <summary>当前竖向滚动信息 (nMax/nPage/nPos, 行单位); 句柄未建或读不到返回 false。</summary>
+        bool GetVert(out SCROLLINFO si)
+        {
+            si = new SCROLLINFO();
+            if (Inner == null || !Inner.IsHandleCreated) return false;
+            si.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(SCROLLINFO));
+            si.fMask = 0x1 | 0x2 | 0x4;    // SIF_RANGE | SIF_PAGE | SIF_POS
+            return GetScrollInfo(Inner.Handle, SB_VERT, ref si) && si.nMax > 0;
+        }
+
+        /// <summary>算滑块几何 (条带内 trackTop..trackLen, 滑块顶 y 与高); 不需要滚动返回 false。</summary>
+        bool ThumbGeometry(SCROLLINFO si, out int trackTop, out int trackLen, out int ty, out int th)
+        {
+            ty = th = 0;
+            trackTop = Dpi.S(6);
+            trackLen = Height - 1 - trackTop * 2;
+            if (si.nPage >= si.nMax + 1 || trackLen < BarW * 4) return false;   // 全文可见/太矮 → 不画
+            th = Math.Max(Dpi.S(18), (int)((long)trackLen * si.nPage / (si.nMax + 1)));
+            if (th > trackLen) th = trackLen;
+            int maxTop = si.nMax + 1 - si.nPage;
+            ty = trackTop + (maxTop > 0 ? (int)((long)(trackLen - th) * si.nPos / maxTop) : 0);
+            return true;
+        }
+
+        void DrawBar(Graphics g)
+        {
+            SCROLLINFO si;
+            if (!GetVert(out si)) return;
+            int trackTop, trackLen, ty, th;
+            if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
+            int bx = Width - StripW + (StripW - BarW) / 2;
+            using (var path = UiDraw.RoundRect(new RectangleF(bx, ty, BarW, th), BarW / 2f))
+            using (var b = new SolidBrush(barHot || dragThumb ? ThumbHotColor : ThumbColor))
+                g.FillPath(b, path);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+
+            // 圆角外四个小角补成父容器底色 (与 RoundNumericShell.OnPaint 同一手法)
+            Color outside = Parent != null ? Parent.BackColor : SystemColors.Control;
+            using (var b = new SolidBrush(outside)) g.FillRectangle(b, ClientRectangle);
+
+            using (var path = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), CornerRadius))
+            using (var fill = new SolidBrush(Inner.BackColor))
+                g.FillPath(fill, path);
+
+            DrawBar(g);
+
+            // 边框最后画: 与延迟壳同一套浅灰细边, 半像素对齐 (1px 不被抗锯齿拆粗)
+            using (var path = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), CornerRadius))
+            using (var pen = new Pen(BorderCol, 1f))
+                g.DrawPath(pen, path);
+        }
+
+        // ---- 滚动条交互: 条带在 Inner 区域之外 (被 Inner 的窗口区域排除), 事件全落在外壳 ----
+
+        bool InStrip(int x) { return x >= Width - 1 - StripW; }
+
+        void SendScroll(int wParamLow, int pos)
+        {
+            if (!Inner.IsHandleCreated) return;
+            SendMessage(Inner.Handle, WM_VSCROLL, (IntPtr)((pos << 16) | wParamLow), IntPtr.Zero);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left || !InStrip(e.X)) return;
+            SCROLLINFO si;
+            if (!GetVert(out si)) return;
+            int trackTop, trackLen, ty, th;
+            if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
+            if (e.Y >= ty && e.Y < ty + th)
+            {
+                dragThumb = true;
+                dragGrabY = e.Y - ty;
+                DragStarts++;
+                Capture = true;
+            }
+            else SendScroll(e.Y < ty ? SB_PAGEUP : SB_PAGEDOWN, 0);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            bool over = InStrip(e.X);
+            if (over != barHot) { barHot = over; RefreshBar(); }
+            if (!dragThumb) return;
+            SCROLLINFO si;
+            if (!GetVert(out si)) return;
+            int trackTop, trackLen, ty, th;
+            if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
+            int maxTop = si.nMax + 1 - si.nPage;
+            if (maxTop <= 0) return;
+            int pos = (int)Math.Round((e.Y - trackTop - dragGrabY) * (double)maxTop / Math.Max(1, trackLen - th));
+            pos = Math.Max(0, Math.Min(maxTop, pos));
+            DragMoves++;
+            SendScroll(SB_THUMBTRACK, pos);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (dragThumb) { dragThumb = false; Capture = false; RefreshBar(); }
+        }
+
+        /// <summary>滚轮落在条带上时转发给日志框 (正文区滚轮由文本框原生处理, 不经过这里)。</summary>
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            if (!Inner.IsHandleCreated || e.Delta == 0) return;
+            var p = PointToScreen(e.Location);
+            SendMessage(Inner.Handle, WM_MOUSEWHEEL,
+                (IntPtr)((e.Delta << 16) & unchecked((int)0xFFFF0000)),
+                (IntPtr)(((p.Y & 0xFFFF) << 16) | (p.X & 0xFFFF)));
+        }
+    }
+
     // 不接受焦点的 SplitContainer: 点击/拖动分隔条不产生焦点虚线框
     class NoFocusSplitContainer : SplitContainer
     {

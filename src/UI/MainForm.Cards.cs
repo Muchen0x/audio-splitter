@@ -428,12 +428,12 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 日志框按日志面板的实时尺寸摆放: 左边距 15, 右边距 10 (文本框自己的竖滚动条
-        /// 就贴在面板右缘), 下面距 8。拖分隔条改日志区高度时同步跟随。
+        /// 日志圆角壳按日志面板的实时尺寸摆放: 左边距 15, 右边距 10, 下面距 8。
+        /// 拖分隔条改日志区高度时同步跟随 (日志框嵌在壳内, 由壳自己摆)。
         /// </summary>
         void LayoutLogPanel()
         {
-            if (txtLog == null || splitContainer == null) return;
+            if (logShell == null || splitContainer == null) return;
             Size cs = splitContainer.Panel2.ClientSize;
             // 尺寸没变就别再 SetBounds: 拖分隔条时这个回调每帧都来,
             // 每次都改一次 bounds 会连带整块日志框重排重画。
@@ -443,7 +443,7 @@ namespace StereoSplitter
             // 高下限设 0: 分隔条现在可以一路把日志区压到没有, 日志框跟着缩到 0 而不是留着
             // 40px 高度溢出到面板外面 (Panel 会裁剪, 但多出来的高度仍会参与滚动条计算)
             int h = Math.Max(0, cs.Height - Dpi.S(30) - Dpi.S(8));
-            txtLog.SetBounds(Dpi.S(15), Dpi.S(30), w, h);
+            logShell.SetBounds(Dpi.S(15), Dpi.S(30), w, h);
         }
 
         /// <summary>
@@ -551,12 +551,12 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 日志面板标题行: 右侧 [水位监控: 间隔 N 秒] [清除日志] 整组贴右缘,
+        /// 日志面板标题行: 右侧 [水位 N 秒 圆角壳] [清除日志] 整组贴右缘,
         /// 窗口窄时不会把「清除日志」挤出面板。左侧「日志」标题固定不动。
         /// </summary>
         void LayoutLogHeader()
         {
-            if (btnClearLog == null || lblWater == null) return;
+            if (btnClearLog == null || nudWaterShell == null) return;
             Control host = btnClearLog.Parent;
             if (host == null) return;
 
@@ -567,10 +567,7 @@ namespace StereoSplitter
             int gap = Dpi.S(6);
 
             btnClearLog.Left = panelW - rightEdge - btnClearLog.Width;
-            lblWaterSec.Left = btnClearLog.Left - Dpi.S(8) - PreferredW(lblWaterSec);
-            nudWaterShell.Left = lblWaterSec.Left - gap - nudWaterShell.Width;
-            lblWaterIv.Left = nudWaterShell.Left - gap - PreferredW(lblWaterIv);
-            lblWater.Left = lblWaterIv.Left - gap - PreferredW(lblWater);
+            nudWaterShell.Left = btnClearLog.Left - gap - nudWaterShell.Width;
         }
 
         /// <summary>

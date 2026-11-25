@@ -62,7 +62,7 @@ namespace StereoSplitter
         VolumeSlider volMaster, volGain;
         Label lblVolMaster, lblVolGain;
         // 顶部固定行需要用到的控件 (自适应重排时要改它们的坐标/宽度)
-        Label lblWater, lblWaterIv, lblWaterSec, lblLogTitle;
+        Label lblLogTitle;
         StartButton btnStart;        // 自绘圆角 + 四态配色 + 动效 (换色渐变 / 过渡态转环 / 运行中呼吸光环)
         GearButton btnRefresh;       // 刷新设备 (圆环箭头图标): 运行中置灰, 链路级; 独立控件 (与下拉不再合成一组)
         RoundButton btnAddOutput;    // 「添加设备」文字按钮; 运行中置灰: 加卡片 = 加设备/改声道形状, 链路级
@@ -96,7 +96,8 @@ namespace StereoSplitter
         ToolTip tipTop;                    // 顶部控件提示 (需要随状态刷新设置按钮的文案)
         Infrastructure.SessionLog sessionLog;
         SplitContainer splitContainer;
-        TextBox txtLog;
+        LogTextBox txtLog;               // 日志正文 (原生控件, 圆角框与自绘滚动条由外壳画)
+        RoundLogShell logShell;          // 日志圆角壳: 圆角边框 + 右侧自绘无边框滚动条
         SpeakerButton btnMuteMaster;   // 主音量行的喇叭: 点一下 = 主静音 (原「静音」勾选框)
         NotifyIcon trayIcon;
         EventWaitHandle activateEvent;
@@ -569,14 +570,12 @@ namespace StereoSplitter
                 Log("[规格] " + SpecText() + " → " + SpecChannelNames());
             };
 
-            // 水位监控组: 日志面板标题行右侧, 清除日志按钮左边 (间隔0=关闭监控)
-            // 整组靠右: 右缘与「清除日志」按钮一致 (按钮右边 10px 距面板边), 右侧不留空条。
-            lblWater = new Label { Text = "水位监控:", Location = new Point(293, 8), AutoSize = true };
-            lblWaterIv = new Label { Text = "间隔", Location = new Point(359, 8), AutoSize = true };
-            // 间隔 0 = 关闭监控; 1 秒起, 不再卡 5 秒下限 (想看 1~4 秒的抖动就让人看)
+            // 水位监控组: 日志面板标题行右侧, 清除日志按钮左边 (间隔0=关闭监控)。
+            // 整组包进与卡片「延迟」框同一套的圆角壳: [水位][N][秒] —— 用户要求视觉风格
+            // 与延迟模块一致, 原来的「水位监控:」+「间隔」两个散标签按"更简单的描述"并入
+            // 壳内文字, 不再单独占位。
             nudWaterInterval = new NoWheelNumeric { Location = new Point(397, 5), Width = 60, Minimum = 0, Maximum = 3600, Value = 30 };
-            nudWaterShell = new RoundNumericShell(nudWaterInterval) { Location = new Point(397, 5) };
-            lblWaterSec = new Label { Text = "秒", Location = new Point(461, 8), AutoSize = true };
+            nudWaterShell = new RoundNumericShell(nudWaterInterval, "水位", "秒") { Location = new Point(397, 5) };
 
             lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true, Font = new Font("Microsoft YaHei UI", 10F) };
             // 「清除日志」: 原先用系统 Button (系统灰边 + 系统圆角), 与旁边的下拉/添加设备
@@ -594,19 +593,21 @@ namespace StereoSplitter
                 // 右缘由 LayoutLogHeader() 按面板实际宽度摆放
             };
 
-            txtLog = new TextBox
+            txtLog = new LogTextBox
             {
                 Location = new Point(15, 30),
-                // 尺寸由 LayoutLogPanel() 按面板实际大小算: 右缘距面板边 10px (竖滚动条贴边),
-                // 下缘留 8px。以前用固定 Size + Anchor, 初始面板高度和设计值不同, 底部被裁掉一截。
+                // 尺寸由 LayoutLogPanel() 按面板实际大小算 (摆的是外壳, 日志框嵌在壳内):
+                // 右缘距面板边 10px, 下缘留 8px。以前用固定 Size + Anchor, 初始面板高度
+                // 和设计值不同, 底部被裁掉一截。
                 Size = new Size(559, 90),
                 Multiline = true,
                 ReadOnly = true,
-                ScrollBars = ScrollBars.Vertical,
-                BorderStyle = BorderStyle.Fixed3D,
                 BackColor = Color.FromArgb(250, 250, 250),
                 Font = new Font("Consolas", 9F)
             };
+            // 圆角壳 (用户要求日志内容区为圆角矩形): 边框与延迟壳同一套浅灰, 右侧滚动条
+            // 改为壳自绘的无边框 4px 圆头细条 (原生滚动条被壳裁掉)。
+            logShell = new RoundLogShell(txtLog) { Location = new Point(15, 30), Size = new Size(559, 90) };
             var cmsLog = new ContextMenuStrip();
             cmsLog.Items.Add("复制", null, (s, e) => txtLog.Copy());
             cmsLog.Items.Add(new ToolStripSeparator());
@@ -616,7 +617,7 @@ namespace StereoSplitter
             // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
             // 都在"更多"弹层里 (控件由本类持有, 由 SettingsFlyout 搬入搬出)。
             splitContainer.Panel1.Controls.AddRange(new Control[] { cmbDefault, btnRefresh, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, lblRunState, flwSpecChannels, btnAddOutput, cardHost });
-            splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterShell, lblWaterSec, btnClearLog, txtLog });
+            splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, nudWaterShell, btnClearLog, logShell });
             // 面板自身重绘双缓冲 (DoubleBuffered 是 protected, 反射开): 实时拖动 (批77) 时
             // 面板每步变高, 不缓冲的话"擦背景(浅) → 子控件重绘"交错出闪帧 (批78 用户报告)。
             // 容器自身已在其 ctor 里开双缓冲; 原生 TextBox 只能靠拖动期间的 WS_EX_COMPOSITED 覆盖。
