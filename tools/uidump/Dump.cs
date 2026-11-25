@@ -2139,32 +2139,49 @@ namespace StereoSplitter
                 for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
                 mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);              // LEFTDOWN
                 for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
-                // 快速: 1px 连续步进不等待 (贴近真实快速拖动)
+                // 步进拖动 (每步 30ms: SetCursorPos 连发会被系统合并 WM_MOUSEMOVE,
+                // 不等的话只泵到个别步 —— 实时拖动要看的是逐步落位, 必须逐步泵)
+                int dist0 = scc.SplitterDistance;
                 for (int k = 1; k <= 8; k++)
                 {
                     Cursor.Position = new Point(dragSp.X, dragSp.Y + k);
                     Application.DoEvents();
-                    if (k == 3) shot("drag-mid");
+                    System.Threading.Thread.Sleep(30);
+                    Application.DoEvents();
+                    if (k == 3)
+                    {
+                        shot("drag-mid");
+                        // 批77: 实时拖动 —— 拖动中途距离就该已经落位 (原生 XOR 预览时代是原值不动)
+                        Console.Out.WriteLine("DRAG-MID-LIVE dist=" + scc.SplitterDistance
+                            + " (期望=" + (dist0 + 3) + ", 实时落位生效) panel1H=" + scc.Panel1.Height);
+                    }
                 }
                 mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);              // LEFTUP
                 Application.DoEvents();
                 shot("drag-done0");
                 for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
                 shot("drag-done");
-                Console.Out.WriteLine("DRAG-SMALL dist=" + scc.SplitterDistance + " panel1H=" + scc.Panel1.Height);
-                // 反向再拖 3px (上)
+                Console.Out.WriteLine("DRAG-SMALL dist=" + scc.SplitterDistance + " panel1H=" + scc.Panel1.Height + " (期望=" + (dist0 + 8) + ")");
+                // 反向再拖 3px (上): 抓点按**当前**滑带中心重算 (上面的拖动已把滑带挪了 8px)
+                Point dragSp2 = scc.PointToScreen(new Point(scc.Width / 2, scc.Panel1.Bottom + scc.SplitterWidth / 2));
+                Cursor.Position = dragSp2;
+                for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
                 mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+                for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
                 for (int k = 1; k <= 3; k++)
                 {
-                    Cursor.Position = new Point(dragSp.X, dragSp.Y + 8 - k);
+                    Cursor.Position = new Point(dragSp2.X, dragSp2.Y - k);
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(30);
                     Application.DoEvents();
                 }
                 mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
                 Application.DoEvents();
                 for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
                 shot("drag-back");
-                Console.Out.WriteLine("DRAG-BACK dist=" + scc.SplitterDistance);
-                Console.Out.WriteLine("DRAG-END-COUNT=" + ((NoFocusSplitContainer)scc).DragEndCount);
+                Console.Out.WriteLine("DRAG-BACK dist=" + scc.SplitterDistance + " (期望=" + (dist0 + 5) + ")");
+                Console.Out.WriteLine("DRAG-END-COUNT=" + ((NoFocusSplitContainer)scc).DragEndCount
+                    + " LIVE-MOVES=" + ((NoFocusSplitContainer)scc).LiveDragMoves + " (期望>0)");
                 // 整窗强制重画: 若能治愈 230 花纹 → 陈旧像素问题 (增量裁剪漏行), 不是几何问题
                 mf.Invalidate(true);
                 for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }

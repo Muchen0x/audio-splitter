@@ -1213,31 +1213,109 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 拖动结束 (WM_LBUTTONUP 走完 base 处理之后)。SplitContainer 的拖动用 **XOR
-        /// 反色预览条**: 拖动中把滑带位置的屏幕条带按位反转、松手再反转一次"擦除"。
-        /// 擦除与我们松手后的重绘交错时 (距离变化 → 我们重画了新位置), 反转残迹
-        /// (深带 25 → 反色 230, 把手条 140 → 115) 会留在屏上直到下次整窗重画。
-        /// 这里在 base 处理 (含擦除) **完成之后**回调, 让宿主把滑带区整条重画盖掉残迹。
+        /// 拖动结束 (WM_LBUTTONUP, 落位之后)。历史上 SplitContainer 的拖动用 **XOR
+        /// 反色预览条**: 拖动中把滑带位置的屏幕条带按位反转、松手再反转一次"擦除",
+        /// 擦除与重绘交错时会留残迹 (深带 25 → 反色 230, 把手条 140 → 115)。批 77 起
+        /// 拖动已改为 <see cref="LiveDrag"/> 实时落位, 原生 XOR 预览不再参与; 本事件
+        /// 保留为松手后的**兜底重画通知** —— 宿主把滑带区整条重画一遍, 任何旧机制
+        /// 残留的痕迹都在这里被盖掉。
         /// </summary>
         public event EventHandler DragFeedbackEnd;
 
         /// <summary>诊断: DragFeedbackEnd 触发次数 (探针读)。</summary>
         internal int DragEndCount;
 
+        /// <summary>诊断: 实时拖动中应用距离的次数 (探针读, &gt;0 = 实时拖动生效)。</summary>
+        internal int LiveDragMoves;
+
+        bool _liveDrag;                     // 接管式实时拖动进行中
+        int _dragStartY;                    // 按下时的鼠标 y (容器坐标)
+        int _dragOrigDist;                  // 按下时的 SplitterDistance (位移基准, 避免逐帧累计误差)
+
+        /// <summary>
+        /// 实时拖动 (替代原生 XOR 反色预览条): 鼠标按下滑带后, 每次移动直接把
+        /// 分隔距离落到新位置 —— 面板、滑带、喇叭口走**正常重绘**整体跟着走。
+        /// <para>为什么要接管: 原生预览矩形只覆盖容器界内的中段直带, 而滑带两端的
+        /// 喇叭口画在左右让边里 (MainForm.PaintSplitterBleed), 预览延伸不到那里 ——
+        /// 拖动时看起来"只有中间的在动" (用户截图)。实时落位后预览与静止形态完全一致,
+        /// XOR 棋盘花纹一类的问题也从根上消失。</para>
+        /// <para>夹取: 上限留 1px 余量 (面板高度不归零), 整体收起留到松手时落位 ——
+        /// 与原生"松手才落位"的语义一致 (拖到最底 = 松手后整体收起日志面板)。</para>
+        /// </summary>
+        void ApplyLiveDrag(int y)
+        {
+            int min = Panel1MinSize;
+            int max = Height - SplitterWidth - Panel2MinSize - 1;
+            if (max < min) max = min;
+            int dist = _dragOrigDist + (y - _dragStartY);
+            if (dist < min) dist = min;
+            if (dist > max) dist = max;
+            if (dist != SplitterDistance)
+            {
+                try { SplitterDistance = dist; } catch { }   // 触发 SplitterMoved → 宿主重画
+                LiveDragMoves++;
+            }
+        }
+
+        /// <summary>WM_XXX 的 LPARAM → 客户区坐标 (有符号 16 位两半)。</summary>
+        static Point LParamPt(IntPtr lp)
+        {
+            int v = lp.ToInt32();
+            return new Point((short)(v & 0xFFFF), (short)((v >> 16) & 0xFFFF));
+        }
+
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == 0x0201)                       // WM_LBUTTONDOWN: child 能收到, 此刻记录旧焦点 (Focus 尚未发生)
             {
                 restoreFocus = GetFocus();
+                // 命中滑带 → 接管拖动 (不调 base, 原生 SplitBegin/XOR 预览不再启动)。
+                // 点在面板上的消息走面板自己的窗口, 到不了容器 —— 这里收到的就是滑带上的点击。
+                Rectangle sr = SplitterRectangle;
+                if (sr.Width > 0 && sr.Height > 0 && !Panel1Collapsed && !Panel2Collapsed
+                    && ptInStrip(m.LParam, sr))
+                {
+                    _liveDrag = true;
+                    _dragStartY = LParamPt(m.LParam).Y;
+                    _dragOrigDist = SplitterDistance;
+                    Capture = true;                    // 原生拖动也会设捕获, 这里自己接管
+                    return;
+                }
                 base.WndProc(ref m);
                 return;
             }
-            if (m.Msg == 0x0202)                       // WM_LBUTTONUP: base 里包含反色预览条的擦除,
-            {                                          // 必须等它做完再通知宿主重画滑带区
+            if (m.Msg == 0x0200 && _liveDrag)          // WM_MOUSEMOVE: 实时落位。跳过 base ——
+            {                                          // 原生移动分支会画 XOR 反色预览条
+                ApplyLiveDrag(LParamPt(m.LParam).Y);
+                return;
+            }
+            if (m.Msg == 0x0202)                       // WM_LBUTTONUP: 结束拖动
+            {
+                if (_liveDrag)
+                {
+                    _liveDrag = false;
+                    Capture = false;
+                    // 拖到最底 (拖动中被夹在 max-1, 面板高度还剩 1px) → 松手落到真正的
+                    // max, Panel2 高度归零 → SplitterMoved → OnSplitterMoved 整体收起
+                    int min = Panel1MinSize;
+                    int max = Height - SplitterWidth - Panel2MinSize;
+                    if (max < min) max = min;
+                    if (max > min && SplitterDistance >= max - 1)
+                    {
+                        try { SplitterDistance = max; } catch { }
+                    }
+                    DragEndCount++;
+                    if (DragFeedbackEnd != null) DragFeedbackEnd(this, EventArgs.Empty);
+                    return;
+                }
                 base.WndProc(ref m);
                 DragEndCount++;
                 if (DragFeedbackEnd != null) DragFeedbackEnd(this, EventArgs.Empty);
                 return;
+            }
+            if (m.Msg == 0x0215 && _liveDrag)          // WM_CAPTURECHANGED: 捕获被意外抢走
+            {                                          // (弹窗等) → 放弃拖动, 停在最后落位
+                _liveDrag = false;
             }
             if (m.Msg == 0x0007)                       // WM_SETFOCUS: 焦点被抢到分隔条 → 立即还回
             {
@@ -1256,6 +1334,13 @@ namespace StereoSplitter
                 return;
             }
             base.WndProc(ref m);
+        }
+
+        /// <summary>滑带命中: 点落在滑带矩形内 (容器只在自己裸露的滑带上收到点击)。</summary>
+        bool ptInStrip(IntPtr lp, Rectangle sr)
+        {
+            Point pt = LParamPt(lp);
+            return pt.Y >= sr.Top && pt.Y < sr.Bottom;
         }
 
         /// <summary>

@@ -367,7 +367,8 @@ namespace StereoSplitter
             // 分隔条位置变了: 左右那两截"补到边"的分隔线要跟着重画;
             // 拖到最底 (日志面板高度归零) 时整体收起日志面板 (用户指定, 由标题栏日志按钮恢复)
             splitContainer.SplitterMoved += (s, e) => OnSplitterMoved();
-            // 拖动结束 (反色预览条擦除之后): 把滑带区整条重画, 盖掉 XOR 残迹 (见 InvalidateSeamZone)
+            // 拖动结束 (松手落位之后): 把滑带区整条兜底重画一遍 (拖动本身已是实时落位,
+            // 原生 XOR 预览不再参与, 见 NoFocusSplitContainer.LiveDrag)
             ((NoFocusSplitContainer)splitContainer).DragFeedbackEnd +=
                 (s, e) => { InvalidateSeamZone(); InvalidateSplitterBleed(); };
             Controls.Add(splitContainer);
@@ -984,10 +985,9 @@ namespace StereoSplitter
 
         /// <summary>
         /// 把滑带经过的整条横带 (旧位置 ∪ 新位置, 含喇叭口外扩) 整体失效。
-        /// <para>SplitContainer 拖动用 XOR 反色预览条: 松手擦除与我们松手后的重绘交错时,
-        /// 反转残迹 (深带 25 → 230, 把手条 140 → 115) 留在屏上, 缩放窗口才消失。
-        /// 拖动结束回调 (<see cref="NoFocusSplitContainer.DragFeedbackEnd"/>, 擦除**之后**)
-        /// 与 SplitterMoved 都走这里, 残迹一律被整条重画盖掉。</para>
+        /// <para>拖动已是实时落位 (NoFocusSplitContainer.LiveDrag, 原生 XOR 反色预览条
+        /// 不再参与), 每次落位靠这里把新旧两站之间的滑带整条重画; DragFeedbackEnd
+        /// (松手兜底) 也走这里。</para>
         /// </summary>
         void InvalidateSeamZone()
         {
