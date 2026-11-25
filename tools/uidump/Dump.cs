@@ -2200,6 +2200,75 @@ namespace StereoSplitter
                 shot("healed");
                 Console.Out.WriteLine("HEALED after full invalidate");
 
+                // 批79: 拖动中逐帧抓拍 —— 滑带中段 (容器 HWND 画) 与两端喇叭口 (窗体 HWND 画)
+                // 分属两个窗口、各自双缓冲上屏; 快速拖动时若两窗的 WM_PAINT 落在不同帧,
+                // 圆角就会相对滑带抖动。逐帧对比两者位置, 输出偏差。
+                Action<string, int> jitRun = (jtag, sleepMs) =>
+                {
+                    Point gsp = scc.PointToScreen(new Point(scc.Width / 2, scc.Panel1.Bottom + scc.SplitterWidth / 2));
+                    Cursor.Position = gsp;
+                    for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+                    for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    int jmin = int.MaxValue, jmax = int.MinValue, jminBot = int.MaxValue, jmaxBot = int.MinValue;
+                    for (int k = 1; k <= 16; k++)
+                    {
+                        Cursor.Position = new Point(gsp.X, gsp.Y - k);
+                        Application.DoEvents();
+                        if (sleepMs > 0) System.Threading.Thread.Sleep(sleepMs);
+                        Application.DoEvents();
+                        using (var bmp = new Bitmap(mf.Width, mf.Height))
+                        {
+                            using (var g = Graphics.FromImage(bmp))
+                                g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
+                            int xc = scc.PointToScreen(new Point(scc.Width / 2, 0)).X - mf.Left;
+                            int yc = scc.Top + scc.SplitterDistance;   // 滑带上缘 (帧坐标)
+                            Func<int, int, int, int[]> darkRows = (x, yFrom, yTo) =>
+                            {
+                                var ys = new List<int>();
+                                for (int y = yFrom; y <= yTo; y++)
+                                {
+                                    var p = bmp.GetPixel(x, y);
+                                    if (p.R < 70 && p.G < 70 && p.B < 70) ys.Add(y);
+                                }
+                                return ys.ToArray();
+                            };
+                            // 中段: 只扫滑带附近, 避开上方卡片文字与下方日志标题
+                            int[] mid = darkRows(xc, yc - 6, yc + 14);
+                            // 左喇叭口列 (x=4, 让边内): 弧伸到带外 ±r
+                            int[] arc = darkRows(4, yc - 14, yc + 20);
+                            int bandTop = mid.Length > 0 ? mid[0] : -1;
+                            int bandBot = mid.Length > 0 ? mid[mid.Length - 1] : -1;
+                            int arcTop = arc.Length > 0 ? arc[0] : -1;
+                            int arcBot = arc.Length > 0 ? arc[arc.Length - 1] : -1;
+                            int dTop = (bandTop >= 0 && arcTop >= 0) ? arcTop - bandTop : -99;
+                            int dBot = (bandBot >= 0 && arcBot >= 0) ? arcBot - bandBot : -99;
+                            if (dTop < jmin) jmin = dTop;
+                            if (dTop > jmax) jmax = dTop;
+                            if (dBot < jminBot) jminBot = dBot;
+                            if (dBot > jmaxBot) jmaxBot = dBot;
+                            Console.Out.WriteLine(jtag + " k=" + k.ToString("00") + " band=" + bandTop + ".." + bandBot
+                                + " arc=" + arcTop + ".." + arcBot + " dTop=" + dTop + " dBot=" + dBot);
+                        }
+                    }
+                    mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+                    Application.DoEvents();
+                    Console.Out.WriteLine(jtag + "-RANGE dTop=" + jmin + ".." + jmax + " dBot=" + jminBot + ".." + jmaxBot
+                        + " (期望各自恒定单一值; 出现多值/-99 = 圆角与滑带不同步)");
+                    if (jmin != jmax || jminBot != jmaxBot || jmin == -99)
+                    {
+                        using (var bmp = new Bitmap(mf.Width, mf.Height))
+                        {
+                            using (var g = Graphics.FromImage(bmp))
+                                g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
+                            bmp.Save("seam-jitter-" + jtag + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                        Console.Out.WriteLine("JIT-SHOT -> seam-jitter-" + jtag + ".png");
+                    }
+                };
+                jitRun("JIT", 25);          // 慢速: 每步逐泵
+                jitRun("JIT-FAST", 0);      // 快速压力: 不等待, 消息合并成大步长
+
                 // 拉到最底 = SplitterDistance 拉满 → SplitterMoved 应自动整体收起日志面板
                 try { scc.SplitterDistance = scc.Height - scc.SplitterWidth; } catch (Exception ex) { Console.Out.WriteLine("DRAG-BOTTOM set failed: " + ex.Message); }
                 for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }

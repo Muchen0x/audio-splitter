@@ -922,7 +922,7 @@ namespace StereoSplitter
         /// </summary>
         void OnSplitterMoved()
         {
-            InvalidateSplitterBleed();
+            InvalidateBleedBand();          // 拖动路径专用: 只失效滑带附近的让边小段 (批79)
             InvalidateSeamZone();
             if (splitContainer == null || splitContainer.Panel2Collapsed) return;
             if (splitContainer.Panel2.Height > Dpi.S(40))
@@ -989,6 +989,33 @@ namespace StereoSplitter
             // 自己的表面, 容器 (子窗口) 根本不重画 —— 而滑带正是容器画的。
             Invalidate(new Rectangle(0, 0, grip, ClientSize.Height), true);
             Invalidate(new Rectangle(ClientSize.Width - grip, 0, grip, ClientSize.Height), true);
+        }
+
+        int _bleedY = -1;                   // 上次失效的让边滑带 y (客户区); -1 = 未知
+
+        /// <summary>
+        /// 让边 (左右两圈) 里只有喇叭口会变, 而**只在滑带附近**: 整高竖带失效会让窗体
+        /// 每帧连标题栏、右缘按钮都一起重画 (实时拖动每步一次, 纯浪费还拖慢上屏)。
+        /// 这里只失效两圈与"旧∪新滑带横带"的交集 (两小段), 拖动路径专用;
+        /// 收起/恢复与松手兜底仍走整高的 <see cref="InvalidateSplitterBleed"/>。
+        /// </summary>
+        void InvalidateBleedBand()
+        {
+            if (splitContainer == null || !IsHandleCreated || splitContainer.Panel2Collapsed)
+            {
+                _bleedY = -1;
+                return;
+            }
+            int grip = Padding.Left;
+            if (grip <= 0) return;
+            int y = splitContainer.Top + splitContainer.Panel1.Bottom;
+            int h = splitContainer.SplitterWidth;
+            int pad = (int)NoFocusSplitContainer.SeamRadiusPx + 2;
+            int top = _bleedY >= 0 ? Math.Min(_bleedY, y) : y;
+            int bottom = _bleedY >= 0 ? Math.Max(_bleedY, y) : y;
+            Invalidate(new Rectangle(0, top - pad, grip, bottom - top + h + pad * 2), true);
+            Invalidate(new Rectangle(ClientSize.Width - grip, top - pad, grip, bottom - top + h + pad * 2), true);
+            _bleedY = y;
         }
 
         int _seamY = -1;                    // 上次记录的滑带上缘 (客户区 y); -1 = 未知

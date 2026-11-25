@@ -1302,6 +1302,13 @@ namespace StereoSplitter
             {
                 try { SplitterDistance = dist; } catch { }   // 触发 SplitterMoved → 宿主重画
                 LiveDragMoves++;
+                // 两窗同步冲刷 (批79): 滑带/把手画在容器 (子窗口) 表面, 两端喇叭口画在
+                // 窗体表面 —— 分属两个 HWND、各自双缓冲上屏。快速拖动时两者的 WM_PAINT
+                // 若落入不同帧, 圆口就会相对滑带抖动 (用户报告"拖动时圆角会抖动")。
+                // 每步落位后立刻把两窗的脏区都刷上屏, 拖动的每一帧都是对齐的。
+                if (IsHandleCreated) Update();
+                Form f = Parent as Form;
+                if (f != null && f.IsHandleCreated) f.Update();
             }
         }
 
