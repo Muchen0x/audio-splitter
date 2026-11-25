@@ -1231,12 +1231,15 @@ namespace StereoSplitter
         static readonly Color ThumbHotColor = Color.FromArgb(172, 178, 188);       // 悬停/拖拽加深一档
         static int CornerRadius { get { return Dpi.S(6); } }
         static int BarW { get { return Dpi.S(4); } }      // 滑条粗细 (设计 px, 与下拉列表一致)
-        static int StripW { get { return Dpi.S(10); } }   // 右侧滚动条带总宽 (细条 + 两侧留白)
+        static int StripW { get { return Dpi.S(10); } }   // 滑条带/命中区宽 (设计 px)
+        static int PadX { get { return Dpi.S(10); } }     // 左右内衬留白 (设计 px, 对称): 正文不顶框,
+                                                          // 右侧那条留白正是自绘滑条的位置 (用户要求)
 
         public readonly LogTextBox Inner;
         bool barHot;                 // 鼠标悬停在滚动条带上
         bool dragThumb;              // 正在拖拽滑块
         int dragGrabY;               // 按下点相对滑块顶边的偏移 (拖拽中保持不跳)
+        int textEnd;                 // 正文右缘 (壳坐标, 不含): 右侧留白带从此到边框, 滑条在其中居中
         /// <summary>诊断: 按下滑块成功的次数 / 拖拽中实际发送滚动消息的次数 (探针读)。</summary>
         internal int DragStarts, DragMoves;
 
@@ -1283,31 +1286,32 @@ namespace StereoSplitter
         void Recalc()
         {
             if (Inner == null || IsDisposed) return;
-            int iw = Math.Max(1, Width - 2), ih = Math.Max(1, Height - 2);
-            // 目标文本宽: 可视区右缘留出自绘条带 StripW, 正文正好铺到条带左缘 (多一像素都被裁)
-            int textW = Math.Max(StripW + 40, iw - StripW);
+            int ih = Math.Max(1, Height - 2);
+            // 左右内衬对称: 正文从 1+PadX 到 Width-1-PadX, 两边留白等宽 (用户要求"留白要对称")。
+            // 右侧那条留白就是滑条的安放处 —— 滑条在其中居中, 不贴正文也不贴边框。
+            int textW = Math.Max(StripW + 40, Width - 2 - 2 * PadX);
             if (Inner.IsHandleCreated)
             {
                 // Inner 窗口宽 = 文本宽 + 原生滚动条宽 (初值取系统量度 SM_CXVSCROLL,
                 // 再按实测 ClientSize 自校正一次, 不依赖 DPI 假设) —— client == textW 时正文铺满
                 int w = textW + Math.Max(1, GetSystemMetrics(2));
-                Inner.SetBounds(1, 1, w, ih);
+                Inner.SetBounds(1 + PadX, 1, w, ih);
                 int cw = Inner.ClientSize.Width;
                 if (cw != textW)
                 {
                     w = Math.Max(1, w + textW - cw);
-                    Inner.SetBounds(1, 1, w, ih);
+                    Inner.SetBounds(1 + PadX, 1, w, ih);
                 }
             }
             // Region 切在 client 右缘 (原生滚动条在 client 之外的非客户区, 整条被排除);
             // 兜底不超过 textW, 防止窗口加宽没生效时滚动条露进可视区。
             int cut = Math.Max(1, Math.Min(Inner.IsHandleCreated ? Inner.ClientSize.Width : textW, textW));
-            // 区域在 Inner 自己的坐标里: 外壳内衬圆角 (0..W-2) 平移 (-1,-1) 后与 [0, cut) 求交 ——
-            // 左侧两个方角被圆角弧裁掉, 右缘把原生滚动条整条排除 (看不见、鼠标事件也穿不过去,
-            // 全部落在壳上由外壳处理)。
+            textEnd = 1 + PadX + cut;
+            // 区域在 Inner 自己的坐标里: 外壳内衬圆角平移 Inner 原点后与 [0, cut) 求交 ——
+            // 右缘把原生滚动条整条排除 (看不见、鼠标事件也穿不过去, 全部落在壳上由外壳处理)。
             Region old = Inner.Region;
             using (var path = UiDraw.RoundRect(
-                new System.Drawing.RectangleF(-1f, -1f, Width - 2f, Height - 2f), CornerRadius - 1f))
+                new System.Drawing.RectangleF(-(1 + PadX), -1f, Width - 2f, Height - 2f), CornerRadius - 1f))
             {
                 var reg = new Region(path);
                 reg.Intersect(new Rectangle(0, 0, cut, ih));
@@ -1335,10 +1339,11 @@ namespace StereoSplitter
             Recalc();                      // 拖分隔条/缩窗时日志框每步跟随
         }
 
-        /// <summary>只重画右侧滚动条带 (滚动位置变了, 正文由文本框自己重画)。</summary>
+        /// <summary>只重画右侧留白带 (滚动位置变了, 正文由文本框自己重画)。</summary>
         void RefreshBar()
         {
-            Invalidate(new Rectangle(Width - StripW - 1, 0, StripW + 1, Height));
+            int from = textEnd > 0 ? textEnd : Width - StripW - 1;
+            Invalidate(new Rectangle(from, 0, Width - from, Height));
         }
 
         /// <summary>当前竖向滚动信息 (nMax/nPage/nPos, 行单位); 句柄未建或读不到返回 false。</summary>
@@ -1371,7 +1376,10 @@ namespace StereoSplitter
             if (!GetVert(out si)) return;
             int trackTop, trackLen, ty, th;
             if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
-            int bx = Width - StripW + (StripW - BarW) / 2;
+            // 滑条在右侧留白带 (textEnd .. 边框) 内水平居中 —— 不贴正文也不贴边框
+            int zoneL = textEnd > 0 ? textEnd : Width - 1 - StripW;
+            int zoneW = (Width - 2) - zoneL + 1;
+            int bx = zoneL + Math.Max(0, (zoneW - BarW) / 2);
             using (var path = UiDraw.RoundRect(new RectangleF(bx, ty, BarW, th), BarW / 2f))
             using (var b = new SolidBrush(barHot || dragThumb ? ThumbHotColor : ThumbColor))
                 g.FillPath(b, path);
@@ -1401,7 +1409,11 @@ namespace StereoSplitter
 
         // ---- 滚动条交互: 条带在 Inner 区域之外 (被 Inner 的窗口区域排除), 事件全落在外壳 ----
 
-        bool InStrip(int x) { return x >= Width - 1 - StripW; }
+        bool InStrip(int x)
+        {
+            int from = textEnd > 0 ? textEnd : Width - 1 - StripW;
+            return x >= from;
+        }
 
         void SendScroll(int wParamLow, int pos)
         {

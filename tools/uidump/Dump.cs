@@ -2172,11 +2172,12 @@ namespace StereoSplitter
                 // Region 必须切在它左边才算裁掉。扫描裁掉区 (文本右缘 .. 壳右缘-2, 中段避开圆角),
                 // 深色像素 (<100 灰, 原生滑块/箭头特征) 应为 0; 壳底色/描边都是浅色不误报。
                 {
-                    int iw2 = ls.Width - 2;
-                    int cut = Math.Max(1, Math.Min(lt.ClientSize.Width, iw2 - Dpi.S(10)));
-                    Point sp2 = ls.PointToScreen(new Point(cut, 0));
+                    int pad = Dpi.S(10);
+                    int textW = Math.Max(pad + 40, ls.Width - 2 - 2 * pad);
+                    int textEnd = 1 + pad + Math.Min(lt.ClientSize.Width, textW);
+                    Point sp2 = ls.PointToScreen(new Point(textEnd, 0));
                     int darkPx = 0;
-                    using (var bmp = new Bitmap(ls.Width - 2 - cut, ls.Height))
+                    using (var bmp = new Bitmap(ls.Width - 2 - textEnd, ls.Height))
                     {
                         using (var g = Graphics.FromImage(bmp))
                             g.CopyFromScreen(sp2, Point.Empty, bmp.Size);
@@ -2187,8 +2188,12 @@ namespace StereoSplitter
                                 if (p.R < 100 && p.G < 100 && p.B < 100) darkPx++;
                             }
                     }
-                    Console.Out.WriteLine("LEAK cut=" + cut + " darkPx=" + darkPx
+                    int padL2 = lt.Bounds.X - 1;                                   // 左留白 (边框内缘→正文)
+                    int padR2 = (ls.Width - 2) - (lt.Bounds.X + lt.ClientSize.Width); // 右留白
+                    Console.Out.WriteLine("LEAK textEnd=" + textEnd + " darkPx=" + darkPx
                         + " (期望0 —— 裁掉区内无原生滑块/箭头残迹)");
+                    Console.Out.WriteLine("PAD left=" + padL2 + " right=" + padR2 + " (期望相等, ±1)"
+                        + " innerX=" + lt.Bounds.X);
                     Console.Out.WriteLine("GEO shell=" + ls.Bounds.ToString()
                         + " inner=" + lt.Bounds.ToString() + " clientW=" + lt.ClientSize.Width
                         + " sbMetric=" + GetSystemMetrics(2)   // SM_CXVSCROLL

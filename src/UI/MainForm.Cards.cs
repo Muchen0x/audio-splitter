@@ -428,8 +428,9 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 日志圆角壳按日志面板的实时尺寸摆放: 左边距 15, 右边距 10, 下面距 8。
-        /// 拖分隔条改日志区高度时同步跟随 (日志框嵌在壳内, 由壳自己摆)。
+        /// 日志圆角壳按日志面板的实时尺寸摆放: 左右边距对称 (各 15 设计像素, 用户要求
+        /// 内容框在窗口里居中对称), 下面距 8。拖分隔条改日志区高度时同步跟随
+        /// (日志框嵌在壳内, 由壳自己摆)。
         /// </summary>
         void LayoutLogPanel()
         {
@@ -439,7 +440,7 @@ namespace StereoSplitter
             // 每次都改一次 bounds 会连带整块日志框重排重画。
             if (cs == lastLogPanelSize) return;
             lastLogPanelSize = cs;
-            int w = Math.Max(Dpi.S(120), cs.Width - Dpi.S(15) - Dpi.S(10));
+            int w = Math.Max(Dpi.S(120), cs.Width - Dpi.S(15) * 2);   // 左右各 15, 对称居中
             // 高下限设 0: 分隔条现在可以一路把日志区压到没有, 日志框跟着缩到 0 而不是留着
             // 40px 高度溢出到面板外面 (Panel 会裁剪, 但多出来的高度仍会参与滚动条计算)
             int h = Math.Max(0, cs.Height - Dpi.S(30) - Dpi.S(8));
@@ -563,7 +564,7 @@ namespace StereoSplitter
             int panelW = host.ClientSize.Width;
             if (panelW == lastLogHeaderW) return;
             lastLogHeaderW = panelW;
-            int rightEdge = Dpi.S(10);
+            int rightEdge = Dpi.S(15);   // 与日志圆角壳右缘同一列 (壳左右边距对称各 15)
             int gap = Dpi.S(6);
 
             btnClearLog.Left = panelW - rightEdge - btnClearLog.Width;
