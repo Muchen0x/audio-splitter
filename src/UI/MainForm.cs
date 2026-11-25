@@ -855,12 +855,14 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 把分隔条滑带补进左右那一圈让出去的 ResizeBorder 空隙 —— 深色滑带要通到窗口
-        /// 两缘, 且**端部在窗口边缘收圆角** (用户要求"滑条的圆角要抵住窗口边")。
-        /// <para>左右让边里: 先铺浅色底 (面板同支, 让边内这一段和上下面板连成一体),
-        /// 再补滑带的端部弧 —— 胶囊端 (半径 = 半高, 受让边宽度夹取): 弧从窗口边缘的
-        /// 一个点渐开到全高, 与容器内画的全高直边段 (NoFocusSplitContainer.OnPaint)
-        /// 在让边交界处精确相接。位置取 Panel1 的下缘, 拖动时跟着走 (SplitterMoved 重画)。</para>
+        /// 把分隔条滑带补进左右那一圈让出去的 ResizeBorder 空隙 —— 滑带是上下两块圆角
+        /// 矩形面板之间的**缝**, 两端沿窗口边缘外扩成喇叭口 (用户参考图, "圆角弧度跟随
+        /// 窗口")。
+        /// <para>左右让边里: 先铺浅色底 (面板同支, 覆盖喇叭口外扩的整个高度 —— 拖动后
+        /// 旧位置的弧痕也要盖掉), 再用与 NoFocusSplitContainer.OnPaint **同一条**路径
+        /// (<see cref="NoFocusSplitContainer.BuildSeamPath"/>, 窗体坐标) 画深带, 裁剪到
+        /// 两块让边 —— 只有喇叭口在让边里的部分实际可见, 容器界内的部分由容器自己重画
+        /// 盖掉。位置取 Panel1 的下缘, 拖动时跟着走 (SplitterMoved 重画)。</para>
         /// <para>日志面板整体收起后没有滑带, 不再补。</para>
         /// </summary>
         void PaintSplitterBleed(Graphics g)
@@ -871,45 +873,30 @@ namespace StereoSplitter
 
             int y = splitContainer.Top + splitContainer.Panel1.Bottom;
             int h = splitContainer.SplitterWidth;
-            float R = Math.Min(h / 2f, grip);       // 端部弧必须整个落在让边里
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using (var light = new SolidBrush(SystemColors.Control))
-            using (var dark = new SolidBrush(NoFocusSplitContainer.SeamDark))
-            {
-                g.FillRectangle(light, 0, y, grip, h);                          // 左让边浅底
-                // 左端胶囊弧: bbox (0,y,2R,h) 从 90° 扫 180° (底→左尖→顶), CloseFigure
-                // 用弦 (x=R 处竖线) 封口 = 半椭圆; R..grip 之间再补全高矩形接容器直边段
-                using (var p = new System.Drawing.Drawing2D.GraphicsPath())
-                {
-                    p.AddArc(0f, y, 2f * R, h, 90f, 180f);
-                    p.CloseFigure();
-                    g.FillPath(dark, p);
-                }
-                if (grip > R)
-                {
-                    // 弧的弦 (x=R) 正落在像素边界上, AA 模式下 FillRectangle 的边缘会
-                    // 半覆盖出一条浅缝 —— 矩形段用像素级填充 (关 SmoothingMode) 盖实
-                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
-                    g.FillRectangle(dark, R, y, grip - R, h);
-                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                }
+            float r = NoFocusSplitContainer.SeamRadiusPx;
+            int pad = (int)r + 2;               // 喇叭口在带子上/下各外扩 r, 浅底多留 2px 余量
 
-                int rx = splitContainer.Right;
-                g.FillRectangle(light, rx, y, grip, h);                         // 右让边浅底
-                using (var p = new System.Drawing.Drawing2D.GraphicsPath())
-                {
-                    p.AddArc(rx + grip - 2f * R, y, 2f * R, h, 270f, 180f);     // 顶→右尖→底
-                    p.CloseFigure();
-                    g.FillPath(dark, p);
-                }
-                if (grip > R)
-                {
-                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
-                    // +1: 右段的右边界 = 弦 (x=rx+grip-R), 弧的 AA 在弦列只有半覆盖,
-                    // 矩形多盖一列把它压成实色 (左段弦在首列, 天然被盖住, 不用 +1)
-                    g.FillRectangle(dark, rx, y, grip - R + 1, h);
-                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                }
+            using (var light = new SolidBrush(SystemColors.Control))
+            {
+                g.FillRectangle(light, 0, y - pad, grip, h + pad * 2);          // 左让边浅底
+                g.FillRectangle(light, splitContainer.Right, y - pad, grip, h + pad * 2); // 右让边浅底
+            }
+
+            // 深带路径 (整条, 窗体客户区坐标), 只让左右让边可见:
+            // 裁剪矩形在 x=grip / rx 处是硬切 (不走 AA), 容器在自己的 x=0 处接着画同一条
+            // 曲线 —— 两侧同色相接, 接缝落在像素边界上不会露缝
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            using (var clip = new Region(new Rectangle(0, y - pad, grip, h + pad * 2)))
+            {
+                clip.Union(new Rectangle(splitContainer.Right, y - pad, grip, h + pad * 2));
+                System.Drawing.Region oldClip = g.Clip;   // 保存绘制区裁剪, 用完还原
+                g.Clip = clip;
+                using (var path = NoFocusSplitContainer.BuildSeamPath(0f, ClientSize.Width, y, y + h, r))
+                using (var dark = new SolidBrush(NoFocusSplitContainer.SeamDark))
+                    g.FillPath(dark, path);
+                g.Clip = oldClip;
+                oldClip.Dispose();
             }
         }
 

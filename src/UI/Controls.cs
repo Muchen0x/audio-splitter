@@ -1240,30 +1240,65 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 分隔条: 浅色底上悬一条通到窗口两缘的深色胶囊带 (用户要求"滑条的圆角要抵住窗口
-        /// 边, 与上下面板组成一个完整圆滑的圆角矩形")。
-        /// <para>BackColor = 浅色 (与面板同支) —— 窗口左右让边 (ResizeBorder) 里的两段由
-        /// MainForm.PaintSplitterBleed 画: 那里露出浅色、再补上胶囊的端部弧, 圆角端正好
-        /// 落在窗口边缘。容器内这一段两侧都是全高直边 (弧只在让边里, 见那边注释), 所以
-        /// 这里只画矩形深带 + 中央把手圆角条。深带色 <see cref="SeamDark"/>。</para>
+        /// 分隔条 (用户参考图): 上下两块面板是两个圆角矩形, 深色滑带 = 它们之间的**缝** ——
+        /// 中段上下直边, 两端沿窗口边缘**外扩**成圆角喇叭口 (弧线就是上下面板朝缝那侧的
+        /// 圆角, 半径跟随窗口系统圆角 <see cref="SeamRadiusPx"/>)。
+        /// <para>BackColor = 浅色 (与面板同支)。整个窗口内区于是读作一个完整的浅色圆角
+        /// 矩形被这条缝分成上下两块。路径由 <see cref="BuildSeamPath"/> 统一描述:
+        /// 容器画自己界内的一段 (局部坐标, 窗口边缘在 x=-Left / Parent宽-Left),
+        /// 左右让边 (ResizeBorder) 里的两段由 MainForm.PaintSplitterBleed 用**同一条**
+        /// 路径补齐 —— 两边同一套数学, 接缝才对得上。深带色 <see cref="SeamDark"/>。</para>
         /// <para>日志面板整体收起 (Panel2Collapsed) 时 SplitterRectangle 为空, 自然不画。</para>
         /// </summary>
         internal static readonly Color SeamDark = Color.FromArgb(25, 25, 25);
+
+        /// <summary>
+        /// 喇叭口的圆角半径 (物理像素): 跟随窗口的 Win11 系统圆角 —— 固定 8 物理像素、
+        /// 不随 DPI 缩放 (用户要求"圆角弧度跟随窗口")。这里的绘制坐标全是设备像素
+        /// (bounds 都是 Dpi.S 过的值), 直接用物理值即可, 不要再过 Dpi.S。
+        /// </summary>
+        internal const float SeamRadiusPx = 8f;
+
+        /// <summary>
+        /// 滑带路径: 上下直边 + 四个角沿左右窗口边缘外扩的四分之一圆弧 (半径 r)。
+        /// 坐标: xl/xr = 左/右窗口边缘的 x, y1/y2 = 滑带上下缘。弧的圆心分别在
+        /// (xl±r, y1∓r) 与 (xl±r, y2±r) —— 弧线即上下面板朝缝那侧的圆角轮廓。
+        /// </summary>
+        internal static System.Drawing.Drawing2D.GraphicsPath BuildSeamPath(float xl, float xr, float y1, float y2, float r)
+        {
+            var p = new System.Drawing.Drawing2D.GraphicsPath();
+            p.AddArc(xl, y1 - 2f * r, 2f * r, 2f * r, 90f, 90f);           // 左上: (xl+r,y1) → (xl,y1-r)
+            p.AddLine(xl, y1 - r, xl, y2 + r);                             // 左窗口边缘
+            p.AddArc(xl, y2, 2f * r, 2f * r, 180f, 90f);                   // 左下: (xl,y2+r) → (xl+r,y2)
+            p.AddLine(xl + r, y2, xr - r, y2);                             // 底边
+            p.AddArc(xr - 2f * r, y2, 2f * r, 2f * r, 270f, 90f);          // 右下: (xr-r,y2) → (xr,y2+r)
+            p.AddLine(xr, y2 + r, xr, y1 - r);                             // 右窗口边缘
+            p.AddArc(xr - 2f * r, y1 - 2f * r, 2f * r, 2f * r, 0f, 90f);   // 右上: (xr,y1-r) → (xr-r,y1)
+            p.CloseFigure();                                               // 顶边闭回起点
+            return p;
+        }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
             Rectangle sr = SplitterRectangle;
             if (sr.Height <= 0 || sr.Width <= 0) return;
-            // 深色滑带: 容器内这一段是全宽全高直边 (端部弧在左右让边里补)
+            // 深色滑带: 整条路径用窗体客户区坐标描述、平移成本控件局部坐标 ——
+            // 界内画得到的部分 (中段直边 + 喇叭口靠内一截) 在这里出来;
+            // 落在左右让边里的部分 (x&lt;0 / x&gt;Width) 被控件边界裁掉, 由
+            // MainForm.PaintSplitterBleed 补。同一条路径两处各画一段, 弧线无缝相接。
+            float xl = -Left;
+            float xr = (Parent != null ? Parent.ClientSize.Width : Left + Width) - Left;
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            using (var path = BuildSeamPath(xl, xr, sr.Top, sr.Bottom, SeamRadiusPx))
             using (var b = new SolidBrush(SeamDark))
-                e.Graphics.FillRectangle(b, 0, sr.Top, Width, sr.Height);
+                e.Graphics.FillPath(b, path);
             // 中央把手圆角条 (参考图): 高 3 设计px、宽约 30% 容器宽、水平居中、两端全圆
             float bh = Dpi.S(3);
             float bw = Width * 0.3f;
             float bx = (Width - bw) / 2f;
             float by = sr.Top + (sr.Height - bh) / 2f;
-            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             using (var path = UiDraw.RoundRect(new RectangleF(bx, by, bw, bh), bh / 2f))
             using (var b = new SolidBrush(Color.FromArgb(140, 140, 140)))
                 e.Graphics.FillPath(b, path);
