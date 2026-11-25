@@ -428,9 +428,9 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 日志圆角壳按日志面板的实时尺寸摆放: 左右边距对称 (各 15 设计像素, 用户要求
-        /// 内容框在窗口里居中对称), 下面距 8。拖分隔条改日志区高度时同步跟随
-        /// (日志框嵌在壳内, 由壳自己摆)。
+        /// 日志圆角壳按日志面板的实时尺寸摆放: 左右下三边留白一致 (各 8 设计像素, 用户要求
+        /// "左右下留白要一致, 且小一点" —— 原来左/右 15、下 8 不一致), 顶部让出标题行 30。
+        /// 拖分隔条改日志区高度时同步跟随 (日志框嵌在壳内, 由壳自己摆)。
         /// </summary>
         void LayoutLogPanel()
         {
@@ -440,11 +440,12 @@ namespace StereoSplitter
             // 每次都改一次 bounds 会连带整块日志框重排重画。
             if (cs == lastLogPanelSize) return;
             lastLogPanelSize = cs;
-            int w = Math.Max(Dpi.S(120), cs.Width - Dpi.S(15) * 2);   // 左右各 15, 对称居中
+            int m = Dpi.S(8);                                          // 左右下统一留白
+            int w = Math.Max(Dpi.S(120), cs.Width - m * 2);
             // 高下限设 0: 分隔条现在可以一路把日志区压到没有, 日志框跟着缩到 0 而不是留着
             // 40px 高度溢出到面板外面 (Panel 会裁剪, 但多出来的高度仍会参与滚动条计算)
-            int h = Math.Max(0, cs.Height - Dpi.S(30) - Dpi.S(8));
-            logShell.SetBounds(Dpi.S(15), Dpi.S(30), w, h);
+            int h = Math.Max(0, cs.Height - Dpi.S(30) - m);
+            logShell.SetBounds(m, Dpi.S(30), w, h);
         }
 
         /// <summary>
@@ -552,23 +553,46 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 日志面板标题行: 右侧 [水位 N 秒 圆角壳] [清除日志] 整组贴右缘,
-        /// 窗口窄时不会把「清除日志」挤出面板。左侧「日志」标题固定不动。
+        /// 日志面板标题行: 右侧 [水位 N 秒 圆角壳] [清除日志] 整组贴右缘 (与内容框右缘
+        /// 同一列), 窗口窄时不会把「清除日志」挤出面板。左侧「日志」标题固定不动。
+        /// 垂直方向 (等高/居中) 由 <see cref="AlignLogHeaderRow"/> 负责。
         /// </summary>
         void LayoutLogHeader()
         {
             if (btnClearLog == null || nudWaterShell == null) return;
             Control host = btnClearLog.Parent;
             if (host == null) return;
+            AlignLogHeaderRow();
 
             int panelW = host.ClientSize.Width;
             if (panelW == lastLogHeaderW) return;
             lastLogHeaderW = panelW;
-            int rightEdge = Dpi.S(15);   // 与日志圆角壳右缘同一列 (壳左右边距对称各 15)
+            int rightEdge = Dpi.S(8);   // 与日志圆角壳右缘同一列 (壳左右下留白一致各 8)
             int gap = Dpi.S(6);
 
             btnClearLog.Left = panelW - rightEdge - btnClearLog.Width;
             nudWaterShell.Left = btnClearLog.Left - gap - nudWaterShell.Width;
+        }
+
+        /// <summary>
+        /// 标题行垂直对齐 (用户要求水位壳与清除日志按钮视觉等高): 按钮高度取壳高,
+        /// 壳/按钮/「日志」标题三者在标题行 (高 30) 内垂直居中, 标题左缘与内容框对齐。
+        /// 壳高在字体定型后的 Recalc 才到位 → 挂在壳的 SizeChanged 上反复校正。
+        /// </summary>
+        void AlignLogHeaderRow()
+        {
+            if (nudWaterShell == null || btnClearLog == null || nudWaterShell.Parent == null) return;
+            int h = nudWaterShell.Height;
+            if (btnClearLog.Height != h) btnClearLog.Height = h;
+            int y = (Dpi.S(30) - h) / 2;
+            if (nudWaterShell.Top != y) nudWaterShell.Top = y;
+            if (btnClearLog.Top != y) btnClearLog.Top = y;
+            if (lblLogTitle != null)
+            {
+                if (lblLogTitle.Left != Dpi.S(8)) lblLogTitle.Left = Dpi.S(8);
+                int ty = (Dpi.S(30) - lblLogTitle.Height) / 2;
+                if (lblLogTitle.Top != ty) lblLogTitle.Top = ty;
+            }
         }
 
         /// <summary>

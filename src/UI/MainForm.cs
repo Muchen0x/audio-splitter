@@ -579,7 +579,9 @@ namespace StereoSplitter
             nudWaterInterval = new NoWheelNumeric { Location = new Point(397, 5), Minimum = 0, Maximum = 99, Value = 30 };
             nudWaterShell = new RoundNumericShell(nudWaterInterval, "水位", "秒") { Location = new Point(397, 5) };
 
-            lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true, Font = new Font("Microsoft YaHei UI", 10F) };
+            // 「日志」标题加大一号 (用户要求); 位置由 AlignLogHeaderRow() 摆 (左缘与内容框
+            // 对齐, 在标题行内垂直居中), 这里的 Location 只是初始占位。
+            lblLogTitle = new Label { Text = "日志", Location = new Point(15, 8), AutoSize = true, Font = new Font("Microsoft YaHei UI", 11F) };
             // 「清除日志」: 原先用系统 Button (系统灰边 + 系统圆角), 与旁边的下拉/添加设备
             // 并排时框色明显不是一套; 换成自绘描边按钮, 同一套浅灰框 (与输出卡片一致)。
             btnClearLog = new RoundButton
@@ -592,8 +594,11 @@ namespace StereoSplitter
                 FillColor = Color.White,
                 BorderColor = OutputCardControl.BorderColor,
                 TextColor = Color.FromArgb(64, 64, 64)
-                // 右缘由 LayoutLogHeader() 按面板实际宽度摆放
+                // 右缘由 LayoutLogHeader() 按面板实际宽度摆放, 高度/垂直位置由 AlignLogHeaderRow() 对齐
             };
+            // 水位壳重排 (字体定型/句柄创建后的 Recalc) 会改变壳高 → 标题行重新对齐
+            // (用户要求水位壳与清除日志按钮视觉等高, 标题字号加大后也要保持垂直居中)。
+            nudWaterShell.SizeChanged += (s, e) => AlignLogHeaderRow();
 
             txtLog = new LogTextBox
             {

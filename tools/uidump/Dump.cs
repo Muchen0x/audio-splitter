@@ -2132,6 +2132,24 @@ namespace StereoSplitter
                     + " region=" + (lt != null && lt.Region != null) + " (期望 True, 裁在文本框上)"
                     + " innerInShell=" + (ls != null && lt != null && lt.Parent == ls) + " (期望 True)"
                     + " border=" + (lt != null ? lt.BorderStyle.ToString() : "?") + " (期望 None)");
+
+                // 2b) 批83: 标题行等高对齐 + 内容框左右下留白一致 (各 8 设计像素) + 标题字号加大
+                var clearBtn2 = Field(mf, "btnClearLog") as Control;
+                var title2 = Field(mf, "lblLogTitle") as Label;
+                bool eqH = waterShell != null && clearBtn2 != null
+                    && clearBtn2.Height == waterShell.Height && clearBtn2.Top == waterShell.Top;
+                int mDesign = Dpi.S(8);
+                int mgL = ls != null ? ls.Left : -1;
+                int mgR = (ls != null && scc2 != null) ? scc2.Panel2.ClientSize.Width - ls.Right : -1;
+                int mgB = (ls != null && scc2 != null) ? scc2.Panel2.ClientSize.Height - ls.Bottom : -1;
+                bool mgOk = ls != null && Math.Abs(mgL - mDesign) <= 1 && Math.Abs(mgR - mDesign) <= 1
+                    && Math.Abs(mgB - mDesign) <= 1;
+                Console.Out.WriteLine("HEADER eqHeight=" + eqH + " (期望 True, 按钮=壳高且同顶)"
+                    + " titleFont=" + (title2 != null ? title2.Font.Size.ToString("0.#") : "?") + "pt (期望>=11)"
+                    + " titleLeftAlignedShell=" + (ls != null && title2 != null && Math.Abs(title2.Left - ls.Left) <= 1)
+                    + " (期望 True)");
+                Console.Out.WriteLine("MARGIN left=" + mgL + " right=" + mgR + " bottom=" + mgB
+                    + " 设计值=" + mDesign + " ok=" + mgOk + " (期望 ok=True, 左右下一致)");
                 shotL("empty");
 
                 // 3) 填满日志让滚动条出现: 条带像素应有自绘滑块 (198,203,211), 没有原生滚动条特征块
