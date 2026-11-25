@@ -1,0 +1,19 @@
+批113: 添加设备弹窗按钮重排 — 添加在左, 三处留白等宽, 两按钮同款
+
+用户要求: 添加按钮放左边、取消按钮放右边; 「留白-按钮-留白-按钮-留白」
+三处留白宽度一样; 添加按钮的字体和边框与取消按钮一致。
+
+改动 (AddOutputDialog.cs):
+- 布局: BtnGap 8 → 58, BtnW 76 → 78 —— 客户区 330 = 3×58 + 2×78,
+  左端留白 / 中缝 / 右端留白严格等宽 58 设计px。
+- 顺序: btnOk (添加) 在左, btnCancel (取消) 在右。
+- 样式: 添加按钮弃用强调蓝 (0,120,215), 边框改 OutputCardControl.
+  BorderColor、文字改 (64,64,64), 与取消完全一致 —— 两按钮除文字外
+  无任何差别。AcceptButton/CancelButton 语义不变。
+
+探针 (Dump.cs ADDDLG-BTN): 断言升级为 left==mid==right==Dpi.S(58)、
+ok.Left<cancel.Left、两按钮 BorderColor 反射相等; 125% 实测
+left=72 mid=72 right=72 (58×1.25) OK。
+
+回归: selftest 34 + 16 探针通过 (CARDSHELL-THUMB-FIT 仍为 HEAD
+基线既有 FAIL); VERIFY OK (提交后)。

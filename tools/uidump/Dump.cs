@@ -655,12 +655,20 @@ namespace StereoSplitter
                 Control close = Field(dlg, "titleClose") as Control;
                 int leftInset = ok != null ? ok.Left : -1;
                 int rightInset = cancel != null ? dlg.ClientSize.Width - cancel.Right : -1;
-                Console.Out.WriteLine("ADDDLG-BTN left=" + leftInset + " right=" + rightInset
-                    + " gap=" + (cancel != null && ok != null ? cancel.Left - ok.Right : -1)
+                int midGap = cancel != null && ok != null ? cancel.Left - ok.Right : -1;
+                // 批113: 添加在左、取消在右, 三处留白 (左端/中缝/右端) 严格等宽 Dpi.S(58);
+                // 两按钮边框色一致 (添加不再是强调蓝)。
+                object okBorder = ok != null ? ok.GetType().GetProperty("BorderColor").GetValue(ok, null) : null;
+                object cancelBorder = cancel != null ? cancel.GetType().GetProperty("BorderColor").GetValue(cancel, null) : null;
+                Console.Out.WriteLine("ADDDLG-BTN left=" + leftInset + " mid=" + midGap + " right=" + rightInset
+                    + " okLeft=" + (ok != null && cancel != null && ok.Left < cancel.Left ? "yes" : "no")
+                    + " borderSame=" + (Equals(okBorder, cancelBorder) ? "yes" : "no")
                     + " titleH=" + dlg.Padding.Top
                     + " close=" + (close != null ? close.Width + "x" + close.Height : "null")
                     + " verdict=" + (ok != null && cancel != null && dev != null && chan != null
-                        && leftInset == rightInset && ok.Size == cancel.Size
+                        && leftInset == Dpi.S(58) && midGap == Dpi.S(58) && rightInset == Dpi.S(58)
+                        && ok.Left < cancel.Left && Equals(okBorder, cancelBorder)
+                        && ok.Size == cancel.Size
                         && dev.Right == chan.Right && dlg.Padding.Top == Dpi.S(32)
                         ? "OK" : "FAIL<<<"));
                 string file = System.IO.Directory.Exists(path)

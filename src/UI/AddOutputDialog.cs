@@ -25,9 +25,11 @@ namespace StereoSplitter
 
         // 次要操作 (取消) 用与下拉同一套黑色细边; 主操作 (添加) 保留强调蓝,
         // 它是这一屏的唯一主动作, 边与字同色才能一眼分出主次。
-        const int BtnW = 76;
+        const int BtnW = 78;
         const int BtnH = 28;
-        const int BtnGap = 8;
+        // 批113: 按钮组改成「留白-添加-留白-取消-留白」三处留白严格等宽 ——
+        // 客户区 330 = 3×58 + 2×78, 所以按钮加宽到 78, 中缝与两端留白同为 58。
+        const int BtnGap = 58;
 
         readonly RoundedCombo cmbDevice = new RoundedCombo
         {
@@ -123,9 +125,11 @@ namespace StereoSplitter
             cmbChannel.Items.AddRange(chanItems.ToArray());
             cmbChannel.SelectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
 
-            // —— 按钮组居中: 整组离左右边各 (330-160)/2 = 85, 左右留白严格相等 ——
+            // —— 按钮组: 添加在左、取消在右, 三处留白 (左端/中缝/右端) 严格等宽 58 ——
             int btnY = 144 - M - BtnH;      // 100, 底部留白 = 左右留白 = 16
-            int btnLeft = (330 - (BtnW * 2 + BtnGap)) / 2;
+            int btnLeft = (330 - (BtnW * 2 + BtnGap)) / 2;   // = 58
+            // 批113: 添加不再用强调蓝 —— 字体/边框/文字色全部与取消一致 (同一套浅灰框
+            // + 深灰字), 两个按钮除了文字完全相同。
             btnOk = new RoundButton
             {
                 Text = "添加",
@@ -133,8 +137,8 @@ namespace StereoSplitter
                 Size = new Size(BtnW, BtnH),
                 Outline = true,
                 FillColor = Color.White,
-                BorderColor = Color.FromArgb(0x00, 0x78, 0xD7),
-                TextColor = Color.FromArgb(0x00, 0x78, 0xD7)
+                BorderColor = OutputCardControl.BorderColor,   // 与取消同一套浅灰框
+                TextColor = Color.FromArgb(64, 64, 64)
             };
             btnOk.Click += (s, e) => Confirm();
 
