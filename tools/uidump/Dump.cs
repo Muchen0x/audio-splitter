@@ -2111,6 +2111,53 @@ namespace StereoSplitter
                 return;
             }
 
+            // 批113: 最小化→恢复的时序探针 —— 用户报"从最小化恢复窗口时窗口会闪烁"。
+            // 记录恢复过程中的 SizeChanged/LocationChanged/Paint 事件带毫秒时戳:
+            // 若恢复后还有一次尺寸跳变(在首次 Paint 之后), 就是恢复后二次改尺寸导致的可见闪烁;
+            // 若尺寸一步到位, 则闪烁来自整窗重绘的中间态。
+            if (args.Length >= 1 && args[0] == "restore")
+            {
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(40, 40);
+                mf.Size = new Size(760, 640);
+                mf.TopMost = true;
+                mf.Show();
+                mf.Activate();
+                for (int i = 0; i < 16; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var logLines = new List<string>();
+                Size before = mf.Size;
+                EventHandler onSize = (s, e) => logLines.Add(sw.ElapsedMilliseconds + "ms SIZE -> " + mf.Size
+                    + " state=" + mf.WindowState);
+                EventHandler onLoc = (s, e) => logLines.Add(sw.ElapsedMilliseconds + "ms LOC -> " + mf.Location);
+                PaintEventHandler onPaint = (s, e) => logLines.Add(sw.ElapsedMilliseconds + "ms PAINT form");
+                mf.SizeChanged += onSize;
+                mf.LocationChanged += onLoc;
+                mf.Paint += onPaint;
+
+                Console.Out.WriteLine("RESTORE before=" + before + " state=" + mf.WindowState);
+
+                mf.WindowState = FormWindowState.Minimized;
+                for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                logLines.Clear();
+                logLines.Add(sw.ElapsedMilliseconds + "ms == RESTORE NOW (state=" + mf.WindowState + ")");
+
+                mf.WindowState = FormWindowState.Normal;
+                for (int i = 0; i < 20; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(25); }
+                mf.SizeChanged -= onSize;
+                mf.LocationChanged -= onLoc;
+                mf.Paint -= onPaint;
+
+                foreach (string l in logLines) Console.Out.WriteLine("RESTORE-EVENT " + l);
+                Console.Out.WriteLine("RESTORE after=" + mf.Size + " expect=" + before
+                    + " verdict=" + (mf.Size == before ? "OK" : "SIZE-CHANGED<<<"));
+                mf.Close();
+                Environment.Exit(0);
+                return;
+            }
+
             // 圆角锯齿检查: 按控件真实位置抓左上角, 打印像素灰度矩阵 + 存 16x 放大图
             // 批101: 收进托盘 —— 标题栏新增 btnTray + 关闭键×改成收托盘(分流继续)。
             // 验证: 按钮存在/顺序(托盘在日志左边)/点击后窗口隐藏但进程仍在/托盘图标仍 Visible;

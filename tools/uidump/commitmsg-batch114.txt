@@ -1,0 +1,27 @@
+批114: 修复最小化恢复时的窗口闪烁
+
+用户报告: 从最小化恢复窗口时窗口会闪烁。
+
+定位 (新增 uidump restore 探针, 记录恢复过程的事件时序):
+- 398ms 恢复到正确尺寸 950×800 (系统给的没错);
+- ~50ms 后 WinForms/系统又异步补算一次边框尺寸 → 966×816 (+16);
+- 再 ~77ms 后 ClampRestoredBounds 的 BeginInvoke 才把它改回;
+- 首次 Paint 在最终改回之后。
+窗口被 DWM 合成三次尺寸 (正确→大→缩回), 中间那次错误尺寸闪烁可见。
+这是既有"还原尺寸钳制"机制的盲区: 补算到来时 lastWindowState 已经
+是 Normal, 旧的钳制条件不再成立。
+
+修复 (MainForm.cs):
+- ClampRestoredBounds: 从最小化恢复时开 1 秒"补算观察窗"
+  (watchRestoreTicks); 首拍尺寸就错的平台兜底为同步改回; 最大化还原
+  路径保持原 BeginInvoke 行为不变。
+- WndProc: WM_WINDOWPOSCHANGING 在观察窗内把 SetWindowPos 的
+  cx/cy 纠正回记下的正常矩形 —— 错误尺寸在落地前就被改掉, DWM 不会
+  合成到任何错误尺寸; WM_ENTERSIZEMOVE (用户开始拖动/缩放) 立即关
+  观察窗, 手动改尺寸不受干预。
+
+探针复跑: 恢复后尺寸一步到位 950×800, 不再出现 966×816 中间跳变,
+verdict=OK; titlebar 探针确认最大化还原路径行为不变。
+
+回归: selftest 34 + 17 探针通过 (CARDSHELL-THUMB-FIT 仍为 HEAD
+基线既有 FAIL); VERIFY OK (提交后)。

@@ -1312,6 +1312,10 @@ namespace StereoSplitter
         Rectangle normalBounds = Rectangle.Empty;
         FormWindowState lastWindowState = FormWindowState.Normal;
         bool clampingBounds;            // 防重入: 自己在 OnResize 里改尺寸会再触发一次 OnResize
+        // 批113: 从最小化恢复后 1 秒内的"补算观察窗"起始 tick (-1 = 关闭)。恢复后系统/
+        // WinForms 还会异步补一次边框尺寸 (+16), 那一跳晚一拍才来 (探针实测 ~50ms),
+        // 在 WM_WINDOWPOSCHANGING 里按观察窗拦下 (见 WndProc), DWM 合成前就归位。
+        int watchRestoreTicks = -1;
 
         protected override void OnResize(EventArgs e)
         {
@@ -1335,22 +1339,48 @@ namespace StereoSplitter
             {
                 if (lastWindowState != FormWindowState.Normal && !normalBounds.IsEmpty)
                 {
+                    // 恢复瞬间: 只在从**最小化**来时开观察窗 (最大化还原走下面的下一轮路径)。
+                    watchRestoreTicks = lastWindowState == FormWindowState.Minimized
+                        ? Environment.TickCount : -1;
                     Size target = normalBounds.Size;
-                    try
+                    if (Bounds.Size != target)
                     {
-                        BeginInvoke((Action)(() =>
+                        if (lastWindowState == FormWindowState.Minimized)
                         {
-                            if (WindowState != FormWindowState.Normal || clampingBounds) return;
-                            if (Bounds.Size == target) return;
+                            // 首拍尺寸就错的平台兜底: 同步改回 (与补算同处一轮消息)。
                             clampingBounds = true;
                             try { Bounds = new Rectangle(Bounds.Location, target); }
                             finally { clampingBounds = false; }
-                            normalBounds = Bounds;
-                        }));
+                        }
+                        else
+                        {
+                            // 最大化还原: 补算发生在我们 OnResize **之后的同一流程里**,
+                            // 同步改会被盖掉, 只能排下一轮消息再做 (原有行为)。
+                            try
+                            {
+                                BeginInvoke((Action)(() =>
+                                {
+                                    if (WindowState != FormWindowState.Normal || clampingBounds) return;
+                                    if (Bounds.Size == target) return;
+                                    clampingBounds = true;
+                                    try { Bounds = new Rectangle(Bounds.Location, target); }
+                                    finally { clampingBounds = false; }
+                                    normalBounds = Bounds;
+                                }));
+                            }
+                            catch (InvalidOperationException) { }   // 句柄已销毁 (正在关窗): 无所谓
+                        }
                     }
-                    catch (InvalidOperationException) { }   // 句柄已销毁 (正在关窗): 无所谓
+                }
+                else if (watchRestoreTicks >= 0 && Environment.TickCount - watchRestoreTicks > 1000)
+                {
+                    watchRestoreTicks = -1;   // 观察窗超时关闭: 之后用户手动改尺寸不再受干预
                 }
                 normalBounds = Bounds;      // 连续记录: 用户拖动边缘时这里一直在更新
+            }
+            else
+            {
+                watchRestoreTicks = -1;     // 离开正常态: 观察窗关闭
             }
             lastWindowState = st;
         }
@@ -1428,6 +1458,17 @@ namespace StereoSplitter
             public int dwFlags;
         }
 
+        // 批113: 最小化恢复后的补算跳变要在 SetWindowPos 落地前拦下 (WM_WINDOWPOSCHANGING)
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct WINDOWPOS
+        {
+            public IntPtr hwnd, hwndInsertAfter;
+            public int x, y, cx, cy, flags;
+        }
+        const int SWP_NOSIZE = 0x0001;
+        const int WM_WINDOWPOSCHANGING = 0x0046;
+        const int WM_ENTERSIZEMOVE = 0x0231;
+
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern IntPtr MonitorFromWindow(IntPtr hwnd, int dwFlags);
         [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -1504,6 +1545,27 @@ namespace StereoSplitter
             {
                 m.Result = IntPtr.Zero;
                 return;
+            }
+
+            // 批113: 从最小化恢复后的 1 秒观察窗里, 拦下 WinForms/系统补算的边框尺寸 (+16) ——
+            // 在 SetWindowPos 落地前把 cx/cy 改回记下的正常矩形, DWM 不会合成到错误尺寸,
+            // 恢复时不再"先弹大再缩回"地闪。用户一旦开始拖动/缩放 (ENTERSIZEMOVE) 立即放行。
+            if (m.Msg == WM_WINDOWPOSCHANGING && watchRestoreTicks >= 0
+                && WindowState == FormWindowState.Normal && !normalBounds.IsEmpty)
+            {
+                var wp = (WINDOWPOS)System.Runtime.InteropServices.Marshal.PtrToStructure(
+                    m.LParam, typeof(WINDOWPOS));
+                if ((wp.flags & SWP_NOSIZE) == 0
+                    && (wp.cx != normalBounds.Width || wp.cy != normalBounds.Height))
+                {
+                    wp.cx = normalBounds.Width;
+                    wp.cy = normalBounds.Height;
+                    System.Runtime.InteropServices.Marshal.StructureToPtr(wp, m.LParam, false);
+                }
+            }
+            if (m.Msg == WM_ENTERSIZEMOVE)
+            {
+                watchRestoreTicks = -1;     // 用户手动拖动/缩放开始: 关观察窗
             }
 
             // "最大化能占多大"由我们说了算: 系统默认给的是**工作区 + 两侧边框**
