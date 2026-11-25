@@ -1,0 +1,15 @@
+批103: 水位壳/清除日志按钮上留白增大一倍
+
+问题: 批102 把水位壳与清除日志按钮增高到延迟壳高度 (32px@125%) 后,
+它们在原 30 设计px 标题行里上下只剩 3px, 上留白偏小 (用户要求增大一倍)。
+
+改动:
+- src/UI/MainForm.Cards.cs: AlignLogHeaderRow 把两个控件的 top 从居中值
+  2 * ((Dpi.S(30)-h)/2) 摆位 (125%: 3→6px); 标题行高由 30 加到 33 设计px,
+  LayoutLogPanel 的日志壳顶边同步下移, 下留白仍 3px, 不与按钮贴边。
+  「日志」标题仍在原 30px 行内居中, 位置不变。
+- tools/uidump/Dump.cs: header 探针加 HEADER-GAP 断言 —— 上留白=2*居中值、
+  下留白=行高-上留白-壳高, 并校验日志壳未压住按钮。
+
+验证: 编译 0 错误; HEADER/HEADER-GAP verdict=OK (top=6, bottom=3@125%);
+selftest 34 项全过; 其余探针关键断言与基线一致 (CARDSHELL-THUMB-FIT 仍为 HEAD 基线既有 FAIL); VERIFY OK。

@@ -444,8 +444,12 @@ namespace StereoSplitter
             int w = Math.Max(Dpi.S(120), cs.Width - m * 2);
             // 高下限设 0: 分隔条现在可以一路把日志区压到没有, 日志框跟着缩到 0 而不是留着
             // 40px 高度溢出到面板外面 (Panel 会裁剪, 但多出来的高度仍会参与滚动条计算)
-            int h = Math.Max(0, cs.Height - Dpi.S(30) - m);
-            logShell.SetBounds(m, Dpi.S(30), w, h);
+            // 批103: 标题行由 30 加高到 33 设计px —— 水位壳/清除日志按钮增高到延迟壳后,
+            // 原 30 行里上下只剩 3px, 用户要求上留白增大一倍 (→6px); 行高补 3px,
+            // 下留白仍是 3px, 日志框跟着下移, 不会被按钮压住。
+            int headerH = Dpi.S(33);
+            int h = Math.Max(0, cs.Height - headerH - m);
+            logShell.SetBounds(m, headerH, w, h);
         }
 
         /// <summary>
@@ -579,7 +583,8 @@ namespace StereoSplitter
 
         /// <summary>
         /// 标题行垂直对齐 (用户要求水位壳与清除日志按钮视觉等高): 按钮高度取壳高,
-        /// 壳/按钮/「日志」标题三者在标题行 (高 30) 内垂直居中, 标题左缘与内容框对齐。
+        /// 标题行高 33 设计px; 壳/按钮上留白翻倍 (3→6px@125%), 下留白仍 3px;
+        /// 「日志」标题仍在原 30px 行的位置居中, 左缘与内容框对齐。
         /// 壳高在字体定型后的 Recalc 才到位 → 挂在壳的 SizeChanged 上反复校正。
         /// </summary>
         void AlignLogHeaderRow()
@@ -587,7 +592,10 @@ namespace StereoSplitter
             if (nudWaterShell == null || btnClearLog == null || nudWaterShell.Parent == null) return;
             int h = nudWaterShell.Height;
             if (btnClearLog.Height != h) btnClearLog.Height = h;
-            int y = (Dpi.S(30) - h) / 2;
+            // 批103: 原 30 设计px 行里居中得到上留白 = (30-h)/2 = 3px (125%);
+            // 用户要求水位壳/清除日志按钮的上留白增大一倍 → 6px。标题行同步加高 3px,
+            // 下留白仍是 3px, 日志框顶边由 LayoutLogPanel 跟着下移, 不会与按钮贴边。
+            int y = (Dpi.S(30) - h) / 2 * 2;
             if (nudWaterShell.Top != y) nudWaterShell.Top = y;
             if (btnClearLog.Top != y) btnClearLog.Top = y;
             if (lblLogTitle != null)

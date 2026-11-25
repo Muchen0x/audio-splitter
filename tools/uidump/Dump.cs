@@ -2346,13 +2346,22 @@ namespace StereoSplitter
                 int wH = water != null ? water.Height : -1;
                 int cH = clear != null ? clear.Height : -1;
                 int dH = delay != null ? delay.Height : -1;
+                var logShell = Field(mf, "logShell") as Control;
+                int gapTop = water != null ? water.Top : -1;
+                int gapBottom = water != null && logShell != null ? logShell.Top - water.Bottom : -1;
                 Console.Out.WriteLine("HEADER factor=" + Dpi.Factor.ToString("0.###")
                     + " rowControl=" + Dpi.S(26)
                     + " water=" + wH + " clear=" + cH + " delay=" + dH
-                    + " waterTop=" + (water != null ? water.Top.ToString() : "null")
-                    + " clearTop=" + (clear != null ? clear.Top.ToString() : "null")
+                    + " waterTop=" + gapTop + " clearTop=" + (clear != null ? clear.Top.ToString() : "null")
                     + " titleTop=" + (title != null ? title.Top.ToString() : "null")
                     + " verdict=" + (wH > 0 && wH == cH && cH == dH && dH == Dpi.S(26)
+                        ? "OK" : "FAIL<<<"));
+                // 批103: 两个控件上留白翻倍 (原居中留白 3px@125% → 6px), 下留白仍 3px,
+                // 日志壳顶边跟着标题行下移, 不贴按钮。
+                int expectTop = (Dpi.S(30) - dH) / 2 * 2;
+                Console.Out.WriteLine("HEADER-GAP top=" + gapTop + " expect=" + expectTop
+                    + " bottom=" + gapBottom + " expectBottom=" + (Dpi.S(33) - expectTop - dH)
+                    + " verdict=" + (gapTop == expectTop && gapBottom == Dpi.S(33) - expectTop - dH
                         ? "OK" : "FAIL<<<"));
 
                 Rectangle scr = mf.RectangleToScreen(mf.ClientRectangle);
