@@ -1037,7 +1037,13 @@ namespace StereoSplitter
                 // 批92: shrink 里加上 **Padding.Bottom** —— 用户量出隐藏后窗口比
                 // "分隔条上缘以上的部分"多 ~8px: 那是窗体底部让边 (喇叭口绘制区),
                 // 隐藏日志后它不该留在窗口里 (用户: "保留分隔条上面的部分")
-                int shrink = splitContainer.Panel2.Height + sw + Padding.Bottom;
+                // 批94: 底缘再向下延长到**深色细线的上缘** —— 用户量尺 493 vs 497:
+                // 显示态量到的"分隔条"是深色线, 它画在缝带 sr.Top+(sw-2)/2 处 (容器
+                // OnPaint 同一公式), 不在缝带最顶上; 原来底缘=缝带上缘, 视觉上差 4px。
+                // 少收 lineOff 让窗口底缘正好落在深线上缘 —— 深线以上的浅色间隙属于
+                // "分隔条上面的部分", 深线本身仍不包含 (批92 要求不变)。
+                int lineOff = (sw - 2) / 2;
+                int shrink = splitContainer.Panel2.Height + sw + Padding.Bottom - lineOff;
                 splitContainer.Panel2Collapsed = true;
                 if (canResize)
                     Size = new Size(Size.Width,
@@ -1051,14 +1057,15 @@ namespace StereoSplitter
                 {
                     // 窗口在**当前**高度下方接上"分隔条+日志区+底部让边" (面板还收着 →
                     // 布局回调被抑制), 再展开面板、落位分隔距离。收起时窗口缩到了
-                    // "分隔条上缘以上" (批92: 连底部让边一起缩掉), 展开要把它加回来,
-                    // 否则还原后窗口矮一个让边、日志区被压掉 8px。收起期间用户缩放过
-                    // 窗口就以缩放后的尺寸为准, 不强行还原隐藏前大小 (批88); 没动过
-                    // 窗口时数学上正好原样还原。
+                    // "深色细线上缘以上" (批92 缩掉底部让边; 批94 少收 lineOff 让底缘
+                    // 落在深线上缘), 展开要对称加回同一串, 否则还原后窗口矮一截、
+                    // 日志区被压。收起期间用户缩放过窗口就以缩放后的尺寸为准, 不强行
+                    // 还原隐藏前大小 (批88); 没动过窗口时数学上正好原样还原。
                     // 用 Size 赋值 (理由见收起分支注释 —— ClientSize 会反算出 +16 边框)
                     int p2h = _logRestoreH > 0 ? _logRestoreH : Dpi.S(110);
                     if (canResize)
-                        Size = new Size(Size.Width, Size.Height + p2h + sw + Padding.Bottom);
+                        Size = new Size(Size.Width,
+                            Size.Height + p2h + sw + Padding.Bottom - (sw - 2) / 2);
                     splitContainer.Panel2Collapsed = false;
                     int maxDist = splitContainer.Height - sw - splitContainer.Panel2MinSize;
                     int want = lastLogDist > 0 && lastLogDist <= maxDist
@@ -1084,8 +1091,9 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 摆分隔条中央把手条覆盖层 (批93): 缝带中心线上、水平居中、宽 15% 缝带可视宽、
-        /// 高 = 视觉线 2 物理px + 上下各凸出 2 = 6。日志面板收起时整条隐藏。
+        /// 摆分隔条把手条覆盖层 (批93; 批94 改几何): 覆盖层矩形 = **整条缝带段** ——
+        /// 高 = SplitterWidth, 宽 = 把手条可视宽 (15%) + 左右抗锯齿余量。它自己复刻
+        /// 底下的缝带像素再画抗锯齿胶囊 (见 SeamThumbOverlay)。日志面板收起时整条隐藏。
         /// SplitterMoved / 缩放 / 日志开合都会走到这里。
         /// </summary>
         void UpdateSeamThumb()
@@ -1096,13 +1104,12 @@ namespace StereoSplitter
             seamThumb.Visible = show;
             if (!show) return;
             int sw = splitContainer.SplitterWidth;
-            int cy = splitContainer.Top + splitContainer.Panel1.Bottom + sw / 2;
-            int bw = Math.Max(20, splitContainer.Width * 15 / 100);
-            const int bh = 6;                       // 线 2 + 上下各凸 2 (物理px, 不随 DPI —— 细线视觉)
-            int x = splitContainer.Left + (splitContainer.Width - bw) / 2;
-            int y = splitContainer.Top + splitContainer.Panel1.Bottom + (sw - bh) / 2;
-            if (seamThumb.Left != x || seamThumb.Top != y || seamThumb.Width != bw || seamThumb.Height != bh)
-                seamThumb.SetBounds(x, y, bw, bh);
+            int bw = Math.Max(20, splitContainer.Width * 15 / 100);     // 把手条可视宽 (15%, 不含 AA 余量)
+            int x = splitContainer.Left + (splitContainer.Width - bw) / 2 - SeamThumbOverlay.AaMargin;
+            int y = splitContainer.Top + splitContainer.Panel1.Bottom;  // 缝带上缘 (覆盖层=整条缝带段)
+            int w = bw + 2 * SeamThumbOverlay.AaMargin;
+            if (seamThumb.Left != x || seamThumb.Top != y || seamThumb.Width != w || seamThumb.Height != sw)
+                seamThumb.SetBounds(x, y, w, sw);
         }
 
         void ToggleLogPanel()

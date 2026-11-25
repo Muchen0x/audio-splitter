@@ -692,9 +692,9 @@ namespace StereoSplitter
 
             // 可视宽 = 壳裁剪后的稳定值; 卡片行总宽 (不含每张卡片右侧的换行间距)
             int full = cardShell != null ? cardShell.ContentWidth : cardHost.ClientSize.Width;
-            // 兜底: 卡片绝不比可视区宽 (宽到连最小卡片宽都排不下时才听任横向滚动,
-            // 宁可横滚也不能把第一行的设备/声道/延迟挤成重叠)
-            if (full >= CardGrid.MinW && w > full) w = full;
+            // 兜底: 卡片绝不比可视区宽 (宽到连 HardMinW 都排不下时才听任横向滚动, 批94:
+            // 挤压带 [HardMinW, MinW) 内贴可视宽 —— 用户窗口比 MinW 窄十几像素就冒横条)
+            if (full >= CardGrid.HardMinW && w > full) w = full;
 
             // 单列不留右侧间距: 那段 10px 会被算进内容宽度, 宽度已 = 可视宽时
             // 正好顶出一根横向滚动条 (实测 600/1000/1200 宽都出现过)。

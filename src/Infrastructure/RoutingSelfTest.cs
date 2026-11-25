@@ -1680,6 +1680,15 @@ namespace StereoSplitter
             CardGrid.Columns(100, 3, 500, out cols, out w);
             Check("100px → 1 列且抬到最小宽 " + CardGrid.MinW + " (实为 " + w + ")", cols == 1 && w == CardGrid.MinW);
 
+            // 批94: 挤压带 [HardMinW, MinW) —— 卡片贴可视宽, 不再抬回 MinW 顶出横向滚动条
+            int bandW = (CardGrid.HardMinW + CardGrid.MinW) / 2;
+            CardGrid.Columns(bandW, 3, 500, out cols, out w);
+            Check(bandW + "px (挤压带中点) → 1 列贴可视宽 " + bandW + " (批94 不出横条, 实为 " + w + ")",
+                cols == 1 && w == bandW);
+            CardGrid.Columns(CardGrid.HardMinW - 1, 3, 500, out cols, out w);
+            Check((CardGrid.HardMinW - 1) + "px (窄过 HardMinW) → 抬回最小宽 " + CardGrid.MinW + " (实为 " + w + ")",
+                cols == 1 && w == CardGrid.MinW);
+
             CardGrid.Columns(0, 3, 500, out cols, out w);
             Check("avail=0 → 用兜底宽 500", cols == 1 && w == 500);
 

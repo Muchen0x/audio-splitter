@@ -2080,17 +2080,24 @@ namespace StereoSplitter
     /// <summary>
     /// 分隔条中央把手条 (批93): 缝带视觉缩成一条 2 物理px 细线后, 把手条"突出一点"
     /// (比线粗, 上下各凸出 2 物理px) 且宽缩半 (30%→15% 缝带可视宽, 用户指定)。
-    /// <para>为什么是**窗体级覆盖层**: 条凸出的部分落在上下面板的子窗口区域, 容器与
-    /// 窗体的绘制都被 WS_CLIPCHILDREN 裁进子窗口矩形之外画不到 (批85 CardBarOverlay
-    /// 同款教训), 顶层兄弟控件画得着。Region 裁成圆头胶囊, 条外命中/绘制全穿透;
-    /// <see cref="WndProc"/> 把 WM_NCHITTEST 回 HTTRANSPARENT —— 鼠标消息穿透到下层
-    /// 容器/面板, 条上照样能按住拖分隔条 (拖动命中区仍是整条 8px 缝带)。</para>
+    /// <para>批94 (用户: "不够圆滑"): 原来 Region 裁成胶囊 + 填充同一路径 —— Region
+    /// 是**硬裁** (逐像素), 把填充路径的 抗锯齿边缘像素裁掉, 端部呈锯齿方角。
+    /// 改为覆盖层矩形 = **整条缝带段** (高 = 缝带宽), 自己复刻底下的像素
+    /// (缝带底色 + 深色细线段, 与容器 OnPaint 同一套公式逐像素对齐), 再用抗锯齿
+    /// 胶囊画把手条 —— 所有 AA 都落进自己的缓冲区, 不再需要 Region; 条外的鼠标
+    /// 命中仍靠 <see cref="WndProc"/> 回 HTTRANSPARENT 穿透到下层缝带 (条上照样
+    /// 能按住拖分隔条)。</para>
+    /// <para>为什么是**窗体级覆盖层**: 把手条比细线凸出的部分落在上下面板的子窗口
+    /// 区域, 容器与窗体的绘制都被 WS_CLIPCHILDREN 裁进子窗口矩形之外画不到
+    /// (批85 CardBarOverlay 同款教训)。</para>
     /// </summary>
     class SeamThumbOverlay : Control
     {
         static readonly Color ThumbColor = Color.FromArgb(140, 140, 140);   // 原容器把手条同色
         const int WM_NCHITTEST = 0x0084;
         const int HTTRANSPARENT = -1;
+        /// <summary>胶囊左右各让 2 物理px 给抗锯齿渐变 (端部圆滑的关键)。</summary>
+        internal const int AaMargin = 2;
 
         public SeamThumbOverlay()
         {
@@ -2099,22 +2106,25 @@ namespace StereoSplitter
             TabStop = false;
         }
 
-        protected override void OnResize(EventArgs eventargs)
-        {
-            base.OnResize(eventargs);
-            if (Width <= 0 || Height <= 0) return;
-            Region old = Region;
-            using (var path = UiDraw.RoundRect(new RectangleF(0f, 0f, Width, Height), Height / 2f))
-                Region = new Region(path);
-            if (old != null) old.Dispose();
-        }
-
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
+            // 1) 整面铺缝带底色 —— 与容器 OnPaint 同源 (容器画的是它 Parent.BackColor =
+            //    窗体 BackColor), 逐像素同色, 与条两侧的容器绘制无缝相接
+            using (var b = new SolidBrush(Parent != null ? Parent.BackColor : BackColor))
+                g.FillRectangle(b, 0, 0, Width, Height);
+            // 2) 深色细线段: 与容器同一公式 (y1=(H-2)/2, y2=H-(H-2)/2), 容器在条两侧
+            //    画的是同一条线, 这里接上中间被条盖住的一段 (平头矩形, 与容器的
+            //    直线段完全同行 —— 容器画线边缘恰在整像素, 无 AA)
+            int ly1 = (Height - 2) / 2, ly2 = Height - (Height - 2) / 2;
+            using (var b = new SolidBrush(NoFocusSplitContainer.SeamDark))
+                g.FillRectangle(b, 0, ly1, Width, ly2 - ly1);
+            // 3) 抗锯齿圆头胶囊: 高 = 缝带宽 - 2 (比线上下各凸出 2 物理px), 左右让
+            //    AaMargin 给 AA 渐变 —— 端部圆滑 (批94)
+            float th = Height - 2f;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-            using (var path = UiDraw.RoundRect(new RectangleF(0f, 0f, Width, Height), Height / 2f))
+            using (var path = UiDraw.RoundRect(new RectangleF(AaMargin, 1f, Width - 2 * AaMargin, th), th / 2f))
             using (var b = new SolidBrush(ThumbColor))
                 g.FillPath(b, path);
         }

@@ -26,6 +26,13 @@ namespace StereoSplitter.Model
         /// 与左侧 8px，360 是"刚好不重叠"的值；低于它就宁可横向滚动也不挤成畸形。</summary>
         public static int MinW { get; private set; } = 360;
 
+        /// <summary>不出横向滚动条的下限 (批94)：可视宽落在 [HardMinW, MinW) 区间时
+        /// 卡片直接贴可视宽（轻微挤压），不再抬回 MinW —— 用户窗口比 MinW 窄十几像素
+        /// 就冒出一根只滚十几 px 的横向滚动条，体验很差（用户: "横向滚动条怎么出来了"）；
+        /// MinW 的 360 只是"零挤压"参考值，轻微挤压比横条好。低于 HardMinW 才回到
+        /// MinW + 横滚 —— 那时窗口窄到病态，挤压会真的重叠。</summary>
+        public static int HardMinW { get; private set; } = 300;
+
         /// <summary>单列时的宽度上限：再宽滑条就拉成一根看不见刻度的长线。</summary>
         public static int MaxW { get; private set; } = 1120;
 
@@ -39,6 +46,7 @@ namespace StereoSplitter.Model
             BaseW = (int)System.Math.Round(490 * f);
             GapX = (int)System.Math.Round(10 * f);
             MinW = (int)System.Math.Round(360 * f);
+            HardMinW = (int)System.Math.Round(300 * f);
             MaxW = (int)System.Math.Round(1120 * f);
         }
 
@@ -81,7 +89,9 @@ namespace StereoSplitter.Model
 
         static int Clamp(int avail)
         {
-            int w = avail < MinW ? MinW : avail;
+            // 批94: 挤压带 [HardMinW, MinW) 内贴可视宽 (不出横条); 只有窄过 HardMinW
+            // 才抬回 MinW 听任横向滚动 (那时挤压会真的重叠, 见 HardMinW 注释)
+            int w = avail < HardMinW ? MinW : avail;
             return w > MaxW ? MaxW : w;
         }
 

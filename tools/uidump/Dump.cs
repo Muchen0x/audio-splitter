@@ -2557,7 +2557,8 @@ namespace StereoSplitter
                 wideSnap("show-t300");
 
                 // 批88: 收起 → 用户缩放窗口 → 展开, 应在**当前**大小下方接上"分隔条+日志区",
-                // 而不是恢复隐藏前大小; 收起态窗口保留的应是分隔条上面的部分 (不含分隔条)
+                // 而不是恢复隐藏前大小; 批94: 收起态窗口底缘 = 深色细线上缘
+                int distBeforeHide = scc.SplitterDistance;
                 realClickBtn();                                         // 3) 再隐藏
                 for (int i = 0; i < 5; i++) Application.DoEvents();
                 System.Threading.Thread.Sleep(200); Application.DoEvents();
@@ -2572,13 +2573,14 @@ namespace StereoSplitter
                 for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
                 int shownH = mf.ClientSize.Height;
                 int padB = mf.Padding.Bottom;
-                int expectH = resizedH + restoreH + scc.SplitterWidth + padB;
-                // 批92: 收起保留 = 标题栏 + Panel1 (收起态 Panel1 填满容器, dist 钳到容器高),
-                // **底部让边也缩掉** —— 隐藏后窗口 == "分隔条上缘以上" (用户量尺: 470==470);
-                // 展开接回 restoreH+sw+padBot, 没动过窗口时正好还原
-                int keepExpect = mf.Padding.Top + distAfterCollapse;
+                // 批94: 深线画在缝带 sr.Top+(sw-2)/2, 隐藏后窗口底缘 = 缝带上缘+lineOff = 深线上缘
+                int lineOff = (scc.SplitterWidth - 2) / 2;
+                int expectH = resizedH + restoreH + scc.SplitterWidth + padB - lineOff;
+                // 批94: 收起保留 = 标题栏 + Panel1 + lineOff, 底缘 = 深色细线上缘
+                // (lineExpect 对齐断言; 旧 keepExpect=缝带上缘公式已过时删除)
+                int lineExpect = mf.Padding.Top + distBeforeHide + lineOff;
                 Console.Out.WriteLine("RESIZE-RESTORE collapsedWinH=" + collapsedH2
-                    + " keepExpect=" + keepExpect
+                    + " lineExpect=" + lineExpect
                     + " scc=" + scc.Bounds + " p1h=" + scc.Panel1.Height + " sw=" + scc.SplitterWidth
                     + " padTop=" + mf.Padding.Top + " padBot=" + mf.Padding.Bottom
                     + " resizedH=" + resizedH + " restoreH=" + restoreH
@@ -2586,7 +2588,7 @@ namespace StereoSplitter
                     + " collapsed=" + scc.Panel2Collapsed
                     + " p2h=" + scc.Panel2.Height + " dist=" + scc.SplitterDistance
                     + " verdict=" + (shownH == expectH && !scc.Panel2Collapsed
-                                && Math.Abs(collapsedH2 - keepExpect) <= 1 ? "OK" : "FAIL"));
+                                && Math.Abs(collapsedH2 - lineExpect) <= 1 ? "OK" : "FAIL"));
                 snap("resize-show");
                 wideSnap("resize-show");
 
@@ -2744,6 +2746,21 @@ namespace StereoSplitter
                         + " hostW=" + host.Width + " textEnd=" + (int)Field(shell, "textEnd"));
                 }
                 Console.Out.WriteLine("CARDSHELL-SYMW-OK " + symwOk);
+                mf.ClientSize = new Size(625, 625);
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+
+                // HBAR (批94b): 窗口窄到挤压带 [HardMinW, MinW) —— 卡片应贴可视宽,
+                // 不再抬回 MinW 顶出横向滚动条 (用户: "横向滚动条怎么出来了")
+                mf.ClientSize = new Size(460, 625);
+                for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                int contentNarrow = (int)typeof(StereoSplitter.CardScrollShell).InvokeMember("ContentWidth",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.GetProperty, null, shell, null);
+                bool hbar = hostScroll.HorizontalScroll.Visible;
+                int cardWn = host.Controls.Count > 0 ? host.Controls[0].Width : -1;
+                Console.Out.WriteLine("CARDSHELL-HBAR winW=460 contentW=" + contentNarrow
+                    + " cardW=" + cardWn + " hscroll=" + hbar
+                    + " (期望 False = 挤压带不出横条且卡宽贴可视宽) verdict="
+                    + (!hbar && cardWn == contentNarrow ? "OK" : "FAIL"));
                 mf.ClientSize = new Size(625, 625);
                 for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
 
