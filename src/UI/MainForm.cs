@@ -960,7 +960,7 @@ namespace StereoSplitter
                 System.Drawing.Region oldClip = g.Clip;   // 保存绘制区裁剪, 用完还原
                 g.Clip = clip;
                 using (var path = NoFocusSplitContainer.BuildSeamPath(
-                    0f, ClientSize.Width, y + linePad, y + h - linePad, r))
+                    0f, ClientSize.Width - 1, y + linePad, y + h - linePad, r))
                 using (var line = new SolidBrush(NoFocusSplitContainer.SeamLine))
                     g.FillPath(line, path);
                 g.Clip = oldClip;

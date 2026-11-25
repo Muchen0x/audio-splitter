@@ -2258,6 +2258,71 @@ namespace StereoSplitter
                 return;
             }
 
+            // 批99: 缝端喇叭口弧 vs 隐藏态窗口圆角 —— 逐行像素对比 (用户 "圆角对不上")。
+            // 截图按 RectangleToScreen(ClientRectangle) 取物理像素, 避免 125% 下
+            // CopyFromScreen(mf.Location, mf.Size) 用逻辑坐标截偏的旧坑。
+            if (args.Length >= 1 && args[0] == "seamend")
+            {
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(40, 40);
+                mf.Size = new Size(760, 640);
+                mf.TopMost = true;
+                mf.Show();
+                mf.Activate();
+                for (int i = 0; i < 16; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+                var scc = Field(mf, "splitContainer") as SplitContainer;
+                Func<string, Bitmap> cap = tag =>
+                {
+                    Rectangle scr = mf.RectangleToScreen(mf.ClientRectangle);
+                    var bmp = new Bitmap(scr.Width, scr.Height);
+                    using (var g = Graphics.FromImage(bmp))
+                        g.CopyFromScreen(scr.Location, Point.Empty, scr.Size);
+                    bmp.Save("seamend-" + tag + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                    Console.Out.WriteLine("SEAMEND-SHOT " + tag + " " + scr);
+                    return bmp;
+                };
+                using (var shown = cap("shown"))
+                {
+                    int ly = scc.Top + scc.Panel1.Bottom + (scc.SplitterWidth - 2) / 2;
+                    // 每行从右缘往左数第一个缝线色像素的位移 dx; 两态同一半径时逐行应相等 (±1 AA)
+                    Func<Bitmap, int, int[]> dxs = (bmp, lineY) =>
+                    {
+                        var list = new List<int>();
+                        for (int k = 1; k <= 6; k++)
+                        {
+                            int minx = -1;
+                            for (int x = bmp.Width - 20; x < bmp.Width; x++)
+                            {
+                                Color p = bmp.GetPixel(x, lineY - k);
+                                if (Math.Abs(p.R - 203) <= 16 && Math.Abs(p.G - 208) <= 16
+                                    && Math.Abs(p.B - 216) <= 16) { minx = x; break; }
+                            }
+                            list.Add(minx < 0 ? -1 : bmp.Width - 1 - minx);
+                        }
+                        return list.ToArray();
+                    };
+                    int[] seamDx = dxs(shown, ly);
+                    var btnLog = Field(mf, "btnLog") as Control;
+                    var onClick = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
+                    onClick.Invoke(btnLog, new object[] { EventArgs.Empty });
+                    for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                    using (var hidden = cap("hidden"))
+                    {
+                        int[] winDx = dxs(hidden, hidden.Height - 1);
+                        int worst = 0;
+                        for (int i = 0; i < seamDx.Length; i++)
+                            worst = Math.Max(worst, Math.Abs(seamDx[i] - winDx[i]));
+                        Console.Out.WriteLine("SEAMEND factor=" + StereoSplitter.Dpi.Factor.ToString("0.##")
+                            + " radiusPx=" + NoFocusSplitContainer.SeamRadiusPx
+                            + " seam=" + string.Join(",", seamDx) + " window=" + string.Join(",", winDx)
+                            + " worst=" + worst + " (期望<=1) verdict=" + (worst <= 1 ? "OK" : "FAIL"));
+                    }
+                }
+                mf.Close();
+                return;
+            }
+
             if (args.Length >= 1 && args[0] == "seam")
             {
                 var mf = new MainForm();

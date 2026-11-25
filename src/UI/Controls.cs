@@ -2222,19 +2222,19 @@ namespace StereoSplitter
         internal static readonly Color SeamLine = OutputCardControl.BorderColor;
 
         /// <summary>
-        /// 喇叭口的圆角半径 (物理像素): 跟随窗口的 Win11 系统圆角 —— 固定 8 物理像素、
-        /// 不随 DPI 缩放 (用户要求"圆角弧度跟随窗口")。这里的绘制坐标全是设备像素
-        /// (bounds 都是 Dpi.S 过的值), 直接用物理值即可, 不要再过 Dpi.S。
+        /// 喇叭口的圆角半径 (物理像素): 跟随窗口的 Win11 系统圆角 —— 8 **设计**像素
+        /// 经 Dpi.S 换算 (100%=8 / 125%=10 / 150%=12 物理像素)。批96 曾把它写成固定
+        /// 8 物理像素, 用户截图里隐藏态窗口底角比显示态缝端弧明显大一圈: DWM 的窗口
+        /// 圆角本来就随 DPI 放大, 只有我们的缝端弧停在 8, 两态自然对不上 (批99)。
         /// </summary>
-        internal const float SeamRadiusPx = 8f;
+        internal static float SeamRadiusPx { get { return Dpi.S(8); } }
 
         /// <summary>
-        /// 窗口圆角半径 (物理像素整数版, 不随 DPI): 批96 起所有圆角矩形 (输出卡片/
-        /// 延迟壳/日志壳/下拉弹层/圆角按钮) 的圆角弧度统一用它 —— 与窗口系统圆角
-        /// (<see cref="SeamRadiusPx"/>) 同一支, 不再各写各的 Dpi.S(6) (125% 下碰巧
-        /// 也是 8, 但 100%/150% 就分叉了)。
+        /// 窗口圆角半径 (物理像素整数版): 批96 起所有圆角矩形 (输出卡片/延迟壳/
+        /// 日志壳/下拉弹层/圆角按钮) 的圆角弧度统一用它 —— 与窗口系统圆角
+        /// (<see cref="SeamRadiusPx"/>) 同一支, 同样随 DPI 缩放。
         /// </summary>
-        internal const int WindowRadiusPx = (int)SeamRadiusPx;
+        internal static int WindowRadiusPx { get { return Dpi.S(8); } }
 
         /// <summary>
         /// 滑带路径: 上下直边 + 四个角沿左右窗口边缘外扩的四分之一圆弧 (半径 r)。
@@ -2276,7 +2276,9 @@ namespace StereoSplitter
             // 落在左右让边里的部分 (x&lt;0 / x&gt;Width) 被控件边界裁掉, 由
             // MainForm.PaintSplitterBleed 补。同一条路径两处各画一段, 弧线无缝相接。
             float xl = -Left;
-            float xr = (Parent != null ? Parent.ClientSize.Width : Left + Width) - Left;
+            // 右端取**最后一个客户区像素** (Width-1), 不是 Width —— 后者会把弧心右移
+            // 1px, 与窗口系统圆角的弧心错开一列 (批99 用户 "圆角对不上")。
+            float xr = (Parent != null ? Parent.ClientSize.Width - 1 : Left + Width - 1) - Left;
             e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
             // 滑带经过的整条横带先铺底色 (盖掉任何旧位置的残迹), 再画路径
@@ -2342,7 +2344,7 @@ namespace StereoSplitter
                 g.FillRectangle(b, 0, ly1, Width, ly2 - ly1);
             // 3) 圆头条: 高 = 缝带宽 - 2 (比线上下各凸出 2 物理px), 左右让 AaMargin 给
             //    AA 渐变 —— 端部圆滑 (批94)。批97: 端部改**椭圆角** —— 垂直半径仍钳到
-            //    半高 (几何必然), 水平半径用窗口圆角 (WindowRadiusPx=8): 细长条装不下
+            //    半高 (几何必然), 水平半径用窗口圆角 (WindowRadiusPx, 随 DPI): 细长条装不下
             //    8px 的正圆弧, 但端部弧的**横向跨度**与窗口四角一致 (用户 "所有圆角
             //    包括分隔条的") —— 半圆头 (rx=3) 换平缓椭圆头 (rx=8), 弧线更舒展。
             float th = Height - 2f;
