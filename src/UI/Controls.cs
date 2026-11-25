@@ -1548,6 +1548,10 @@ namespace StereoSplitter
             si = new SCROLLINFO();
             var inner = Shell.Inner;
             if (inner == null || !inner.IsHandleCreated) return false;
+            // 内容放得下时不画 (用户批87): 原生条被 WinForms 藏起后, GetScrollInfo 的
+            // nMax/nPage 仍保留旧范围值 (实测 nMax=647 不清零), 只认它会在"放得下"
+            // 时照画 —— 托管 VerticalScroll.Visible 才是真实状态。
+            if (!inner.VerticalScroll.Visible) return false;
             si.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(SCROLLINFO));
             si.fMask = 0x1 | 0x2 | 0x4;    // SIF_RANGE | SIF_PAGE | SIF_POS
             bool got = GetScrollInfo(inner.Handle, SB_VERT, ref si);

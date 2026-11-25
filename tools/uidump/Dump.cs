@@ -2675,7 +2675,45 @@ namespace StereoSplitter
                 Console.Out.WriteLine("CARDSHELL-SYMW-OK " + symwOk);
                 mf.ClientSize = new Size(625, 625);
                 for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
-                // DRAG-BAR: 真实鼠标拖滑块 → 卡片滚动位置变化
+
+                // NOSCROLL: 内容放得下时不该有滑条 (用户批87: 不用滑动就不显示滑动条)。
+                // 窗口加高 + 分隔距离拉大, 让 Panel1 高到所有卡片放得下 → 扫整条留白带,
+                // 滑条色应为 0。(多声道卡片总高 ~648, 仅拉分隔距离在 625 窗口里放不下)
+                int origDist = ((SplitContainer)Field(mf, "splitContainer")).SplitterDistance;
+                mf.ClientSize = new Size(mf.ClientSize.Width, 1000);
+                var sccN = (SplitContainer)Field(mf, "splitContainer");
+                sccN.SplitterDistance = Math.Max(Dpi.S(300), sccN.Height - sccN.SplitterWidth - Dpi.S(10));
+                for (int i = 0; i < 12; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                int nsThumb = 0;
+                int nsBandL = shell.PointToScreen(Point.Empty).X - mf.Left
+                    + (int)Field(shell, "textEnd");
+                using (var bmp = new Bitmap(mf.Width, mf.Height))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                        g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
+                    for (int x = nsBandL; x < mf.ClientSize.Width - 1; x++)
+                        for (int y = shell.Top; y < shell.Bottom - 1; y++)
+                        {
+                            if (y >= bmp.Height || x >= bmp.Width) continue;
+                            var p = bmp.GetPixel(x, y);
+                            bool th = (p.R == 198 && p.G == 203 && p.B == 211) || (p.R == 172 && p.G == 178 && p.B == 188);
+                            if (th) nsThumb++;
+                        }
+                }
+                int lastBottom = 0;
+                foreach (Control cc in host.Controls)
+                    if (cc.Bottom > lastBottom) lastBottom = cc.Bottom;
+                Console.Out.WriteLine("CARDSHELL-NOSCROLL vscroll=" + hostScroll.VerticalScroll.Visible
+                    + " nMax=" + hostScroll.VerticalScroll.Maximum
+                    + " nPage=" + hostScroll.VerticalScroll.Maximum
+                    + " shellH=" + shell.Height + " hostClient=" + hostScroll.ClientSize.Width + "x" + hostScroll.ClientSize.Height
+                    + " dispH=" + hostScroll.DisplayRectangle.Height
+                    + " lastCardBottom=" + lastBottom
+                    + " autoScrollMinSize=" + hostScroll.AutoScrollMinSize
+                    + " thumbPx=" + nsThumb + " (期望 0 —— 放得下就不显示滑条)");
+                mf.ClientSize = new Size(625, 625);
+                ((SplitContainer)Field(mf, "splitContainer")).SplitterDistance = origDist;
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
                 int before = Math.Abs(hostScroll.AutoScrollPosition.Y);
                 // 先扫出滑块当前竖直范围 (在条带中线上找滑条色)
                 int bxCol = -1, tyFound = -1, thFound = 0;
