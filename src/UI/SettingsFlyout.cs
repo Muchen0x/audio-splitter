@@ -529,7 +529,8 @@ namespace StereoSplitter
             float k = Height / (float)DesignRowH;      // 缩放系数 = 真实行高 / 设计行高
 
             if (hot && Enabled)
-                using (var bg = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), 6 * k))
+                using (var bg = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f),
+                    NoFocusSplitContainer.WindowRadiusPx))
                     using (var b = new SolidBrush(HoverBg)) g.FillPath(b, bg);
 
             bool en = Enabled;

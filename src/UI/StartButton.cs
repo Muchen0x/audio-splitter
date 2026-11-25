@@ -210,9 +210,12 @@ namespace StereoSplitter
             Color back = Parent != null ? Parent.BackColor : SystemColors.Control;
             using (var b = new SolidBrush(back)) g.FillRectangle(b, ClientRectangle);
 
-            // 悬停/按下垫: 往状态色里混 (蓝色悬停泛浅蓝、运行中泛浅红), 比中性灰多一层语义
+            // 悬停/按下垫: 往状态色里混 (蓝色悬停泛浅蓝、运行中泛浅红), 比中性灰多一层语义。
+            // 圆角与窗口一致 (批97): StartButton 本体轮廓由 RoundButton 画 (已统一),
+            // 这层垫片也要同弧度, 不然悬停时看得到"垫比壳圆角更急"的差
             if (Enabled && (hot || down))
-                using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), Dpi.S(6)))
+                using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1),
+                    NoFocusSplitContainer.WindowRadiusPx))
                 using (var fill = new SolidBrush(BlendTint(back, down ? 0.16f : 0.09f)))
                     g.FillPath(fill, path);
 

@@ -2328,12 +2328,16 @@ namespace StereoSplitter
             int ly1 = (Height - 2) / 2, ly2 = Height - (Height - 2) / 2;
             using (var b = new SolidBrush(NoFocusSplitContainer.SeamLine))
                 g.FillRectangle(b, 0, ly1, Width, ly2 - ly1);
-            // 3) 抗锯齿圆头胶囊: 高 = 缝带宽 - 2 (比线上下各凸出 2 物理px), 左右让
-            //    AaMargin 给 AA 渐变 —— 端部圆滑 (批94)
+            // 3) 圆头条: 高 = 缝带宽 - 2 (比线上下各凸出 2 物理px), 左右让 AaMargin 给
+            //    AA 渐变 —— 端部圆滑 (批94)。批97: 端部改**椭圆角** —— 垂直半径仍钳到
+            //    半高 (几何必然), 水平半径用窗口圆角 (WindowRadiusPx=8): 细长条装不下
+            //    8px 的正圆弧, 但端部弧的**横向跨度**与窗口四角一致 (用户 "所有圆角
+            //    包括分隔条的") —— 半圆头 (rx=3) 换平缓椭圆头 (rx=8), 弧线更舒展。
             float th = Height - 2f;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-            using (var path = UiDraw.RoundRect(new RectangleF(AaMargin, 1f, Width - 2 * AaMargin, th), th / 2f))
+            using (var path = UiDraw.RoundRectEx(new RectangleF(AaMargin, 1f, Width - 2 * AaMargin, th),
+                NoFocusSplitContainer.WindowRadiusPx, th / 2f))
             using (var b = new SolidBrush(ThumbColor))
                 g.FillPath(b, path);
         }
@@ -2672,7 +2676,8 @@ namespace StereoSplitter
 
             if (Enabled && (hot || down))
             {
-                using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), 6))
+                using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1),
+                    NoFocusSplitContainer.WindowRadiusPx))
                 using (var fill = new SolidBrush(down ? PressBack : HoverBack))
                     g.FillPath(fill, path);
             }
@@ -2803,7 +2808,8 @@ namespace StereoSplitter
             // 鼠标点一下就把蓝框挂在图标上, 看着像"没取消的选中态"
             if (Focused && keyboardFocusCues && Enabled)
             {
-                using (var path = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), 4))
+                using (var path = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f),
+                    NoFocusSplitContainer.WindowRadiusPx))
                 using (var pen = new Pen(Color.FromArgb(0, 120, 215), 1.4f))
                     g.DrawPath(pen, path);
             }
@@ -2997,7 +3003,8 @@ namespace StereoSplitter
             if (Enabled && (hot || down))
             {
                 back = down ? PressBack : HoverBack;
-                using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), 5))
+                using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1),
+                    NoFocusSplitContainer.WindowRadiusPx))
                 using (var fill = new SolidBrush(back))
                     g.FillPath(fill, path);
             }
@@ -3162,10 +3169,35 @@ namespace StereoSplitter
             return path;
         }
 
+        /// <summary>
+        /// 椭圆圆角矩形路径: 水平半径 rx 与垂直半径 ry 各自独立 (CSS border-radius:
+        /// rx/ry 的等价物)。给**高度不足**的细长条用 —— 端部圆头的垂直半径被高度
+        /// 钳到半高是几何必然, 但水平半径可以拉到窗口圆角那么大, 端部弧的横向
+        /// 跨度便与窗口四角一致 (用户批97: "所有圆角包括分隔条的")。
+        /// </summary>
+        public static System.Drawing.Drawing2D.GraphicsPath RoundRectEx(RectangleF r, float rx, float ry)
+        {
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            float mx = Math.Min(rx, r.Width / 2f), my = Math.Min(ry, r.Height / 2f);
+            float dx = mx * 2f, dy = my * 2f;
+            if (dx <= 0f || dy <= 0f)
+            {
+                path.AddRectangle(r);
+            }
+            else
+            {
+                path.AddArc(r.X, r.Y, dx, dy, 180, 90);
+                path.AddArc(r.Right - dx, r.Y, dx, dy, 270, 90);
+                path.AddArc(r.Right - dx, r.Bottom - dy, dx, dy, 0, 90);
+                path.AddArc(r.X, r.Bottom - dy, dx, dy, 90, 90);
+                path.CloseFigure();
+            }
+            return path;
+        }
+
         /// <summary>1px 描边用的路径: 客户区四边各内缩半像素。</summary>
         public static System.Drawing.Drawing2D.GraphicsPath PenRect(Control c, int radius)
-        {
-            return RoundRect(new RectangleF(0.5f, 0.5f, c.Width - 1f, c.Height - 1f), radius);
+        {            return RoundRect(new RectangleF(0.5f, 0.5f, c.Width - 1f, c.Height - 1f), radius);
         }
 
         /// <summary>圆角矩形路径 (radius 会被夹到不超过半高/半宽)。</summary>
