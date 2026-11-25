@@ -2514,6 +2514,13 @@ namespace StereoSplitter
         /// 标题栏的齿轮就是: 26px 的热区配 10px 级的图案, 才和旁边的系统窗口键一个重量。</summary>
         public float GlyphScale = 1f;
 
+        /// <summary>标题栏三枚功能图标 (收托盘 / 日志 / 更多) 的几何缩放 (默认 1)。
+        /// <para>批106: 按钮已与系统窗口键同尺寸 (46×46 设计px), 图标却还沿用 26px 按钮时的
+        /// 尺寸, 看着偏小。只放大图形几何, 不改按钮热区、笔画粗细 (1.7~1.8px) 和交互。
+        /// 不走 GlyphScale: 那个系数是给螺母原图比例配的, 套在逐点描出来的这三枚图标上
+        /// 会缩小而不是放大。</para></summary>
+        public float IconScale = 1f;
+
         // —— 刷新图标的旋转: 点一次转满一圈, 回到原位 ——
         System.Windows.Forms.Timer spinTimer;
         float spinAngle;
@@ -2773,17 +2780,21 @@ namespace StereoSplitter
 
                 case ButtonGlyph.More:
                     // 「更多」: 三条横线 (用户指定, 替换原设置齿轮)。线条几何**不过 GlyphScale**:
-                    // 这枚图形只在标题栏用 (26px 热区), 直接按"与旁边 10px 级窗口键同一视觉重量"
+                    // 这枚图形只在标题栏用, 直接按"与旁边 10px 级窗口键同一视觉重量"
                     // 定尺寸 —— 线长 ±6.5、行距 4.5、笔宽 1.8, 与 SquarePlus 的线条语言一致。
                     // 不走 GlyphScale 是因为 0.62 的系数是给螺母的原图比例配的, 套上来只剩 8px。
-                    using (var p = new Pen(icon, 1.8f))
+                    // 批106: 按钮放大到 46px 后几何乘 IconScale, 笔宽维持 1.8 不变。
                     {
-                        p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
-                        p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
-                        for (int i = -1; i <= 1; i++)
+                        float k = IconScale;
+                        using (var p = new Pen(icon, 1.8f))
                         {
-                            float y = cy + i * 4.5f;   // 按下下沉已含在 cy 里, 这里不再加
-                            g.DrawLine(p, cx - 6.5f, y, cx + 6.5f, y);
+                            p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                            p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                            for (int i = -1; i <= 1; i++)
+                            {
+                                float y = cy + i * 4.5f * k;   // 按下下沉已含在 cy 里, 这里不再加
+                                g.DrawLine(p, cx - 6.5f * k, y, cx + 6.5f * k, y);
+                            }
                         }
                     }
                     break;
@@ -2792,26 +2803,31 @@ namespace StereoSplitter
                     // 「日志面板」开关 (标题栏, 更多按钮左边): 圆角小窗 + 两条文字行 = 显示;
                     // 同一扇窗加一道斜杠 = 隐藏 (与捕获消音的 MicSlash 同一套斜杠语言)。
                     // 与 More 三条线同一笔画 (1.7~1.9px 圆头), 不过 GlyphScale (只在标题栏用)。
-                    using (var p = new Pen(icon, 1.7f))
+                    // 批106: 几何乘 IconScale 放大, 圆角半径同步放大, 笔宽不变。
                     {
-                        p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
-                        p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
-                        p.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
-                        using (var path = UiDraw.RoundRect(new RectangleF(cx - 7f, cy - 6f, 14f, 12f), 3f))
-                            g.DrawPath(p, path);
-                        if (glyph == ButtonGlyph.LogOn)
+                        float k = IconScale;
+                        using (var p = new Pen(icon, 1.7f))
                         {
-                            g.DrawLine(p, cx - 3.5f, cy - 2f, cx + 3.5f, cy - 2f);
-                            g.DrawLine(p, cx - 3.5f, cy + 2f, cx + 1.5f, cy + 2f);
-                        }
-                        else
-                        {
-                            using (var ps = new Pen(icon, 1.9f)
+                            p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                            p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                            p.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
+                            using (var path = UiDraw.RoundRect(
+                                new RectangleF(cx - 7f * k, cy - 6f * k, 14f * k, 12f * k), 3f * k))
+                                g.DrawPath(p, path);
+                            if (glyph == ButtonGlyph.LogOn)
                             {
-                                StartCap = System.Drawing.Drawing2D.LineCap.Round,
-                                EndCap = System.Drawing.Drawing2D.LineCap.Round
-                            })
-                                g.DrawLine(ps, cx - 6.5f, cy - 7f, cx + 6.5f, cy + 7f);
+                                g.DrawLine(p, cx - 3.5f * k, cy - 2f * k, cx + 3.5f * k, cy - 2f * k);
+                                g.DrawLine(p, cx - 3.5f * k, cy + 2f * k, cx + 1.5f * k, cy + 2f * k);
+                            }
+                            else
+                            {
+                                using (var ps = new Pen(icon, 1.9f)
+                                {
+                                    StartCap = System.Drawing.Drawing2D.LineCap.Round,
+                                    EndCap = System.Drawing.Drawing2D.LineCap.Round
+                                })
+                                    g.DrawLine(ps, cx - 6.5f * k, cy - 7f * k, cx + 6.5f * k, cy + 7f * k);
+                            }
                         }
                     }
                     break;
@@ -2819,29 +2835,33 @@ namespace StereoSplitter
                 case ButtonGlyph.Tray:
                     // 「收进托盘」(标题栏, 日志按钮旁): 与「更多」菜单里那一行
                     // (SettingsFlyout.MenuRow.IconKind.Tray) 同一图标 —— U 形托盘 + 向下箭头。
-                    // 几何逐点照搬 (k=1 设计像素, 标题栏图标同样不过 GlyphScale),
+                    // 几何逐点照搬 (标题栏图标同样不过 GlyphScale),
                     // 1.7px 圆头笔画也一致, 两处看着就是同一枚图标。
-                    using (var p = new Pen(icon, 1.7f))
+                    // 批106: 标题栏实例几何乘 IconScale 放大, 菜单里的图标保持原尺寸。
                     {
-                        p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
-                        p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
-                        p.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
-                        // U 形托盘槽 (左右竖边 + 底边)
-                        g.DrawLines(p, new[]
+                        float k = IconScale;
+                        using (var p = new Pen(icon, 1.7f))
                         {
-                            new PointF(cx - 6.2f, cy - 3.4f),
-                            new PointF(cx - 6.2f, cy + 4.6f),
-                            new PointF(cx + 6.2f, cy + 4.6f),
-                            new PointF(cx + 6.2f, cy - 3.4f)
-                        });
-                        // 向下箭头: 竖干 + 两翼
-                        g.DrawLine(p, cx, cy - 6.6f, cx, cy + 1.6f);
-                        g.DrawLines(p, new[]
-                        {
-                            new PointF(cx - 2.6f, cy - 1f),
-                            new PointF(cx, cy + 1.6f),
-                            new PointF(cx + 2.6f, cy - 1f)
-                        });
+                            p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                            p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                            p.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
+                            // U 形托盘槽 (左右竖边 + 底边)
+                            g.DrawLines(p, new[]
+                            {
+                                new PointF(cx - 6.2f * k, cy - 3.4f * k),
+                                new PointF(cx - 6.2f * k, cy + 4.6f * k),
+                                new PointF(cx + 6.2f * k, cy + 4.6f * k),
+                                new PointF(cx + 6.2f * k, cy - 3.4f * k)
+                            });
+                            // 向下箭头: 竖干 + 两翼
+                            g.DrawLine(p, cx, cy - 6.6f * k, cx, cy + 1.6f * k);
+                            g.DrawLines(p, new[]
+                            {
+                                new PointF(cx - 2.6f * k, cy - 1f * k),
+                                new PointF(cx, cy + 1.6f * k),
+                                new PointF(cx + 2.6f * k, cy - 1f * k)
+                            });
+                        }
                     }
                     break;
 

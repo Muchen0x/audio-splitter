@@ -2067,6 +2067,14 @@ namespace StereoSplitter
                     + " more=" + (more != null ? more.Size.ToString() : "null")
                     + " close=" + (close != null ? close.Size.ToString() : "null")
                     + " verdict=" + (sameSize ? "OK" : "FAIL<<<"));
+                // 批106: 三个功能图标几何放大 1.25 倍 (系统窗口键不走 GearButton, 不受影响)
+                float ts = tray != null ? (float)Field(tray, "IconScale") : 0f;
+                float ls = log != null ? (float)Field(log, "IconScale") : 0f;
+                float ms = more != null ? (float)Field(more, "IconScale") : 0f;
+                Console.Out.WriteLine("TRAY-ICONSCALE tray=" + ts.ToString("0.##")
+                    + " log=" + ls.ToString("0.##") + " more=" + ms.ToString("0.##")
+                    + " verdict=" + (Math.Abs(ts - 1.25f) < 0.01f && Math.Abs(ls - 1.25f) < 0.01f
+                        && Math.Abs(ms - 1.25f) < 0.01f ? "OK" : "FAIL<<<"));
 
                 // 标题栏截图 (功能键组): 供肉眼确认新图标形状与相邻间距
                 using (var bmp = new Bitmap(440, 40))

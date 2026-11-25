@@ -1,0 +1,15 @@
+批106 标题栏功能图标放大
+
+用户: 「收托盘 / 日志 / 更多」图标大小也放大一点。
+
+- GearButton 新增 IconScale (标题栏三枚逐点绘制图标的几何缩放, 默认 1);
+  三枚按钮实例设为 1.25, 按钮热区、笔画粗细、点击逻辑均不变。
+- More/LogOn/LogOff/Tray 的几何与圆角乘系数, 1.7~1.9px 圆头笔宽不乘,
+  放大后仍清晰、不变形; 菜单里的 Tray 图标不受影响。
+- 探针 tray 增加 TRAY-ICONSCALE 断言 (1.25/1.25/1.25 = OK),
+  仍校验 TRAY-SIZE 与系统键同尺寸 (125% 下 58x40)。
+
+验证: 编译 0 错误; selftest 34 项全过; tray/seam/logclick/header/seamend/
+cardshell/corners/settings/logshell/scroll/toggle/dpiprobe/calib 通过
+(CARDSHELL-THUMB-FIT 为 HEAD 基线既有 FAIL; 批量跑 logclick 偶发时序 FAIL,
+单独重跑 OK); VERIFY OK。

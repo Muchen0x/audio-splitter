@@ -426,9 +426,12 @@ namespace StereoSplitter
             // 「更多」入口: 原设置齿轮换成三条横线图标 (用户指定), 点开弹出下拉式弹层,
             // 原设置页的选项全部移入弹层 (见 SettingsFlyout)。放在最小化左边。
             // GlyphScale 不再参与 (More 图形自带标题栏尺寸), 字段保留给螺母等其它实例用。
+            // IconScale: 批106 按钮已放大到与系统键同尺寸, 图标几何同步放大 1.25 倍
+            // (笔宽不变), 免得 46px 的热区里只画着 26px 时代的小图案。
             btnSettings = new GearButton
             {
                 Glyph = ButtonGlyph.More,
+                IconScale = 1.25f,
                 Size = new Size(26, 26),
                 TabStop = true
             };
@@ -441,6 +444,7 @@ namespace StereoSplitter
             btnLog = new GearButton
             {
                 Glyph = ButtonGlyph.LogOff,   // 启动时日志面板显示中 → 图标是"收起"动作
+                IconScale = 1.25f,
                 Size = new Size(26, 26),
                 TabStop = true
             };
@@ -451,6 +455,7 @@ namespace StereoSplitter
             btnTray = new GearButton
             {
                 Glyph = ButtonGlyph.Tray,
+                IconScale = 1.25f,
                 Size = new Size(26, 26),
                 TabStop = true,
                 AccessibleName = "收进托盘"
