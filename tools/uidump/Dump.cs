@@ -2656,9 +2656,17 @@ namespace StereoSplitter
                     }
                     bool okW = Math.Abs(lg - rg) <= 1 && (card0w == null || Math.Abs(clg - crg) <= 1);
                     if (!okW) symwOk = false;
+                    // TOPROW-SYM: 规格下拉贴左 / 添加设备贴右, 左右留白一致 (用户批86)
+                    var specC = (Control)Field(mf, "cmbSpec");
+                    var addC = (Control)Field(mf, "btnAddOutput");
+                    int specL = specC.Left;
+                    int addR = shellParent.ClientSize.Width - addC.Right;
+                    bool okTop = Math.Abs(specL - addR) <= 1;
+                    if (!okTop) symwOk = false;
                     Console.Out.WriteLine("CARDSHELL-SYMW winW=" + mf.ClientSize.Width
                         + " shellL=" + lg + " shellR=" + rg + " cardL=" + clg + " cardR=" + crg
                         + " cols=" + (int)Field(mf, "lastCardCols") + " ok=" + okW
+                        + " specL=" + specL + " addR=" + addR + " toprowOk=" + okTop
                         + " shellW=" + shell.Width + " contentW=" + (int)typeof(StereoSplitter.CardScrollShell).InvokeMember("ContentWidth",
                             BindingFlags.Instance | BindingFlags.Public | BindingFlags.GetProperty, null, shell, null)
                         + " cardW=" + (card0w != null ? card0w.Width : -1)

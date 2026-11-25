@@ -508,8 +508,9 @@ namespace StereoSplitter
             if (panelSize == lastTopPanelSize) return;   // 尺寸没变就不重排 (拖分隔条会频繁触发)
             lastTopPanelSize = panelSize;
             int panelW = panelSize.Width;
-            int rightEdge = Dpi.S(10);              // 与卡片区/日志框右缘一致的留白
-            int leftEdge = Dpi.S(15);               // 与其它行左缘一致
+            int rightEdge = Dpi.S(10);              // 与卡片区左/右缘一致的留白
+            int leftEdge = rightEdge;               // 用户批86: 左右留白一致 —— 规格下拉/刷新按钮
+                                                    // 与卡片区壳左缘同列, 右侧按钮与壳右缘同列
             int gap = Dpi.S(8);
 
             // —— 第 1 行: [刷新] [捕获下拉] [开始分流] 三个独立控件 ——
