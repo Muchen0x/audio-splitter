@@ -139,12 +139,21 @@ namespace StereoSplitter
                     {
                         using (var g = Graphics.FromImage(bmp))
                             g.CopyFromScreen(fy.PointToScreen(Point.Empty), Point.Empty, fy.Size);
-                        // 批108: 圆角弧线中段不能被白色内容面板盖掉。取右上角弧线中段的
-                        // 三个采样点 (离右缘 5/4/3px, y=2/3/4), 全白就说明又出现了"白缝"。
-                        int sw = fy.Width - 5, sh = fy.Height - 4;
-                        int a = bmp.GetPixel(sw, 2).R, b = bmp.GetPixel(sw + 1, 3).R,
-                            c = bmp.GetPixel(sw + 2, 4).R;
+                        // 批108: 圆角弧线中段不能被白色内容面板盖掉。沿右上角弧线取三个
+                        // 采样点 (y=2/3/4 物理 px, x 按当前 DPI 的弧线几何实时算), 全白
+                        // 就说明又出现了"白缝"。固定偏移在 100%/125% 下弧线位置不同 (批118)。
+                        float R = RoundedCombo.PopupRadius * Dpi.Factor;
+                        float cx = fy.Width - 1 - R, cyy = R;
+                        Func<int, int> arcX = delegate(int y)
+                        {
+                            double dx = Math.Sqrt(Math.Max(0.0, R * R - (cyy - y) * (cyy - y)));
+                            return (int)Math.Round(cx + dx);
+                        };
+                        int a = bmp.GetPixel(arcX(2), 2).R, b = bmp.GetPixel(arcX(3), 3).R,
+                            c = bmp.GetPixel(arcX(4), 4).R;
+                        int aIn = bmp.GetPixel(Math.Max(0, arcX(2) - 2), 2).R;   // 弧线内侧应是面板白 (采样别越过它)
                         Console.Out.WriteLine("FLYOUT-CORNER r=" + a + "," + b + "," + c
+                            + " inner=" + aIn
                             + " verdict=" + (a < 240 && b < 240 && c < 240 ? "OK" : "FAIL<<<"));
                         bmp.Save("flyout-live.png", System.Drawing.Imaging.ImageFormat.Png);
                     }
@@ -538,12 +547,15 @@ namespace StereoSplitter
                     for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
                     Console.Out.WriteLine("CALIB client=" + cf.ClientSize);
                     var titleClose = Field(cf, "titleClose") as Control;
-                    // 批116: 弹窗关闭键悬浮效果对齐输出卡片 × → 必须是 NeutralClose
+                    // 批116: 弹窗关闭键悬浮效果对齐输出卡片 × → 必须是 NeutralClose。
+                    // 批118: 标题栏无图标 (字段已删), 标题文字就是「延迟校准」。
                     bool styled = cf.FormBorderStyle == FormBorderStyle.None
                         && cf.Padding.Top == Dpi.S(32)
                         && titleClose != null
                         && titleClose.Size == new Size(Dpi.S(46), Dpi.S(32))
-                        && Equals(Field(titleClose, "NeutralClose"), true);
+                        && Equals(Field(titleClose, "NeutralClose"), true)
+                        && cf.Text == "延迟校准"
+                        && Field(cf, "titleBarIcon") == null;
                     Console.Out.WriteLine("CALIB-STYLE border=" + cf.FormBorderStyle
                         + " paddingTop=" + cf.Padding.Top + " close=" + (titleClose != null ? titleClose.Bounds.ToString() : "null")
                         + " verdict=" + (styled ? "OK" : "FAIL<<<"));

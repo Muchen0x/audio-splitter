@@ -47,7 +47,7 @@ namespace StereoSplitter
 
         // 批105: 与主窗口同款自绘标题栏 —— 系统键只留一个关闭, 左上角小图标由窗体图标缩放。
         CaptionButton titleClose;
-        Icon titleBarIcon;
+        // 批118: 标题栏不再画应用图标 (与添加设备弹窗同批115的处理), 也没有 titleBarIcon 字段了。
 
         /// <summary>
         /// 每一路测几段。这些段在**同一个播放流**里连着走 (前面另有 2 段预热不计),
@@ -93,7 +93,7 @@ namespace StereoSplitter
             this.outLatencyMs = Math.Max(5, Math.Min(500, outLatencyMs));
             this.hostRunning = hostRunning;
 
-            Text = "延迟校准 · 麦克风互相关";
+            Text = "延迟校准";
             StartPosition = FormStartPosition.CenterParent;
             // 批105: 同步主窗口风格 —— 收掉系统标题栏, 自己画同色标题栏 + 圆角边框。
             // 保留 WS_THICKFRAME 让 DWM 给出 Win11 圆角与边框几何 (与主窗口同一手法),
@@ -111,7 +111,6 @@ namespace StereoSplitter
             ClientSize = new Size(580, 520 + TitleBarDesignHeight);
             Font = BaseFont;
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-            try { if (Icon != null) titleBarIcon = new Icon(Icon, Dpi.S(16), Dpi.S(16)); } catch { }
 
             // 批116: 关闭键悬浮效果对齐输出卡片 × (圆角浅灰底), 不用 Windows 红底约定
             titleClose = new CaptionButton(CaptionGlyph.Close) { AccessibleName = "关闭", NeutralClose = true };
@@ -225,13 +224,8 @@ namespace StereoSplitter
             using (var b = new SolidBrush(BackColor))
                 e.Graphics.FillRectangle(b, 0, 0, ClientSize.Width, h);
 
+            // 批118: 标题栏不画应用图标, 标题文字直接从左留白起
             int x = Dpi.S(12);
-            if (titleBarIcon != null)
-            {
-                int isz = Dpi.S(16);
-                e.Graphics.DrawIcon(titleBarIcon, new Rectangle(x, (h - isz) / 2, isz, isz));
-                x += isz + Dpi.S(8);
-            }
             int limit = titleClose != null ? titleClose.Left - Dpi.S(8) : ClientSize.Width - Dpi.S(8);
             TextRenderer.DrawText(e.Graphics, Text, Font,
                 new Rectangle(x, 0, Math.Max(0, limit - x), h), Color.FromArgb(32, 32, 32),
@@ -314,11 +308,7 @@ namespace StereoSplitter
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing && titleBarIcon != null)
-            {
-                try { titleBarIcon.Dispose(); } catch { }
-                titleBarIcon = null;
-            }
+            // 批118: 标题栏不再画应用图标, 没有需要释放的 titleBarIcon 了。
             base.Dispose(disposing);
         }
 
