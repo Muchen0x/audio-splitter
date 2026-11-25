@@ -2571,10 +2571,12 @@ namespace StereoSplitter
                 realClickBtn();                                         // 4) 再显示
                 for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
                 int shownH = mf.ClientSize.Height;
-                int expectH = resizedH + restoreH + scc.SplitterWidth;
-                // 收起保留 = 标题栏 + 窗体让边 + Panel1 (收起态 Panel1 填满容器, dist 钳到容器高);
-                // 分隔条位置(8px)与日志区都不在窗口里 = 用户要求的"只保留分隔条上面的部分"
-                int keepExpect = mf.Padding.Top + mf.Padding.Bottom + distAfterCollapse;
+                int padB = mf.Padding.Bottom;
+                int expectH = resizedH + restoreH + scc.SplitterWidth + padB;
+                // 批92: 收起保留 = 标题栏 + Panel1 (收起态 Panel1 填满容器, dist 钳到容器高),
+                // **底部让边也缩掉** —— 隐藏后窗口 == "分隔条上缘以上" (用户量尺: 470==470);
+                // 展开接回 restoreH+sw+padBot, 没动过窗口时正好还原
+                int keepExpect = mf.Padding.Top + distAfterCollapse;
                 Console.Out.WriteLine("RESIZE-RESTORE collapsedWinH=" + collapsedH2
                     + " keepExpect=" + keepExpect
                     + " scc=" + scc.Bounds + " p1h=" + scc.Panel1.Height + " sw=" + scc.SplitterWidth
@@ -2587,6 +2589,33 @@ namespace StereoSplitter
                                 && Math.Abs(collapsedH2 - keepExpect) <= 1 ? "OK" : "FAIL"));
                 snap("resize-show");
                 wideSnap("resize-show");
+
+                // 批92: 用户报"隐藏前后高度不一致" (截图标尺 470 vs 477, 差 7px)。
+                // 开合循环前后对比卡片区壳与 Panel1 几何, 抓漂移来源
+                var shell2 = Field(mf, "cardShell") as Control;
+                Func<string> geomOf = () => "winH=" + mf.ClientSize.Height
+                    + " sccH=" + scc.Height + " dist=" + scc.SplitterDistance
+                    + " p1h=" + scc.Panel1.Height + " p2h=" + scc.Panel2.Height
+                    + " sw=" + scc.SplitterWidth
+                    + " shellTop=" + shell2.Top + " shellH=" + shell2.Height
+                    + " shellBot=" + shell2.Bottom + " panelH=" + shell2.Parent.ClientSize.Height;
+                Console.Out.WriteLine("PANEL-GEOM A(show): " + geomOf());
+                realClickBtn();                                         // 隐藏
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("PANEL-GEOM B(hide): " + geomOf());
+                realClickBtn();                                         // 显示
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("PANEL-GEOM C(show): " + geomOf());
+                // 拖动分隔条后再开合 (用户可能拖过)
+                try { scc.SplitterDistance = scc.SplitterDistance - 60; } catch { }
+                for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("PANEL-GEOM D(dragged): " + geomOf());
+                realClickBtn();                                         // 隐藏
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("PANEL-GEOM E(hide): " + geomOf());
+                realClickBtn();                                         // 显示
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("PANEL-GEOM F(show): " + geomOf());
                 mf.Close();
                 return;
             }

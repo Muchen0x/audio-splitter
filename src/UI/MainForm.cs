@@ -1010,14 +1010,17 @@ namespace StereoSplitter
                     : (_lastP2H > 0 ? _lastP2H : Dpi.S(110));
                 // **面板高度必须在收起前定格**: Panel2Collapsed=true 后 Panel2.Height
                 // 归零, 再读就只有缝隙宽了。(窗口高度不用定格: 展开时按"当前高度 +
-                // 日志区+缝隙"在下方接上, 见展开分支 —— 收起期间用户没动窗口时数学上
-                // 正好还原回收起前高度; 动过就以缩放后的为准, 批88。)
+                // 日志区+缝隙+底部让边"在下方接上, 见展开分支 —— 收起期间用户没动窗口时
+                // 数学上正好还原回收起前高度; 动过就以缩放后的为准, 批88。)
                 // 高度用 **Size** 赋值, 不能用 ClientSize: 本窗体是 WS_THICKFRAME +
                 // WM_NCCALCSIZE 抹边框的自绘窗体 (客户区恒等于窗口矩形), ClientSize
                 // 赋值会按"客户+边框"反算窗口矩形, 真实窗口凭空大 16px, NCCALCSIZE
                 // 又把客户区撑满整窗 → 多出的底带/右带没人重绘, 留着缩窗前的旧像素
                 // (用户看到的"窗口异常且有残留"), 分隔距离也被钳位漂移 16px
-                int shrink = splitContainer.Panel2.Height + sw;
+                // 批92: shrink 里加上 **Padding.Bottom** —— 用户量出隐藏后窗口比
+                // "分隔条上缘以上的部分"多 ~8px: 那是窗体底部让边 (喇叭口绘制区),
+                // 隐藏日志后它不该留在窗口里 (用户: "保留分隔条上面的部分")
+                int shrink = splitContainer.Panel2.Height + sw + Padding.Bottom;
                 splitContainer.Panel2Collapsed = true;
                 if (canResize)
                     Size = new Size(Size.Width,
@@ -1029,14 +1032,16 @@ namespace StereoSplitter
                 _logToggling = true;
                 try
                 {
-                    // 窗口在**当前**高度下方接上"分隔条+日志区" (面板还收着 → 布局回调被
-                    // 抑制), 再展开面板、落位分隔距离。收起态窗口保留的本来就是分隔条
-                    // 上面的部分, 接回后用户缩放过窗口就尊重新尺寸, 不强行还原隐藏前
-                    // 大小 (批88); 没动过窗口时 (H-p2h-sw)+p2h+sw==H, 数学上正好原样还原。
+                    // 窗口在**当前**高度下方接上"分隔条+日志区+底部让边" (面板还收着 →
+                    // 布局回调被抑制), 再展开面板、落位分隔距离。收起时窗口缩到了
+                    // "分隔条上缘以上" (批92: 连底部让边一起缩掉), 展开要把它加回来,
+                    // 否则还原后窗口矮一个让边、日志区被压掉 8px。收起期间用户缩放过
+                    // 窗口就以缩放后的尺寸为准, 不强行还原隐藏前大小 (批88); 没动过
+                    // 窗口时数学上正好原样还原。
                     // 用 Size 赋值 (理由见收起分支注释 —— ClientSize 会反算出 +16 边框)
                     int p2h = _logRestoreH > 0 ? _logRestoreH : Dpi.S(110);
                     if (canResize)
-                        Size = new Size(Size.Width, Size.Height + p2h + sw);
+                        Size = new Size(Size.Width, Size.Height + p2h + sw + Padding.Bottom);
                     splitContainer.Panel2Collapsed = false;
                     int maxDist = splitContainer.Height - sw - splitContainer.Panel2MinSize;
                     int want = lastLogDist > 0 && lastLogDist <= maxDist
