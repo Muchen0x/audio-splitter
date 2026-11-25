@@ -2608,9 +2608,18 @@ namespace StereoSplitter
                     + " shellTop=" + shell2.Top + " shellH=" + shell2.Height
                     + " shellBot=" + shell2.Bottom + " panelH=" + shell2.Parent.ClientSize.Height;
                 Console.Out.WriteLine("PANEL-GEOM A(show): " + geomOf());
+                int aDist96 = scc.SplitterDistance;                     // 批96: 显示态基准
+                int aShellH96 = shell2.Height, aShellTop96 = shell2.Top;
                 realClickBtn();                                         // 隐藏
                 for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
                 Console.Out.WriteLine("PANEL-GEOM B(hide): " + geomOf());
+                // 批96: 隐藏后卡片区壳必须与显示态**逐像素同位** —— 底部让边临时缩到
+                // lineOff, Panel1 不再被钳矮, 卡片下留白 (壳底→深线上缘 vs 壳底→窗底)
+                // 两个状态相等 (用户量尺 24 vs 20 的修复)
+                Console.Out.WriteLine("CARDSHELL-GAP96 hiddenP1H=" + scc.Panel1.Height + " shownDist=" + aDist96
+                    + " shellTop " + aShellTop96 + "->" + shell2.Top + " shellH " + aShellH96 + "->" + shell2.Height
+                    + " verdict=" + (scc.Panel1.Height == aDist96 && shell2.Top == aShellTop96
+                                && shell2.Height == aShellH96 ? "OK" : "FAIL"));
                 realClickBtn();                                         // 显示
                 for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
                 Console.Out.WriteLine("PANEL-GEOM C(show): " + geomOf());

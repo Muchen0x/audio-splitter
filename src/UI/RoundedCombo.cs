@@ -49,10 +49,10 @@ namespace StereoSplitter
         internal static readonly Color RowSelected = Color.FromArgb(226, 228, 232);
 
         // 以下都是 96 DPI 的设计值, 访问时按系统缩放换算 (见 Dpi)。
-        /// <summary>本体圆角, 与输出卡片、弹层同半径 (6)。</summary>
-        static int CornerRadius { get { return Dpi.S(6); } }
-        /// <summary>弹层圆角, 与输出卡片/设置分组卡一致。</summary>
-        internal static int PopupRadius { get { return Dpi.S(6); } }
+        /// <summary>本体圆角, 与窗口系统圆角同一弧度 (批96, 物理像素不随 DPI)。</summary>
+        static int CornerRadius { get { return NoFocusSplitContainer.WindowRadiusPx; } }
+        /// <summary>弹层圆角, 与本体/输出卡片同弧度 (批96)。</summary>
+        internal static int PopupRadius { get { return NoFocusSplitContainer.WindowRadiusPx; } }
         /// <summary>文字左内缩。与卡片里其它控件的 8px 对齐。</summary>
         internal static int TextPadX { get { return Dpi.S(8); } }
         /// <summary>右侧给箭头留的宽度 (internal: 量测工具要靠它算文字可用宽度)。</summary>

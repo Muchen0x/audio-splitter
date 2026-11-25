@@ -1043,7 +1043,16 @@ namespace StereoSplitter
                 // 少收 lineOff 让窗口底缘正好落在深线上缘 —— 深线以上的浅色间隙属于
                 // "分隔条上面的部分", 深线本身仍不包含 (批92 要求不变)。
                 int lineOff = (sw - 2) / 2;
-                int shrink = splitContainer.Panel2.Height + sw + Padding.Bottom - lineOff;
+                // 批96: 底部让边临时缩到 lineOff —— 窗口底缘=深线上缘 (批94) 时容器高 =
+                // winH - padTop - lineOff 才能装下**完整**的 Panel1 (dist)。原来底部让边
+                // (8px) 还在, Panel1 被钳到 dist-(padBot-lineOff), 卡片区壳跟着矮 5px,
+                // 卡片下方留白比显示态少了一截 (用户量尺 24 vs 20)。收起态缝带/喇叭口
+                // 不画, 底部让边没有存在意义; 展开分支原样还回。
+                int padBot = Padding.Bottom;                 // 全额让边 (改之前取)
+                int p2h0 = splitContainer.Panel2.Height;     // 面板高 (让边一改布局就会重排, 先定格)
+                if (canResize)
+                    Padding = new Padding(Padding.Left, Padding.Top, Padding.Right, lineOff);
+                int shrink = p2h0 + sw + padBot - lineOff;
                 splitContainer.Panel2Collapsed = true;
                 if (canResize)
                     Size = new Size(Size.Width,
@@ -1063,6 +1072,12 @@ namespace StereoSplitter
                     // 还原隐藏前大小 (批88); 没动过窗口时数学上正好原样还原。
                     // 用 Size 赋值 (理由见收起分支注释 —— ClientSize 会反算出 +16 边框)
                     int p2h = _logRestoreH > 0 ? _logRestoreH : Dpi.S(110);
+                    // 批96: 先把底部让边还回全额 (收起分支临时缩到了 lineOff) —— 展开公式
+                    // 按全额让边加回, 缝带/喇叭口的底部绘制区也回来了。收起期间用户缩放过
+                    // 窗口同样成立 (让边与窗口大小无关)。
+                    int grip = Dpi.S(ResizeBorderDesign);
+                    if (Padding.Bottom != grip)
+                        Padding = new Padding(Padding.Left, Padding.Top, Padding.Right, grip);
                     if (canResize)
                         Size = new Size(Size.Width,
                             Size.Height + p2h + sw + Padding.Bottom - (sw - 2) / 2);

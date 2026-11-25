@@ -193,7 +193,7 @@ namespace StereoSplitter
         Color fillDisabled = Color.Empty;
         Color borderColor = Color.Empty;
         Color textColor = Color.White;
-        int radius = Dpi.S(6);
+        int radius = NoFocusSplitContainer.WindowRadiusPx;   // 与窗口圆角同一弧度 (批96)
         bool hot, pressed;
         ButtonGlyph glyph = ButtonGlyph.None;
         int glyphRadius = Dpi.S(8);
@@ -912,7 +912,7 @@ namespace StereoSplitter
         static readonly Color TextDisabled = Color.FromArgb(150, 154, 160);
         // 设计值 (96 DPI), 访问时按系统缩放换算; SpinStrip 例外 —— 它是原生 UpDownButtons
         // 的物理宽度, 系统不随 DPI 放大, 保持 16 才能正好让开它。
-        static int CornerRadius { get { return Dpi.S(6); } }
+        static int CornerRadius { get { return NoFocusSplitContainer.WindowRadiusPx; } }   // 与窗口圆角同一弧度 (批96)
         static int PadX { get { return Dpi.S(7); } }          // 文字距左缘 (与 RoundedCombo.TextPadX 对齐)
         static int GapCapInner { get { return Dpi.S(2); } }   // 文字与数字区的间隔 (与数字-单位间隔一致)
         static int GapNumUnit { get { return Dpi.S(2); } }    // 数字区与单位的间隔
@@ -1248,7 +1248,7 @@ namespace StereoSplitter
         static Color BorderCol { get { return OutputCardControl.BorderColor; } }   // 与延迟壳/卡片同一套浅灰框
         static readonly Color ThumbColor = Color.FromArgb(198, 203, 211);          // 与下拉列表滚动条同一支灰
         static readonly Color ThumbHotColor = Color.FromArgb(172, 178, 188);       // 悬停/拖拽加深一档
-        static int CornerRadius { get { return Dpi.S(6); } }
+        static int CornerRadius { get { return NoFocusSplitContainer.WindowRadiusPx; } }   // 与窗口圆角同一弧度 (批96)
         static int BarW { get { return Dpi.S(4); } }      // 滑条粗细 (设计 px, 与下拉列表一致)
         static int StripW { get { return Dpi.S(10); } }   // 滑条带/命中区宽 (设计 px)
         static int PadX { get { return Dpi.S(10); } }     // 左右内衬留白 (设计 px, 对称): 正文不顶框,
@@ -2215,6 +2215,14 @@ namespace StereoSplitter
         /// (bounds 都是 Dpi.S 过的值), 直接用物理值即可, 不要再过 Dpi.S。
         /// </summary>
         internal const float SeamRadiusPx = 8f;
+
+        /// <summary>
+        /// 窗口圆角半径 (物理像素整数版, 不随 DPI): 批96 起所有圆角矩形 (输出卡片/
+        /// 延迟壳/日志壳/下拉弹层/圆角按钮) 的圆角弧度统一用它 —— 与窗口系统圆角
+        /// (<see cref="SeamRadiusPx"/>) 同一支, 不再各写各的 Dpi.S(6) (125% 下碰巧
+        /// 也是 8, 但 100%/150% 就分叉了)。
+        /// </summary>
+        internal const int WindowRadiusPx = (int)SeamRadiusPx;
 
         /// <summary>
         /// 滑带路径: 上下直边 + 四个角沿左右窗口边缘外扩的四分之一圆弧 (半径 r)。

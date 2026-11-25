@@ -174,7 +174,7 @@ namespace StereoSplitter
 
         /// <summary>卡片边框色。下拉框本体 / 弹层 / 延迟壳也用这一个, 全界面同一套框。</summary>
         internal static readonly Color BorderColor = Color.FromArgb(203, 208, 216);
-        static int CornerRadius { get { return Dpi.S(6); } }
+        static int CornerRadius { get { return NoFocusSplitContainer.WindowRadiusPx; } }   // 与窗口圆角同一弧度 (批96)
         static int RowTop = 60;                 // 多声道首行 y = 8+26+3+20+3 (由 ScaleForDpi 重算)
 
         /// <summary>
