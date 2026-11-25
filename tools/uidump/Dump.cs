@@ -646,6 +646,23 @@ namespace StereoSplitter
                 dlg.Show();
                 dlg.TopMost = true;
                 for (int i = 0; i < 12; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+
+                // 批110: 自绘标题栏 + 按钮组左右留白相等 (整组居中) + 两行下拉右缘对齐
+                Control ok = Field(dlg, "btnOk") as Control;
+                Control cancel = Field(dlg, "btnCancel") as Control;
+                Control dev = Field(dlg, "cmbDevice") as Control;
+                Control chan = Field(dlg, "cmbChannel") as Control;
+                Control close = Field(dlg, "titleClose") as Control;
+                int leftInset = ok != null ? ok.Left : -1;
+                int rightInset = cancel != null ? dlg.ClientSize.Width - cancel.Right : -1;
+                Console.Out.WriteLine("ADDDLG-BTN left=" + leftInset + " right=" + rightInset
+                    + " gap=" + (cancel != null && ok != null ? cancel.Left - ok.Right : -1)
+                    + " titleH=" + dlg.Padding.Top
+                    + " close=" + (close != null ? close.Width + "x" + close.Height : "null")
+                    + " verdict=" + (ok != null && cancel != null && dev != null && chan != null
+                        && leftInset == rightInset && ok.Size == cancel.Size
+                        && dev.Right == chan.Right && dlg.Padding.Top == Dpi.S(32)
+                        ? "OK" : "FAIL<<<"));
                 string file = System.IO.Directory.Exists(path)
                     ? System.IO.Path.Combine(path, "adddlg.png") : path;
                 using (var bmp = new Bitmap(dlg.Width, dlg.Height))

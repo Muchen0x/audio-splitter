@@ -10,26 +10,32 @@ namespace StereoSplitter
     /// **输出到哪台设备** 和 **负责哪个声道**, 确认后按所选建卡片。
     /// <para>设备下拉里已被其它卡片占用的设备显示成灰色 (选了会立刻并进那张卡片,
     /// 用户按"加一路"却看不到卡片变多, 容易以为坏了) —— 默认落在第一台没人用的设备上。</para>
-    /// <para>样式与主界面同一套: 圆角下拉 + 描边圆角按钮, 没有系统灰按钮。</para>
+    /// <para>样式与主窗口同一套 (批110): 自绘标题栏 + Win11 圆角边框 + 圆角下拉/圆角按钮;
+    /// 「添加/取消」按钮组在窗口内**左右留白相等** (整组居中)。</para>
     /// </summary>
     class AddOutputDialog : Form
     {
+        // 批110: 与校准窗同一套自绘框架 (LatencyCalibrationForm): 标题栏高 32 设计px,
+        // 内容整体让出这一条; 关闭键与主窗口窗口键同宽。几何全部用设计像素,
+        // Load 里的 Dpi.ScaleForm 统一乘 DPI。
+        const int TitleBarDesignHeight = 32;
+
+        CaptionButton titleClose;               // 标题栏右端关闭键 (与主窗口同款)
+        Icon titleBarIcon;                      // 标题栏小图标 (exe 内嵌 app.ico 的 16px 克隆)
+
         // 次要操作 (取消) 用与下拉同一套黑色细边; 主操作 (添加) 保留强调蓝,
         // 它是这一屏的唯一主动作, 边与字同色才能一眼分出主次。
+        const int BtnW = 76;
+        const int BtnH = 28;
+        const int BtnGap = 8;
 
         readonly RoundedCombo cmbDevice = new RoundedCombo
         {
-            Location = new Point(110, 16),
-            Width = 200,
-            Height = 26,
             ItemHeight = 24,
             MaxDropDownItems = 12
         };
         readonly RoundedCombo cmbChannel = new RoundedCombo
         {
-            Location = new Point(110, 54),
-            Width = 200,
-            Height = 26,
             ItemHeight = 24,
             MaxDropDownItems = 12
         };
@@ -59,16 +65,42 @@ namespace StereoSplitter
             channels = specChannels;
 
             Text = "添加设备";
-            FormBorderStyle = FormBorderStyle.FixedDialog;
+            StartPosition = FormStartPosition.CenterParent;
+            // 批110: 与校准窗同一手法 —— 收掉系统标题栏, 自己画同色标题栏 + Win11 圆角边框;
+            // 保留 WS_THICKFRAME 让 DWM 给出圆角与边框几何 (见 CreateParams/WndProc)。
+            FormBorderStyle = FormBorderStyle.None;
             MinimizeBox = MaximizeBox = false;
             ShowInTaskbar = false;
-            StartPosition = FormStartPosition.CenterParent;
-            BackColor = Color.White;
-            ClientSize = new Size(330, 158);
+            AutoScaleMode = AutoScaleMode.None;
+            SetStyle(ControlStyles.ResizeRedraw | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.AllPaintingInWmPaint, true);
+            DoubleBuffered = true;
+            // 背景与主窗口同支 SystemColors.Control, 不再是纯白 (白底会和主窗口分出两截)。
+            BackColor = SystemColors.Control;
+            // 用设计像素写: 内容高 144 + 标题栏 32; Load 里 Dpi.ScaleForm 统一乘 DPI。
+            Padding = new Padding(0, TitleBarDesignHeight, 0, 0);
+            ClientSize = new Size(330, 144 + TitleBarDesignHeight);
             Font = new Font("Microsoft YaHei UI", 9F);
+            try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            try { if (Icon != null) titleBarIcon = new Icon(Icon, Dpi.S(16), Dpi.S(16)); } catch { }
 
-            var lblDev = new Label { Text = "输出到设备:", Location = new Point(18, 21), AutoSize = true };
-            var lblChan = new Label { Text = "负责声道:", Location = new Point(18, 59), AutoSize = true };
+            titleClose = new CaptionButton(CaptionGlyph.Close) { AccessibleName = "关闭" };
+            titleClose.Click += (s, e) => { DialogResult = DialogResult.Cancel; };
+
+            // —— 布局 (设计像素, 相对内容区) ——
+            // 左右对称: 标签距左 16, 下拉右缘距右 16; 两行行距一致 (16/54, 均高 26)。
+            const int M = 16;               // 窗口左右留白
+            const int ComboX = 104;         // 下拉与标签的分栏线 (标签 AutoSize, 右端约 98)
+            const int ComboW = 330 - ComboX - M;
+            const int Row1Y = 16, Row2Y = 54;
+            int top = TitleBarDesignHeight;
+
+            var lblDev = new Label { Text = "输出到设备:", Location = new Point(M, Row1Y + 5 + top), AutoSize = true };
+            var lblChan = new Label { Text = "负责声道:", Location = new Point(M, Row2Y + 5 + top), AutoSize = true };
+            cmbDevice.Location = new Point(ComboX, Row1Y + top);
+            cmbDevice.Size = new Size(ComboW, 26);
+            cmbChannel.Location = new Point(ComboX, Row2Y + top);
+            cmbChannel.Size = new Size(ComboW, 26);
 
             cmbDevice.Items.AddRange(deviceTexts);
             cmbDevice.ItemGrayedFilter = idx =>
@@ -91,11 +123,14 @@ namespace StereoSplitter
             cmbChannel.Items.AddRange(chanItems.ToArray());
             cmbChannel.SelectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
 
+            // —— 按钮组居中: 整组离左右边各 (330-160)/2 = 85, 左右留白严格相等 ——
+            int btnY = 144 - M - BtnH;      // 100, 底部留白 = 左右留白 = 16
+            int btnLeft = (330 - (BtnW * 2 + BtnGap)) / 2;
             btnOk = new RoundButton
             {
                 Text = "添加",
-                Location = new Point(ClientSize.Width - 18 - 76 - 8 - 76, ClientSize.Height - 40),
-                Size = new Size(76, 28),
+                Location = new Point(btnLeft, btnY + top),
+                Size = new Size(BtnW, BtnH),
                 Outline = true,
                 FillColor = Color.White,
                 BorderColor = Color.FromArgb(0x00, 0x78, 0xD7),
@@ -106,8 +141,8 @@ namespace StereoSplitter
             btnCancel = new RoundButton
             {
                 Text = "取消",
-                Location = new Point(ClientSize.Width - 18 - 76, ClientSize.Height - 40),
-                Size = new Size(76, 28),
+                Location = new Point(btnLeft + BtnW + BtnGap, btnY + top),
+                Size = new Size(BtnW, BtnH),
                 Outline = true,
                 FillColor = Color.White,
                 BorderColor = OutputCardControl.BorderColor,   // 与主界面下拉/卡片同一套浅灰框
@@ -115,11 +150,130 @@ namespace StereoSplitter
             };
             btnCancel.Click += (s, e) => { DialogResult = DialogResult.Cancel; };
 
-            Controls.AddRange(new Control[] { lblDev, cmbDevice, lblChan, cmbChannel, btnOk, btnCancel });
+            Controls.AddRange(new Control[] { lblDev, cmbDevice, lblChan, cmbChannel, btnOk, btnCancel, titleClose });
             AcceptButton = btnOk;
             CancelButton = btnCancel;
-            // 与主窗口同一套 DPI 放大 (控件都按 96 DPI 摆好后, 在 Load 里整体乘一次)
-            Load += (s2, e2) => Dpi.ScaleForm(this);
+            // 与主窗口同一套 DPI 放大 + 圆角边框 (控件都按 96 DPI 摆好后, Load 里整体乘一次)
+            Load += (s2, e2) =>
+            {
+                Dpi.ScaleForm(this);
+                LayoutTitleBar();
+                ApplyWindowFrame();
+            };
+        }
+
+        /// <summary>标题栏右端关闭键: 与主窗口窗口键同宽 (46 设计px), 高 = 标题栏高。</summary>
+        void LayoutTitleBar()
+        {
+            if (titleClose == null) return;
+            int bw = Dpi.S(46);
+            titleClose.SetBounds(ClientSize.Width - bw, 0, bw, Padding.Top);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            int h = Padding.Top;
+            if (h <= 0) return;
+            // 与主窗口 PaintCaption 同一支底色: 标题栏与内容区融为一体, 不画分隔线。
+            using (var b = new SolidBrush(BackColor))
+                e.Graphics.FillRectangle(b, 0, 0, ClientSize.Width, h);
+
+            int x = Dpi.S(12);
+            if (titleBarIcon != null)
+            {
+                int isz = Dpi.S(16);
+                e.Graphics.DrawIcon(titleBarIcon, new Rectangle(x, (h - isz) / 2, isz, isz));
+                x += isz + Dpi.S(8);
+            }
+            int limit = titleClose != null ? titleClose.Left - Dpi.S(8) : ClientSize.Width - Dpi.S(8);
+            TextRenderer.DrawText(e.Graphics, Text, Font,
+                new Rectangle(x, 0, Math.Max(0, limit - x), h), Color.FromArgb(32, 32, 32),
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter
+                | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+
+        /// <summary>Win11 圆角 + 边框色, 与主窗口/校准窗完全一致 (批105/110)。</summary>
+        void ApplyWindowFrame()
+        {
+            if (!IsHandleCreated) return;
+            try
+            {
+                int round = 2;   // DWMWCP_ROUND
+                DwmSetWindowAttribute(Handle, 33, ref round, sizeof(int));
+                int line = unchecked((int)0x00D8D0CB);
+                DwmSetWindowAttribute(Handle, 34, ref line, sizeof(int));
+            }
+            catch { }
+        }
+
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+        static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+        const int WS_THICKFRAME = 0x00040000;
+        const int WS_SYSMENU = 0x00080000;
+        const int WM_NCCALCSIZE = 0x0083;
+        const int WM_NCHITTEST = 0x0084;
+        const int WM_NCACTIVATE = 0x0086;
+        const int WM_NCPAINT = 0x0085;
+        const int HTCLIENT = 1;
+        const int HTCAPTION = 2;
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                // 与主窗口同一手法: 保留 THICKFRAME 让 DWM 给圆角/边框几何, 但客户区盖满整窗,
+                // 那条框由 DWM 按指定颜色画, 系统标题栏一律不画 (下面拦 NC 消息)。
+                cp.Style |= WS_THICKFRAME | WS_SYSMENU;
+                return cp;
+            }
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
+            {
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            if (m.Msg == WM_NCACTIVATE)
+            {
+                m.Result = (IntPtr)1;
+                Invalidate(new Rectangle(0, 0, ClientSize.Width, Padding.Top));
+                return;
+            }
+            if (m.Msg == WM_NCPAINT)
+            {
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            base.WndProc(ref m);
+            // 系统没有标题栏可拖: 标题区空白交回 HTCAPTION (关闭键是子控件, 自己收点击)。
+            if (m.Msg == WM_NCHITTEST && (int)m.Result == HTCLIENT)
+            {
+                var cursor = new Point((short)(m.LParam.ToInt64() & 0xFFFF),
+                                       (short)((m.LParam.ToInt64() >> 16) & 0xFFFF));
+                Point p = PointToClient(cursor);
+                if (p.Y >= 0 && p.Y < Padding.Top)
+                {
+                    if (titleClose != null && titleClose.Visible && titleClose.Bounds.Contains(p))
+                        m.Result = (IntPtr)HTCLIENT;
+                    else
+                        m.Result = (IntPtr)HTCAPTION;
+                }
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && titleBarIcon != null)
+            {
+                try { titleBarIcon.Dispose(); } catch { }
+                titleBarIcon = null;
+            }
+            base.Dispose(disposing);
         }
 
         void Confirm()
