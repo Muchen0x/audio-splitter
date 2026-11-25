@@ -20,6 +20,16 @@ namespace StereoSplitter
         {
             Console.Out.Flush();   // 探针可能被 timeout 掐死: 关掉块缓冲才看得到挂在哪一步
             Console.SetOut(new System.IO.StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
+            // 截图统一落 test-screenshots/ (批115 用户要求: 根目录不堆 png)。把工作目录切过去
+            // 后, 所有相对文件名的 bmp.Save 都自动进这个目录; 探针 path 参数请用绝对路径。
+            try
+            {
+                string shotDir = System.IO.Path.Combine(
+                    System.IO.Directory.GetCurrentDirectory(), "test-screenshots");
+                System.IO.Directory.CreateDirectory(shotDir);
+                System.IO.Directory.SetCurrentDirectory(shotDir);
+            }
+            catch { }   // 目录建不了就维持原状, 别让归档逻辑挡住探针本身
             // CopyFromScreen 按物理像素取屏: 不声明 DPI 感知的话, 高缩放屏上窗口会被系统
             // 虚拟化放大, 按 Location/Size 去截只能截到左上角一块 (live/icons 全军覆没)。
             try { SetProcessDPIAware(); } catch { }
