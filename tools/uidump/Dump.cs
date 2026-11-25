@@ -2648,6 +2648,7 @@ namespace StereoSplitter
                 // dark 只扫留白带列 (band 外是卡片内容, X 钮/微调控件的深色像素不算泄漏)
                 int bandL = shell.PointToScreen(Point.Empty).X - mf.Left + textEnd;
                 int scanL = bandL, scanR = mf.ClientSize.Width - 1;
+                int thumbMaxX = -1, thumbMinX = -1;
                 using (var bmp = new Bitmap(mf.Width, mf.Height))
                 {
                     using (var g = Graphics.FromImage(bmp))
@@ -2657,10 +2658,35 @@ namespace StereoSplitter
                         {
                             if (y >= bmp.Height || x >= bmp.Width) continue;
                             var p = bmp.GetPixel(x, y);
-                            if (p.R == 198 && p.G == 203 && p.B == 211) thumbPx++;
-                            else if (p.R == 172 && p.G == 178 && p.B == 188) hotPx++;
+                            if (p.R == 198 && p.G == 203 && p.B == 211) { thumbPx++; if (thumbMinX < 0) thumbMinX = x; thumbMaxX = x; }
+                            else if (p.R == 172 && p.G == 178 && p.B == 188) { hotPx++; if (thumbMinX < 0) thumbMinX = x; thumbMaxX = x; }
                             if (p.R < 70 && p.G < 70 && p.B < 70) darkPx++;
                         }
+                    // FRAME (批89): 壳四边框线 (203,208,216) 在位 —— 采样每边中点
+                    // (框线半像素 AA, 允许 ±6 每通道); 四角弧用顶/底边靠角一点的两列复核
+                    Func<int, int, bool> nearBorder = (x, y) =>
+                    {
+                        if (x < 0 || y < 0 || x >= bmp.Width || y >= bmp.Height) return false;
+                        var p = bmp.GetPixel(x, y);
+                        return Math.Abs(p.R - 203) <= 6 && Math.Abs(p.G - 208) <= 6 && Math.Abs(p.B - 216) <= 6;
+                    };
+                    // 壳矩形转窗体截图坐标 (shell.Left 是 Panel1 内坐标, 不能直接用)
+                    Point shellOrigin = shell.PointToScreen(Point.Empty);
+                    int edgeL = shellOrigin.X - mf.Left, edgeT = shellOrigin.Y - mf.Top;
+                    int edgeR = edgeL + shell.Width - 1, edgeB = edgeT + shell.Height - 1;
+                    int smx = (edgeL + edgeR) / 2, smy = (edgeT + edgeB) / 2;
+                    bool frameTop = nearBorder(smx, edgeT), frameBot = nearBorder(smx, edgeB);
+                    bool frameLeft = nearBorder(edgeL, smy), frameRight = nearBorder(edgeR, smy);
+                    Console.Out.WriteLine("CARDSHELL-FRAME top=" + frameTop + " bottom=" + frameBot
+                        + " left=" + frameLeft + " right=" + frameRight
+                        + " (期望全 True = 圆角框在位)");
+                    // THUMB-FIT: 滑条右缘贴框线 (批89"边框刚好贴合滑动条") —— 距离 ≤2 物理px
+                    int fitGap = (thumbMaxX >= 0 && frameRight) ? (edgeR - thumbMaxX) : -99;
+                    Console.Out.WriteLine("CARDSHELL-THUMB-FIT thumbX=" + thumbMinX + ".." + thumbMaxX
+                        + " frameRightX=" + edgeR + " gap=" + fitGap
+                        + " (期望 1..2 = 圆头贴框) verdict=" + (fitGap >= 1 && fitGap <= 2 ? "OK" : "FAIL"));
+                    bmp.Save("cardshell-frame.png", System.Drawing.Imaging.ImageFormat.Png);
+                    Console.Out.WriteLine("FRAME-SHOT -> cardshell-frame.png");
                 }
                 Console.Out.WriteLine("CARDSHELL-BAR thumbPx=" + thumbPx + " hotPx=" + hotPx + " darkPx=" + darkPx + " (thumb/hot 合计>20 = 自绘滑条在屏; dark=0 = 无原生箭头)");
                 Console.Out.WriteLine("CARDSHELL-SYM-OK " + symOk);

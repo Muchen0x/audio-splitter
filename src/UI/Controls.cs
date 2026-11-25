@@ -1587,8 +1587,9 @@ namespace StereoSplitter
             if (!GetVert(out si)) return;
             int trackTop, trackLen, ty, th;
             if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
-            // 滑条在覆盖层 (留白带) 内水平居中
-            int bx = Math.Max(0, (Width - 1 - BarW) / 2);
+            // 滑条贴合右框缘 (批89): 右缘离框线内缘 1 物理像素, 圆头贴着边框
+            // (不再在留白带内居中 —— 用户要求"边框刚好贴合滑动条")
+            int bx = Math.Max(0, Width - BarW - 1);
             using (var path = UiDraw.RoundRect(new RectangleF(bx, ty, BarW, th), BarW / 2f))
             using (var b = new SolidBrush(barHot || dragThumb ? ThumbHotColor : ThumbColor))
                 g.FillPath(b, path);
@@ -1681,22 +1682,26 @@ namespace StereoSplitter
     /// <para>② 自绘细条: <see cref="CardBarOverlay"/> 盖在卡片区窗口之上 (父窗口被
     /// WS_CLIPCHILDREN 裁进子矩形, 画不到留白带, 必须用顶层兄弟控件画), 4px 圆头灰条,
     /// 拖拽 / 点击翻页 / 滚轮全在覆盖层处理。</para>
-    /// <para>壳本身不画边框不画圆角 —— 卡片自带圆角外框。左右内衬对称 (PadX),
-    /// 卡片栅格在可视宽内由宿主动态居中 (Padding.Left)。</para>
+    /// <para>四边留白一致 (批89): 卡片可视区距框线上下左右各 PadX, 滑条算在右侧留白里
+    /// (不占内容宽), 滑条右缘贴合框线。框线与日志圆角壳同一套 (批89)。</para>
     /// </summary>
     class CardScrollShell : Panel
     {
         static int StripW { get { return Dpi.S(10); } }   // 滑条带/命中区宽 (设计 px)
-        static int PadX { get { return Dpi.S(10); } }     // 左右内衬留白 (设计 px, 对称)
+        static int PadX { get { return Dpi.S(10); } }     // 四边内衬留白 (设计 px, 一致) ——
+                                                          // 批89: 上下左右留白一致, 滑条算在留白里
+        static Color BorderCol { get { return OutputCardControl.BorderColor; } }   // 与日志壳同一套浅灰框
+        static int CornerRadius { get { return Dpi.S(6); } }                       // 与日志壳同半径
 
         public readonly BufferedFlowPanel Inner;
         public readonly CardBarOverlay Bar;
-        int textEnd;                 // 卡片可视区右缘 (壳坐标, 不含): 右侧留白带从此到壳右缘
+        int textEnd;                 // 卡片可视区右缘 (壳坐标, 不含): 右侧留白带从此到框线
 
         public CardScrollShell(BufferedFlowPanel cards)
         {
             Inner = cards;
-            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.ResizeRedraw, true);
             Controls.Add(cards);
             cards.ScrollChanged += (s, e) => RefreshBar();
             cards.Scroll += (s, e) => RefreshBar();     // AutoScrollPosition 程序赋值不发 WM_VSCROLL
@@ -1735,19 +1740,21 @@ namespace StereoSplitter
         void Recalc()
         {
             if (Inner == null || IsDisposed) return;
-            int ih = Math.Max(1, Height);
+            // 四边留白一致 (批89): 卡片可视区距框线上下左右都是 PadX —— 上面/下面
+            // 也各让一条 (原来 Y=0 ih=Height 上下顶死), 右侧那条留白带装自绘滑条。
+            int ih = Math.Max(1, Height - 2 * PadX);
             int textW = Math.Max(StripW + 40, Width - 2 * PadX);
             if (Inner.IsHandleCreated)
             {
                 // Inner 窗口宽 = 可视宽 + 原生滚动条宽 (client 实测自校正一次) —— client ==
                 // textW 时卡片铺满到可视区右缘, 原生条落在 client 之外的非客户区
                 int w = textW + Math.Max(1, GetSystemMetrics(2));
-                Inner.SetBounds(PadX, 0, w, ih);
+                Inner.SetBounds(PadX, PadX, w, ih);
                 int cw = Inner.ClientSize.Width;
                 if (cw != textW)
                 {
                     w = Math.Max(1, w + textW - cw);
-                    Inner.SetBounds(PadX, 0, w, ih);
+                    Inner.SetBounds(PadX, PadX, w, ih);
                 }
             }
             // 窗口区域切在 client 右缘 (原生条在 client 之外, 整条被排除; 兜底不超过 textW)
@@ -1756,10 +1763,11 @@ namespace StereoSplitter
             Region old = Inner.Region;
             Inner.Region = new Region(new Rectangle(0, 0, cut, ih));
             if (old != null) old.Dispose();
-            // 覆盖层恰好盖住留白带 (卡片可视区右缘 .. 壳右缘): 画滑条、接条带鼠标事件
-            int barW = Math.Max(1, Width - textEnd);
-            if (Bar.Left != textEnd || Bar.Width != barW || Bar.Height != ih)
-                Bar.SetBounds(textEnd, 0, barW, ih);
+            // 覆盖层恰好盖住右侧留白带 (卡片可视区右缘 .. 框线内缘, 右让 1px 给框线):
+            // 画滑条、接条带鼠标事件。高只到内容区 (上下留白带归壳的框线/底色)
+            int barW = Math.Max(1, Width - 1 - textEnd);
+            if (Bar.Left != textEnd || Bar.Top != PadX || Bar.Width != barW || Bar.Height != ih)
+                Bar.SetBounds(textEnd, PadX, barW, ih);
         }
 
         /// <summary>
@@ -1769,6 +1777,22 @@ namespace StereoSplitter
         public int ContentWidth
         {
             get { return Math.Max(1, Math.Min(Width - 2 * PadX, textEnd - PadX)); }
+        }
+
+        /// <summary>
+        /// 圆角边框 (批89): 与日志圆角壳同一套 (BorderColor/半径 Dpi.S(6)/1px 半像素对齐)。
+        /// 只画线不填底 —— 留白带露壳背景 (与卡片间隙同一支色), 卡片内容由 Inner 自己铺。
+        /// 子窗口 (Inner/Bar) 占据的区域被 WS_CLIPCHILDREN 裁掉, 框线与四角弧恰好都在
+        /// 子窗口之外, 壳画得到。
+        /// </summary>
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            using (var path = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), CornerRadius))
+            using (var pen = new Pen(BorderCol, 1f))
+                g.DrawPath(pen, path);
         }
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
