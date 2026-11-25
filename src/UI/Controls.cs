@@ -1682,16 +1682,14 @@ namespace StereoSplitter
     /// <para>② 自绘细条: <see cref="CardBarOverlay"/> 盖在卡片区窗口之上 (父窗口被
     /// WS_CLIPCHILDREN 裁进子矩形, 画不到留白带, 必须用顶层兄弟控件画), 4px 圆头灰条,
     /// 拖拽 / 点击翻页 / 滚轮全在覆盖层处理。</para>
-    /// <para>四边留白一致 (批89): 卡片可视区距框线上下左右各 PadX, 滑条算在右侧留白里
-    /// (不占内容宽), 滑条右缘贴合框线。框线与日志圆角壳同一套 (批89)。</para>
+    /// <para>四边留白一致 (批89): 卡片可视区距壳缘上下左右各 PadX, 滑条算在右侧留白里
+    /// (不占内容宽), 滑条右缘贴壳右缘。不加边框 (批90: 用户看过圆角框后要求撤掉)。</para>
     /// </summary>
     class CardScrollShell : Panel
     {
         static int StripW { get { return Dpi.S(10); } }   // 滑条带/命中区宽 (设计 px)
         static int PadX { get { return Dpi.S(10); } }     // 四边内衬留白 (设计 px, 一致) ——
                                                           // 批89: 上下左右留白一致, 滑条算在留白里
-        static Color BorderCol { get { return OutputCardControl.BorderColor; } }   // 与日志壳同一套浅灰框
-        static int CornerRadius { get { return Dpi.S(6); } }                       // 与日志壳同半径
 
         public readonly BufferedFlowPanel Inner;
         public readonly CardBarOverlay Bar;
@@ -1778,22 +1776,8 @@ namespace StereoSplitter
         {
             get { return Math.Max(1, Math.Min(Width - 2 * PadX, textEnd - PadX)); }
         }
-
-        /// <summary>
-        /// 圆角边框 (批89): 与日志圆角壳同一套 (BorderColor/半径 Dpi.S(6)/1px 半像素对齐)。
-        /// 只画线不填底 —— 留白带露壳背景 (与卡片间隙同一支色), 卡片内容由 Inner 自己铺。
-        /// 子窗口 (Inner/Bar) 占据的区域被 WS_CLIPCHILDREN 裁掉, 框线与四角弧恰好都在
-        /// 子窗口之外, 壳画得到。
-        /// </summary>
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            Graphics g = e.Graphics;
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-            using (var path = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), CornerRadius))
-            using (var pen = new Pen(BorderCol, 1f))
-                g.DrawPath(pen, path);
-        }
+        // 批89 曾给壳画过圆角边框 (与日志壳同一套), 用户看后改主意"还是不要那个框"
+        // —— 框撤了 (批90), 四边留白一致与滑条贴右缘保留。
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern int GetSystemMetrics(int nIndex);
