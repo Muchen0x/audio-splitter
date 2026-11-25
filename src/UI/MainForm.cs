@@ -633,6 +633,10 @@ namespace StereoSplitter
             // 旧上限 3600 是四位数, 把整组拉得很长; 水位监控常用 30 秒, 两位数足够。
             nudWaterInterval = new NoWheelNumeric { Location = new Point(397, 5), Minimum = 0, Maximum = 99, Value = 30 };
             nudWaterShell = new RoundNumericShell(nudWaterInterval, "水位", "秒") { Location = new Point(397, 5) };
+            // 批102: 壳高与输出卡片的「延迟」壳一致 (RowControlHeight = Dpi.S(26)),
+            // 不再用默认的数字框高+2 —— 125% 下默认只有 25px, 比延迟壳 32px 矮一圈。
+            // 「清除日志」按钮由 AlignLogHeaderRow() 跟着壳高走, 三者自然等高。
+            nudWaterShell.FixedHeight = OutputCardControl.RowControlHeight;
 
             // 「日志」标题加大一号 (用户要求); 位置由 AlignLogHeaderRow() 摆 (左缘与内容框
             // 对齐, 在标题行内垂直居中), 这里的 Location 只是初始占位。

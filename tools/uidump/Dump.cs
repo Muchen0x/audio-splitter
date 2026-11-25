@@ -2320,6 +2320,54 @@ namespace StereoSplitter
                 return;
             }
 
+            // 批102: 日志标题行的水位壳/清除日志按钮 vs 输出卡片延迟壳 —— 几何实测。
+            if (args.Length >= 1 && args[0] == "header")
+            {
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(40, 40);
+                mf.Size = new Size(760, 640);
+                mf.TopMost = true;
+                mf.Show();
+                mf.Activate();
+                for (int i = 0; i < 16; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+
+                var water = Field(mf, "nudWaterShell") as Control;
+                var clear = Field(mf, "btnClearLog") as Control;
+                var title = Field(mf, "lblLogTitle") as Control;
+                var cardList = Field(mf, "cards") as System.Collections.IEnumerable;
+                Control delay = null;
+                if (cardList != null)
+                    foreach (var c in cardList)
+                    {
+                        delay = Field(c, "nudShell") as Control;
+                        if (delay != null) break;
+                    }
+                int wH = water != null ? water.Height : -1;
+                int cH = clear != null ? clear.Height : -1;
+                int dH = delay != null ? delay.Height : -1;
+                Console.Out.WriteLine("HEADER factor=" + Dpi.Factor.ToString("0.###")
+                    + " rowControl=" + Dpi.S(26)
+                    + " water=" + wH + " clear=" + cH + " delay=" + dH
+                    + " waterTop=" + (water != null ? water.Top.ToString() : "null")
+                    + " clearTop=" + (clear != null ? clear.Top.ToString() : "null")
+                    + " titleTop=" + (title != null ? title.Top.ToString() : "null")
+                    + " verdict=" + (wH > 0 && wH == cH && cH == dH && dH == Dpi.S(26)
+                        ? "OK" : "FAIL<<<"));
+
+                Rectangle scr = mf.RectangleToScreen(mf.ClientRectangle);
+                using (var bmp = new Bitmap(scr.Width, scr.Height))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                        g.CopyFromScreen(scr.Location, Point.Empty, scr.Size);
+                    bmp.Save("header-full.png", System.Drawing.Imaging.ImageFormat.Png);
+                    Rectangle crop = new Rectangle(0, scr.Height - Dpi.S(150), scr.Width, Dpi.S(150));
+                    bmp.Clone(crop, bmp.PixelFormat).Save("header-row.png", System.Drawing.Imaging.ImageFormat.Png);
+                }
+                mf.Close();
+                return;
+            }
+
             // 批99: 缝端喇叭口弧 vs 隐藏态窗口圆角 —— 逐行像素对比 (用户 "圆角对不上")。
             // 截图按 RectangleToScreen(ClientRectangle) 取物理像素, 避免 125% 下
             // CopyFromScreen(mf.Location, mf.Size) 用逻辑坐标截偏的旧坑。

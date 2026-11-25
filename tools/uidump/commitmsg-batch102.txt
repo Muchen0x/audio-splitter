@@ -1,0 +1,17 @@
+批102: 水位壳/清除日志按钮高度对齐输出卡片延迟壳
+
+问题: 日志标题行的「水位 N 秒」圆角壳用的是默认高度(数字框高+2),
+125% 下实测 25px, 而输出卡片的「延迟」壳是 RowControlHeight=Dpi.S(26)=32px,
+「清除日志」按钮又跟着水位壳走, 两者都比延迟壳矮一圈。
+
+改动:
+- src/UI/MainForm.cs: 水位壳设 FixedHeight = OutputCardControl.RowControlHeight,
+  与延迟壳/声道下拉同一高度源; 清除日志按钮仍由 AlignLogHeaderRow() 跟随壳高,
+  三者自动等高并在标题行内垂直居中。
+- tools/uidump/Dump.cs: 新增 header 几何探针, 输出水位/清除日志/延迟三者高度
+  并断言全部等于 Dpi.S(26)。
+
+验证: 编译 0 错误; header verdict=OK (32/32/32); selftest 34 项全过;
+tray/seamend/seam/logclick/cardshell/corners/settings/logshell/scroll/toggle/dpiprobe
+关键断言与基线一致 (CARDSHELL-THUMB-FIT 仍为 HEAD 基线既有的前置条件 FAIL);
+VERIFY OK。
