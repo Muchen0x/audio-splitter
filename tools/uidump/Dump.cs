@@ -2121,6 +2121,56 @@ namespace StereoSplitter
                     + " glyph=" + glyphOf());
                 shot("normal");
 
+                // 按钮收起 (SplitterDistance 不变): 让边里的旧喇叭口弧必须被擦净 (批76)
+                onClick.Invoke(btnLog, new object[] { EventArgs.Empty });
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("LOG-BTN-COLLAPSED collapsed=" + scc.Panel2Collapsed + " (期望 True) glyph=" + glyphOf() + " (期望 LogOff)");
+                shot("btn-collapsed");
+
+                // 按钮恢复 (SplitterDistance 不变 → SplitterMoved 不触发): 喇叭口弧必须重画
+                onClick.Invoke(btnLog, new object[] { EventArgs.Empty });
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("LOG-BTN-RESTORED collapsed=" + scc.Panel2Collapsed + " (期望 False) dist=" + scc.SplitterDistance + " glyph=" + glyphOf() + " (期望 LogOn)");
+                shot("btn-restored");
+
+                // 真实鼠标小步拖动 (复现用户"小幅度拖动显示异常"): 快速拖 + 分段截图
+                Point dragSp = scc.PointToScreen(new Point(scc.Width / 2, scc.Panel1.Bottom + scc.SplitterWidth / 2));
+                Cursor.Position = dragSp;
+                for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);              // LEFTDOWN
+                for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                // 快速: 1px 连续步进不等待 (贴近真实快速拖动)
+                for (int k = 1; k <= 8; k++)
+                {
+                    Cursor.Position = new Point(dragSp.X, dragSp.Y + k);
+                    Application.DoEvents();
+                    if (k == 3) shot("drag-mid");
+                }
+                mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);              // LEFTUP
+                Application.DoEvents();
+                shot("drag-done0");
+                for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                shot("drag-done");
+                Console.Out.WriteLine("DRAG-SMALL dist=" + scc.SplitterDistance + " panel1H=" + scc.Panel1.Height);
+                // 反向再拖 3px (上)
+                mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+                for (int k = 1; k <= 3; k++)
+                {
+                    Cursor.Position = new Point(dragSp.X, dragSp.Y + 8 - k);
+                    Application.DoEvents();
+                }
+                mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+                Application.DoEvents();
+                for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                shot("drag-back");
+                Console.Out.WriteLine("DRAG-BACK dist=" + scc.SplitterDistance);
+                Console.Out.WriteLine("DRAG-END-COUNT=" + ((NoFocusSplitContainer)scc).DragEndCount);
+                // 整窗强制重画: 若能治愈 230 花纹 → 陈旧像素问题 (增量裁剪漏行), 不是几何问题
+                mf.Invalidate(true);
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                shot("healed");
+                Console.Out.WriteLine("HEALED after full invalidate");
+
                 // 拉到最底 = SplitterDistance 拉满 → SplitterMoved 应自动整体收起日志面板
                 try { scc.SplitterDistance = scc.Height - scc.SplitterWidth; } catch (Exception ex) { Console.Out.WriteLine("DRAG-BOTTOM set failed: " + ex.Message); }
                 for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
@@ -2418,6 +2468,9 @@ namespace StereoSplitter
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern bool SetCursorPos(int x, int y);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtra);
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern void mouse_event(int flags, int dx, int dy, int data, IntPtr extra);

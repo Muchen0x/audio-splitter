@@ -367,6 +367,9 @@ namespace StereoSplitter
             // 分隔条位置变了: 左右那两截"补到边"的分隔线要跟着重画;
             // 拖到最底 (日志面板高度归零) 时整体收起日志面板 (用户指定, 由标题栏日志按钮恢复)
             splitContainer.SplitterMoved += (s, e) => OnSplitterMoved();
+            // 拖动结束 (反色预览条擦除之后): 把滑带区整条重画, 盖掉 XOR 残迹 (见 InvalidateSeamZone)
+            ((NoFocusSplitContainer)splitContainer).DragFeedbackEnd +=
+                (s, e) => { InvalidateSeamZone(); InvalidateSplitterBleed(); };
             Controls.Add(splitContainer);
 
             // 捕获行: 原来行首有「捕获:」标签, 已删 (用户要求) —— 这一行只有"选哪台设备被抓取"
@@ -909,6 +912,7 @@ namespace StereoSplitter
         void OnSplitterMoved()
         {
             InvalidateSplitterBleed();
+            InvalidateSeamZone();
             if (splitContainer == null || splitContainer.Panel2Collapsed) return;
             if (splitContainer.Panel2.Height > Dpi.S(40))
                 lastLogDist = splitContainer.SplitterDistance;   // 只记"像样"的档位 (拖动途中 >=40px 的最后一站)
@@ -941,6 +945,12 @@ namespace StereoSplitter
                 return;
             }
             splitContainer.Panel2Collapsed = !show;
+            // 左右让边是窗体自己的绘制区 (喇叭口弧画在那里), 容器收放不会自动失效它:
+            // 收起时旧弧没人擦 → 残留; 恢复时若 SplitterDistance 没变 (SplitterMoved
+            // 不触发) 没人画 → 圆弧缺失。整条让边失效, 收起由背景填充擦净、恢复由
+            // PaintSplitterBleed 重画弧 (用户报告的两个 bug 同根)。
+            InvalidateSplitterBleed();
+            InvalidateSeamZone();
             if (show)
             {
                 int maxDist = splitContainer.Height - splitContainer.SplitterWidth - splitContainer.Panel2MinSize;
@@ -964,8 +974,38 @@ namespace StereoSplitter
             if (splitContainer == null || !IsHandleCreated) return;
             int grip = Padding.Left;
             if (grip <= 0) return;
-            Invalidate(new Rectangle(0, 0, grip, ClientSize.Height));
-            Invalidate(new Rectangle(ClientSize.Width - grip, 0, grip, ClientSize.Height));
+            // **必须带 invalidateChildren:true**: 窗口失效是逐 HWND 的, 不带的话只失效窗体
+            // 自己的表面, 容器 (子窗口) 根本不重画 —— 而滑带正是容器画的。
+            Invalidate(new Rectangle(0, 0, grip, ClientSize.Height), true);
+            Invalidate(new Rectangle(ClientSize.Width - grip, 0, grip, ClientSize.Height), true);
+        }
+
+        int _seamY = -1;                    // 上次记录的滑带上缘 (客户区 y); -1 = 未知
+
+        /// <summary>
+        /// 把滑带经过的整条横带 (旧位置 ∪ 新位置, 含喇叭口外扩) 整体失效。
+        /// <para>SplitContainer 拖动用 XOR 反色预览条: 松手擦除与我们松手后的重绘交错时,
+        /// 反转残迹 (深带 25 → 230, 把手条 140 → 115) 留在屏上, 缩放窗口才消失。
+        /// 拖动结束回调 (<see cref="NoFocusSplitContainer.DragFeedbackEnd"/>, 擦除**之后**)
+        /// 与 SplitterMoved 都走这里, 残迹一律被整条重画盖掉。</para>
+        /// </summary>
+        void InvalidateSeamZone()
+        {
+            if (splitContainer == null || !IsHandleCreated || splitContainer.Panel2Collapsed)
+            {
+                _seamY = -1;
+                return;
+            }
+            int y1 = splitContainer.Top + splitContainer.Panel1.Bottom;
+            int h = splitContainer.SplitterWidth;
+            int pad = (int)NoFocusSplitContainer.SeamRadiusPx + 2;
+            int top = _seamY >= 0 ? Math.Min(_seamY, y1) : y1;
+            int bottom = _seamY >= 0 ? Math.Max(_seamY, y1) : y1;
+            // invalidateChildren:true —— 滑带画在容器 (子窗口) 表面上, 窗体级失效不传下去
+            // 容器就不重画; SplitContainer 拖动的 XOR 半色调预览条残迹 (25→230, 140→115)
+            // 正是靠这里整条盖掉 (详见 Controls.cs DragFeedbackEnd 注释)。
+            Invalidate(new Rectangle(0, top - pad, ClientSize.Width, bottom - top + h + pad * 2), true);
+            _seamY = y1;
         }
 
         // ================= 自绘标题栏 =================

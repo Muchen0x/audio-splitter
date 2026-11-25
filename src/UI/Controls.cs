@@ -1212,12 +1212,31 @@ namespace StereoSplitter
             }
         }
 
+        /// <summary>
+        /// 拖动结束 (WM_LBUTTONUP 走完 base 处理之后)。SplitContainer 的拖动用 **XOR
+        /// 反色预览条**: 拖动中把滑带位置的屏幕条带按位反转、松手再反转一次"擦除"。
+        /// 擦除与我们松手后的重绘交错时 (距离变化 → 我们重画了新位置), 反转残迹
+        /// (深带 25 → 反色 230, 把手条 140 → 115) 会留在屏上直到下次整窗重画。
+        /// 这里在 base 处理 (含擦除) **完成之后**回调, 让宿主把滑带区整条重画盖掉残迹。
+        /// </summary>
+        public event EventHandler DragFeedbackEnd;
+
+        /// <summary>诊断: DragFeedbackEnd 触发次数 (探针读)。</summary>
+        internal int DragEndCount;
+
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == 0x0201)                       // WM_LBUTTONDOWN: child 能收到, 此刻记录旧焦点 (Focus 尚未发生)
             {
                 restoreFocus = GetFocus();
                 base.WndProc(ref m);
+                return;
+            }
+            if (m.Msg == 0x0202)                       // WM_LBUTTONUP: base 里包含反色预览条的擦除,
+            {                                          // 必须等它做完再通知宿主重画滑带区
+                base.WndProc(ref m);
+                DragEndCount++;
+                if (DragFeedbackEnd != null) DragFeedbackEnd(this, EventArgs.Empty);
                 return;
             }
             if (m.Msg == 0x0007)                       // WM_SETFOCUS: 焦点被抢到分隔条 → 立即还回
@@ -1283,6 +1302,12 @@ namespace StereoSplitter
             base.OnPaint(e);
             Rectangle sr = SplitterRectangle;
             if (sr.Height <= 0 || sr.Width <= 0) return;
+            // **无视增量裁剪, 整面重画**: 快速拖动时 WinForms 给的失效区只是增量条,
+            // 若某次绘制的裁剪漏了几行, 旧位置的把手条/弧缘 AA 残迹会与新内容交错
+            // 永久留在屏上 (缩放窗口才消失, 用户报告的"小幅度拖动显示异常")。
+            // 这里强制按控件整面重画 —— GDI 会把子控件 (上下两块面板) 裁出去,
+            // 不会画到它们身上; 滑带区只有 20 来行像素, 全画的开销可忽略。
+            e.Graphics.SetClip(ClientRectangle);
             // 深色滑带: 整条路径用窗体客户区坐标描述、平移成本控件局部坐标 ——
             // 界内画得到的部分 (中段直边 + 喇叭口靠内一截) 在这里出来;
             // 落在左右让边里的部分 (x&lt;0 / x&gt;Width) 被控件边界裁掉, 由
@@ -1291,6 +1316,10 @@ namespace StereoSplitter
             float xr = (Parent != null ? Parent.ClientSize.Width : Left + Width) - Left;
             e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            // 滑带经过的整条横带先铺底色 (盖掉任何旧位置的残迹), 再画路径
+            using (var b = new SolidBrush(Parent != null ? Parent.BackColor : BackColor))
+                e.Graphics.FillRectangle(b, 0, sr.Top - (int)SeamRadiusPx - 2, Width,
+                    sr.Height + 2 * (int)SeamRadiusPx + 4);
             using (var path = BuildSeamPath(xl, xr, sr.Top, sr.Bottom, SeamRadiusPx))
             using (var b = new SolidBrush(SeamDark))
                 e.Graphics.FillPath(b, path);
