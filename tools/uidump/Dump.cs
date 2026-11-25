@@ -2690,7 +2690,7 @@ namespace StereoSplitter
                     && (card0 == null || Math.Abs(cardLeftGap - cardRightGap) <= 1);
 
                 // BAR: 右侧留白带里扫自绘滑条色 (198,203,211); LEAK: 带内不应有原生条深色箭头 (<70)
-                int thumbPx = 0, darkPx = 0, hotPx = 0;
+                int thumbPx = 0, darkPx = 0, hotPx = 0, nativeThumbPx = 0;
                 // dark 只扫留白带列 (band 外是卡片内容, X 钮/微调控件的深色像素不算泄漏)
                 int bandL = shell.PointToScreen(Point.Empty).X - mf.Left + textEnd;
                 int scanL = bandL, scanR = mf.ClientSize.Width - 1;
@@ -2707,6 +2707,9 @@ namespace StereoSplitter
                             if (p.R == 198 && p.G == 203 && p.B == 211) { thumbPx++; if (thumbMinX < 0) thumbMinX = x; thumbMaxX = x; }
                             else if (p.R == 172 && p.G == 178 && p.B == 188) { hotPx++; if (thumbMinX < 0) thumbMinX = x; thumbMaxX = x; }
                             if (p.R < 70 && p.G < 70 && p.B < 70) darkPx++;
+                            // 批98: Win11 原生 VScrollBar thumb = (133,133,133) —— 旧 dark<70
+                            // 只抓到旧主题箭头, 灰色 thumb 一条条漏检 (用户截图两条竖条)
+                            if (p.R == 133 && p.G == 133 && p.B == 133) nativeThumbPx++;
                         }
                     // 批90 撤框: FRAME 断言已删。THUMB-FIT 保留 —— 滑条右缘距壳右缘
                     // (留白带外缘) ≤2 物理px = "贴合"语义在无框状态下仍然成立
@@ -2719,7 +2722,12 @@ namespace StereoSplitter
                     bmp.Save("cardshell-frame.png", System.Drawing.Imaging.ImageFormat.Png);
                     Console.Out.WriteLine("FRAME-SHOT -> cardshell-frame.png");
                 }
-                Console.Out.WriteLine("CARDSHELL-BAR thumbPx=" + thumbPx + " hotPx=" + hotPx + " darkPx=" + darkPx + " (thumb/hot 合计>20 = 自绘滑条在屏; dark=0 = 无原生箭头)");
+                Console.Out.WriteLine("CARDSHELL-BAR thumbPx=" + thumbPx + " hotPx=" + hotPx + " darkPx=" + darkPx
+                    + " native133Px=" + nativeThumbPx
+                    + " (thumb/hot 合计>20 = 自绘滑条在屏; dark/native133=0 = 无原生条泄漏)");
+                Console.Out.WriteLine("CARDSHELL-BAR-LEAK native133Px=" + nativeThumbPx
+                    + " (期望 0; Win11 原生 thumb=133,133,133 不触发旧 dark<70 判据 —— 批98 双滚动条守卫) verdict="
+                    + (nativeThumbPx == 0 ? "OK" : "FAIL"));
                 Console.Out.WriteLine("CARDSHELL-SYM-OK " + symOk);
 
                 // SYMW: 多宽度扫描 (用户批85补充: 左右留白一样多, 滚动条不记入、算留白的一部分)。

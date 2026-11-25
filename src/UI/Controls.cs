@@ -1876,6 +1876,11 @@ namespace StereoSplitter
             Controls.Add(cards);
             cards.ScrollChanged += (s, e) => RefreshBar();
             cards.Scroll += (s, e) => RefreshBar();     // AutoScrollPosition 程序赋值不发 WM_VSCROLL
+            // 原生条显隐 (内容增删 / 竖向放不下转横滚) 会**直接改 Inner 的 ClientSize**,
+            // 不走壳的 Resize 也不换句柄 —— 原 Region 没跟着重切, 原生条就露在
+            // "client 右缘 .. 壳右缘"的留白带里, 与自绘条并排 (用户批98: 两个滚动条)。
+            // client 一变就重排 (Recalc 里有 IsDisposed 守卫, 构造期不触发)。
+            cards.ClientSizeChanged += (s, e) => Recalc();
             // 句柄重建 (AutoScroll 开关等会换新 HWND) 会丢窗口 Region —— 原生条整条漏出来;
             // 与 RoundLogShell 同一套兜底: 句柄重建后重摆+重裁
             cards.HandleCreated += OnInnerHandleCreated;
@@ -1912,9 +1917,14 @@ namespace StereoSplitter
             Recalc();
         }
 
+        bool recalcBusy;            // 防重入: Recalc 里 SetBounds 又触发 ClientSizeChanged
+
         void Recalc()
         {
-            if (Inner == null || IsDisposed) return;
+            if (Inner == null || IsDisposed || recalcBusy) return;
+            recalcBusy = true;
+            try
+            {
             // 四边留白 (批89), 批91 调整: 上留白缩一半 (用户要求) —— 上 PadX/2,
             // 左/右/下仍 PadX。滑条带依旧算在右侧留白里。
             int padTop = PadX / 2;
@@ -1962,6 +1972,8 @@ namespace StereoSplitter
             int hbarH = Math.Max(1, Height - padTop - ih);
             if (HBar.Left != PadX || HBar.Top != padTop + ih || HBar.Width != textEnd - PadX || HBar.Height != hbarH)
                 HBar.SetBounds(PadX, padTop + ih, Math.Max(1, textEnd - PadX), hbarH);
+            }
+            finally { recalcBusy = false; }
         }
 
         /// <summary>
