@@ -129,6 +129,13 @@ namespace StereoSplitter
                     {
                         using (var g = Graphics.FromImage(bmp))
                             g.CopyFromScreen(fy.PointToScreen(Point.Empty), Point.Empty, fy.Size);
+                        // 批108: 圆角弧线中段不能被白色内容面板盖掉。取右上角弧线中段的
+                        // 三个采样点 (离右缘 5/4/3px, y=2/3/4), 全白就说明又出现了"白缝"。
+                        int sw = fy.Width - 5, sh = fy.Height - 4;
+                        int a = bmp.GetPixel(sw, 2).R, b = bmp.GetPixel(sw + 1, 3).R,
+                            c = bmp.GetPixel(sw + 2, 4).R;
+                        Console.Out.WriteLine("FLYOUT-CORNER r=" + a + "," + b + "," + c
+                            + " verdict=" + (a < 240 && b < 240 && c < 240 ? "OK" : "FAIL<<<"));
                         bmp.Save("flyout-live.png", System.Drawing.Imaging.ImageFormat.Png);
                     }
                     Console.Out.WriteLine("FLYOUT-SHOT -> flyout-live.png");
@@ -140,10 +147,10 @@ namespace StereoSplitter
                     sampleEdges(fy, "flyout");
                     // 批107: 浮层收窄 8 设计px (260 取代 268)。右缘相对按钮的 inset 在下面
                     // 用真实 OpenSettings 路径单独量, 这里这个 fy 是探针用固定坐标 Show 的。
+                    int expectW = Dpi.S(256) + Dpi.S(4) * 2;   // 批108: 内容 256 + 四边留白 4
                     Console.Out.WriteLine("FLYOUT-W popup=" + fy.Width
-                        + " expect=" + (Dpi.S(260) + Dpi.S(2) * 2)
-                        + " verdict=" + (fy.Width == Dpi.S(260) + Dpi.S(2) * 2
-                            ? "OK" : "FAIL<<<"));
+                        + " expect=" + expectW
+                        + " verdict=" + (fy.Width == expectW ? "OK" : "FAIL<<<"));
                     foreach (Control c in content.Controls)
                     {
                         string rowTag = c is MenuRow ? "ROW '" + c.Text + "' enabled=" + c.Enabled : "host '" + c.GetType().Name + "' hidden=" + !c.Visible;
@@ -286,9 +293,11 @@ namespace StereoSplitter
                     int oldWidth = Dpi.S(268) + Dpi.S(2) * 2;   // 批107 前的浮层宽度
                     int leftShift = realFlyout != null && moreBtn != null
                         ? realFlyout.Left - (moreRightScreen - oldWidth) : -1;
+                    // 125% 下 Dpi.S(4) 的留白与内容缩放取整会差 1px, 放行 0±1。
                     Console.Out.WriteLine("SETTINGS-ANCHOR inset=" + inset + " expect=" + Dpi.S(8)
-                        + " leftShift=" + leftShift + " expect=0"
-                        + " verdict=" + (inset == Dpi.S(8) && leftShift == 0 ? "OK" : "FAIL<<<"));
+                        + " leftShift=" + leftShift + " expect=0±1"
+                        + " verdict=" + (inset == Dpi.S(8) && Math.Abs(leftShift) <= 1
+                            ? "OK" : "FAIL<<<"));
                     if (realFlyout != null)
                     {
                         using (var bmp = new Bitmap(realFlyout.Width + 60, Dpi.S(60)))

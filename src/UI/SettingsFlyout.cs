@@ -53,14 +53,17 @@ namespace StereoSplitter
         long submenuTogglePendingMs;
 
         // —— 布局常量 = 96 设计像素 (面板按 96 摆好后整体乘一次缩放系数) ——
-        // 宽度按用户要求收窄过 (原 300 → 268 → 260); 行水平内缩 PadX, 悬停垫不贴边框 ——
+        // 宽度按用户要求收窄过 (原 300 → 268 → 外框 264 设计px); 行水平内缩 PadX, 悬停垫不贴边框 ——
         // 观感对齐下拉弹层 (描边环 + 内缩留白), 边框本身与下拉同 renderer 同色同半径。
         // 批107: 再收 8 设计px, 配合 MainForm 弹出锚点右缘左移同样的 8px (左缘不动),
         // 免得浮层右上角压在主窗口那条同色 1px 分隔线上, 圆角看着像折角。
-        const int DesignW = 260;
+        // 批108: 内容面板留白 2 → 4 设计px, 内容尺寸等量缩小, 外框仍是 264×182 设计px。
+        // 留白 2px 时白色面板会盖住圆角弧线内侧 (弧线在 y=2 处已内缩到 x=w-4),
+        // 放大看就是弧线中间断了一截白缝; 4px 留白刚好让面板避开整段弧线。
+        const int DesignW = 256;
         const int PadX = 7;
         const int RowH = 34;
-        const int PadY = 6;
+        const int PadY = 4;
         static readonly int DesignH = PadY + 5 * RowH + PadY;
 
         /// <summary>弹层收起 (点外面/Esc/程序收起) 的时刻 (NowMs 基准)。MainForm 用它做
@@ -84,13 +87,15 @@ namespace StereoSplitter
             Padding = Padding.Empty;         // Padding 非 0 会缩 ToolStrip 的绘制 clip, 边框铺不全 (实测教训)
             Renderer = new ComboPopup.PopupRenderer();
 
+            // 白底面板四周留 4 设计px (批108): 留 2px 时面板会盖住圆角弧线内侧,
+            // 弧线中段被刷成白色, 放大看就是一道缝。面板不透明, 内容区保持纯白。
             content = new Panel { Size = new Size(DesignW, DesignH), BackColor = Color.White };
             BuildUi(controls);
 
             // DPI: 面板按 96 设计像素摆好, 这里整体乘一次缩放系数 (字体是 pt 单位, 不用缩;
             // MenuRow 自己按 Height/RowH 推缩放系数画图标)
             if (Dpi.Factor != 1f) content.Scale(new SizeF(Dpi.Factor, Dpi.Factor));
-            int m = Dpi.S(2);                // host 四边各让 2px, 弹层自绘的 1px 边框才不会被面板压住
+            int m = Dpi.S(4);                // host 四边各让 4px (批108): 2px 只够直边, 圆角弧线内缩会露在面板底下被刷白
             var host = new ToolStripControlHost(content)
             {
                 Margin = new Padding(m),
