@@ -984,8 +984,11 @@ namespace StereoSplitter
                 }
             };
 
-            // 锚在图标正下方, 右缘与图标右缘对齐; 顶出屏幕时往回收
-            Point anchor = PointToScreen(new Point(btnSettings.Right - f.Width, btnSettings.Bottom + Dpi.S(4)));
+            // 锚在图标正下方; 批107 起右缘比图标右缘再左收 8 设计px —— 浮层本身也收窄了
+            // 同样的 8px, 所以左缘不动、只是右缘离开主窗口那条同色分隔线, 圆角不再接成折角。
+            // 顶出屏幕时往回收。
+            Point anchor = PointToScreen(new Point(
+                btnSettings.Right - f.Width - Dpi.S(8), btnSettings.Bottom + Dpi.S(4)));
             Rectangle wa = Screen.FromControl(this).WorkingArea;
             if (anchor.X < wa.Left) anchor.X = wa.Left;
             if (anchor.Y + f.Height > wa.Bottom) anchor.Y = Math.Max(wa.Top, btnSettings.Top - f.Height - Dpi.S(4));

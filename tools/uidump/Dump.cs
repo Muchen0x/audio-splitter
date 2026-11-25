@@ -138,6 +138,12 @@ namespace StereoSplitter
                     sb2.AppendLine("SETTINGS content=" + content.ClientSize + " popup=" + fy.Size
                         + " visible=" + fy.Visible);
                     sampleEdges(fy, "flyout");
+                    // 批107: 浮层收窄 8 设计px (260 取代 268)。右缘相对按钮的 inset 在下面
+                    // 用真实 OpenSettings 路径单独量, 这里这个 fy 是探针用固定坐标 Show 的。
+                    Console.Out.WriteLine("FLYOUT-W popup=" + fy.Width
+                        + " expect=" + (Dpi.S(260) + Dpi.S(2) * 2)
+                        + " verdict=" + (fy.Width == Dpi.S(260) + Dpi.S(2) * 2
+                            ? "OK" : "FAIL<<<"));
                     foreach (Control c in content.Controls)
                     {
                         string rowTag = c is MenuRow ? "ROW '" + c.Text + "' enabled=" + c.Enabled : "host '" + c.GetType().Name + "' hidden=" + !c.Visible;
@@ -261,6 +267,43 @@ namespace StereoSplitter
                     + " parent=" + (cmb.Parent == null ? "null" : cmb.Parent.GetType().Name)
                     + ((d1 != d0 && t1 == t0 && m1 == m0 && (idxExpect == int.MinValue || idx1 == idxExpect))
                         ? "  (changes kept, good)" : "  <<< UNEXPECTED"));
+                // 批107: 走真实 OpenSettings 路径量锚点 —— 浮层右缘应比「更多」按钮右缘
+                // 左收 8 设计px, 左缘保持原位 (宽度也收了同样的 8px)。
+                MethodInfo openSettings = mf.GetType().GetMethod("OpenSettings",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                if (openSettings == null)
+                    Console.Out.WriteLine("SETTINGS-ANCHOR no method <<<");
+                else
+                {
+                    openSettings.Invoke(mf, null);
+                    for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    ToolStripDropDown realFlyout = Field(mf, "settingsFlyout") as ToolStripDropDown;
+                    Control moreBtn = Field(mf, "btnSettings") as Control;
+                    // moreBtn.Right 是客户区坐标, flyout.Left/Right 是屏幕坐标 —— 先统一到屏幕
+                    int moreRightScreen = moreBtn != null
+                        ? mf.PointToScreen(new Point(moreBtn.Right, 0)).X : -1;
+                    int inset = realFlyout != null && moreBtn != null ? moreRightScreen - realFlyout.Right : -1;
+                    int oldWidth = Dpi.S(268) + Dpi.S(2) * 2;   // 批107 前的浮层宽度
+                    int leftShift = realFlyout != null && moreBtn != null
+                        ? realFlyout.Left - (moreRightScreen - oldWidth) : -1;
+                    Console.Out.WriteLine("SETTINGS-ANCHOR inset=" + inset + " expect=" + Dpi.S(8)
+                        + " leftShift=" + leftShift + " expect=0"
+                        + " verdict=" + (inset == Dpi.S(8) && leftShift == 0 ? "OK" : "FAIL<<<"));
+                    if (realFlyout != null)
+                    {
+                        using (var bmp = new Bitmap(realFlyout.Width + 60, Dpi.S(60)))
+                        {
+                            using (var g = Graphics.FromImage(bmp))
+                                g.CopyFromScreen(new Point(realFlyout.Right - Dpi.S(40), realFlyout.Top),
+                                    Point.Empty, bmp.Size);
+                            bmp.Save("flyout-anchored-corner.png", System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                        Console.Out.WriteLine("SETTINGS-ANCHOR-SHOT -> flyout-anchored-corner.png");
+                    }
+                    if (realFlyout != null) realFlyout.Close();
+                    for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                }
+
                 Console.Out.Flush();
                 Environment.Exit(0);
             }

@@ -1,0 +1,12 @@
+批107 设置浮层收窄、右缘离开底下同色边框线
+
+用户: 「(浮层右上角圆角/边框看着不顺) 那就把长度缩一点」→ 确认是缩短设置浮层宽度。
+
+- SettingsFlyout DesignW 268 → 260 (再收 8 设计px), 行内容随之内缩, 文字/开关/对勾均未裁切。
+- MainForm.OpenSettings 弹出锚点右缘再左收 Dpi.S(8), 与收窄量相同: 左缘保持原位,
+  只是右缘离开主窗口那条同色 1px 边框线, 右上角圆角不再被接成折角。
+- Dump.cs settings 探针加 FLYOUT-W 与 SETTINGS-ANCHOR 断言 (真实 OpenSettings 路径,
+  屏幕坐标换算后量 inset/左缘位移), 并保存 flyout-anchored-corner.png 供肉眼确认。
+
+验证: 编译 0 错误; selftest 34 项全过; 13 个 UI 探针通过
+(CARDSHELL-THUMB-FIT 为 HEAD 基线既有 FAIL); VERIFY OK。

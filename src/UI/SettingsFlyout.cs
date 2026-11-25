@@ -53,9 +53,11 @@ namespace StereoSplitter
         long submenuTogglePendingMs;
 
         // —— 布局常量 = 96 设计像素 (面板按 96 摆好后整体乘一次缩放系数) ——
-        // 宽度按用户要求收窄过 (原 300); 行水平内缩 PadX, 悬停垫不贴边框 ——
-        // 观感对齐下拉弹层 (描边环 + 内缩留白), 边框本身与下拉同 renderer 同色同半径
-        const int DesignW = 268;
+        // 宽度按用户要求收窄过 (原 300 → 268 → 260); 行水平内缩 PadX, 悬停垫不贴边框 ——
+        // 观感对齐下拉弹层 (描边环 + 内缩留白), 边框本身与下拉同 renderer 同色同半径。
+        // 批107: 再收 8 设计px, 配合 MainForm 弹出锚点右缘左移同样的 8px (左缘不动),
+        // 免得浮层右上角压在主窗口那条同色 1px 分隔线上, 圆角看着像折角。
+        const int DesignW = 260;
         const int PadX = 7;
         const int RowH = 34;
         const int PadY = 6;
