@@ -157,10 +157,22 @@ namespace StereoSplitter
                     sampleEdges(fy, "flyout");
                     // 批107: 浮层收窄 8 设计px (260 取代 268)。右缘相对按钮的 inset 在下面
                     // 用真实 OpenSettings 路径单独量, 这里这个 fy 是探针用固定坐标 Show 的。
-                    int expectW = Dpi.S(256) + Dpi.S(4) * 2;   // 批108: 内容 256 + 四边留白 4
+                    int expectW = Dpi.S(250) + Dpi.S(4) * 2;   // 批117: 内容 250 + 四边留白 4
                     Console.Out.WriteLine("FLYOUT-W popup=" + fy.Width
                         + " expect=" + expectW
                         + " verdict=" + (fy.Width == expectW ? "OK" : "FAIL<<<"));
+                    // 批117: 四边留白对称 —— 菜单行到浮窗四缘的距离必须一致。
+                    // 设计值: 行 Left/Top = PadX/PadY(4) + host margin(4) = 8; 行宽 242 不变。
+                    MenuRow padRow0 = null;
+                    foreach (Control c in content.Controls) if (c is MenuRow) { padRow0 = (MenuRow)c; break; }
+                    int padL = padRow0 != null ? padRow0.Left : -1;
+                    int padT = padRow0 != null ? padRow0.Top : -1;
+                    int padR = padRow0 != null ? content.ClientSize.Width - padRow0.Right : -1;
+                    int rowW = padRow0 != null ? padRow0.Width : -1;
+                    Console.Out.WriteLine("FLYOUT-PADS left=" + padL + " top=" + padT + " right=" + padR
+                        + " rowW=" + rowW
+                        + " verdict=" + (padL == Dpi.S(4) && padT == Dpi.S(4) && padR == Dpi.S(4)
+                            && rowW == Dpi.S(242) ? "OK" : "FAIL<<<"));
                     foreach (Control c in content.Controls)
                     {
                         string rowTag = c is MenuRow ? "ROW '" + c.Text + "' enabled=" + c.Enabled : "host '" + c.GetType().Name + "' hidden=" + !c.Visible;
@@ -300,13 +312,13 @@ namespace StereoSplitter
                     int moreRightScreen = moreBtn != null
                         ? mf.PointToScreen(new Point(moreBtn.Right, 0)).X : -1;
                     int inset = realFlyout != null && moreBtn != null ? moreRightScreen - realFlyout.Right : -1;
-                    int oldWidth = Dpi.S(268) + Dpi.S(2) * 2;   // 批107 前的浮层宽度
-                    int leftShift = realFlyout != null && moreBtn != null
-                        ? realFlyout.Left - (moreRightScreen - oldWidth) : -1;
+                    // 批117: 浮层再收窄到内容 250 (外框 258), 锚点右缘不变 (inset 8)。
+                    int expectFlyW = Dpi.S(250) + Dpi.S(4) * 2;
                     // 125% 下 Dpi.S(4) 的留白与内容缩放取整会差 1px, 放行 0±1。
                     Console.Out.WriteLine("SETTINGS-ANCHOR inset=" + inset + " expect=" + Dpi.S(8)
-                        + " leftShift=" + leftShift + " expect=0±1"
-                        + " verdict=" + (inset == Dpi.S(8) && Math.Abs(leftShift) <= 1
+                        + " flyW=" + (realFlyout != null ? realFlyout.Width : -1) + " expect=" + expectFlyW
+                        + " verdict=" + (inset == Dpi.S(8) && realFlyout != null
+                            && Math.Abs(realFlyout.Width - expectFlyW) <= 1
                             ? "OK" : "FAIL<<<"));
                     if (realFlyout != null)
                     {
