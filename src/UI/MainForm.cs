@@ -1237,8 +1237,11 @@ namespace StereoSplitter
             int h = Padding.Top;                 // 已缩放过的真实高度
             if (h <= 0) return;
             int w = ClientSize.Width;
-            int bw = Dpi.S(46);                  // 与系统窗口键同宽 (46@96dpi)
-            int sw = Dpi.S(26);                  // 「更多」/「日志」/「托盘」图标
+            int bw = Dpi.S(46);                  // 窗口键宽 (46@96dpi)
+            // 批104: 用户要求「收托盘/日志/更多」大小看齐「最小化/最大化/关闭」——
+            // 三个功能键不再用 26 设计px 的小方块, 与系统键同宽 bw、同高 h(整条标题栏),
+            // 图标仍按各自几何居中绘制, 不会跟着拉变形。
+            int sw = bw;
             int gap = Dpi.S(14);                 // 图标与最小化之间的缝, 正中画竖线分隔 (原 6px 无分隔线)
 
             // 整组从右往左排, 左端用 max(0) 兜底: 窗口被拖到比这组键还窄时, 键退成贴左,
@@ -1246,9 +1249,9 @@ namespace StereoSplitter
             int need = sw * 3 + gap + bw * 3;
             int left = Math.Max(0, w - need);
 
-            btnTray.SetBounds(left, (h - sw) / 2, sw, sw);
-            btnLog.SetBounds(left + sw, (h - sw) / 2, sw, sw);
-            btnSettings.SetBounds(left + sw * 2, (h - sw) / 2, sw, sw);
+            btnTray.SetBounds(left, 0, sw, h);
+            btnLog.SetBounds(left + sw, 0, sw, h);
+            btnSettings.SetBounds(left + sw * 2, 0, sw, h);
             btnMin.SetBounds(left + sw * 3 + gap, 0, bw, h);
             btnMax.SetBounds(left + sw * 3 + gap + bw, 0, bw, h);
             btnClose.SetBounds(left + sw * 3 + gap + bw * 2, 0, bw, h);

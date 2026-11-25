@@ -1,0 +1,24 @@
+批104/105: 标题栏功能键看齐系统键 + 延迟校准窗口同步主窗口风格
+
+批104 (用户: “收托盘/日志/更多”大小看齐“最小化/最大化/关闭”):
+- MainForm.LayoutCaption: 三个功能键不再用 26 设计px 小方块, 与系统键同宽
+  (Dpi.S(46))、同高 (整条标题栏); 图标仍按各自几何居中, 不变形。
+- Dump.cs tray 探针新增 TRAY-SIZE 断言 (四组按钮 Size 全等), 截图扩到 440x40。
+- 实测 125% 下四者均 58x40, verdict=OK。
+
+批105 (用户: 延迟校准窗口同步主窗口风格):
+- LatencyCalibrationForm 改为与主窗口同一套自绘外观: FormBorderStyle.None +
+  WS_THICKFRAME (DWM 圆角/边框几何)、WM_NCCALCSIZE/NCACTIVATE/NCPAINT 接管、
+  标题区 HTCAPTION 可拖动; DWMWCP_ROUND + 边框色 (203,208,216) 与主窗口一致。
+- 同色自绘标题栏: 小图标 + 标题文字 + 右端 CaptionButton 关闭键;
+  内容整体下移 32 设计px, 客户区高度同步加 32, 原控件不遮不溢。
+- 刷新/开始/应用/关闭四个系统 Button 换成 RoundButton (白底、浅灰描边、深灰字)。
+- Dump.cs calib 探针新增 CALIB-STYLE 断言与全窗截图 calib-styled.png。
+- 另核对用户截图中的两个弹层圆角: SettingsFlyout 与 RoundedCombo 弹层均直接取
+  NoFocusSplitContainer.WindowRadiusPx (=Dpi.S(8)), 截图实测约 8px@100%, 本来就对齐,
+  无需改动。
+
+验证: 编译 0 错误; selftest 34 项全过; calib/tray/header/seamend/seam/logclick/
+cardshell/corners/settings/logshell/scroll/toggle/dpiprobe 全部通过。
+CARDSHELL-THUMB-FIT 是 HEAD 基线既有 FAIL; CARDSHELL-DRAG-H 在批量跑时偶发一次
+(starts=0), 单独重跑即 OK (after=122), 为真实鼠标点击偶发, 非回归。VERIFY OK。

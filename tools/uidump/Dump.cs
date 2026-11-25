@@ -463,6 +463,21 @@ namespace StereoSplitter
                     cf.Show();
                     for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
                     Console.Out.WriteLine("CALIB client=" + cf.ClientSize);
+                    var titleClose = Field(cf, "titleClose") as Control;
+                    bool styled = cf.FormBorderStyle == FormBorderStyle.None
+                        && cf.Padding.Top == Dpi.S(32)
+                        && titleClose != null
+                        && titleClose.Size == new Size(Dpi.S(46), Dpi.S(32));
+                    Console.Out.WriteLine("CALIB-STYLE border=" + cf.FormBorderStyle
+                        + " paddingTop=" + cf.Padding.Top + " close=" + (titleClose != null ? titleClose.Bounds.ToString() : "null")
+                        + " verdict=" + (styled ? "OK" : "FAIL<<<"));
+                    Rectangle calibScreen = cf.RectangleToScreen(cf.ClientRectangle);
+                    using (var bmp = new Bitmap(calibScreen.Width, calibScreen.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(calibScreen.Location, Point.Empty, calibScreen.Size);
+                        bmp.Save("calib-styled.png", System.Drawing.Imaging.ImageFormat.Png);
+                    }
                     foreach (Control c in cf.Controls)
                     {
                         Console.Out.WriteLine("  " + c.GetType().Name + " '" + Trim(c.Text) + "' bounds=" + c.Bounds
@@ -2044,13 +2059,21 @@ namespace StereoSplitter
                     + " close=" + (close != null ? close.Left : -1)
                     + " verdict=" + (tray != null && log != null && more != null
                         && tray.Left < log.Left && log.Left < more.Left ? "OK" : "FAIL<<<"));
+                // 批104: 功能键与系统窗口键同尺寸 (宽 bw, 高 = 标题栏高)
+                bool sameSize = tray != null && log != null && more != null && close != null
+                    && tray.Size == close.Size && log.Size == close.Size && more.Size == close.Size;
+                Console.Out.WriteLine("TRAY-SIZE tray=" + (tray != null ? tray.Size.ToString() : "null")
+                    + " log=" + (log != null ? log.Size.ToString() : "null")
+                    + " more=" + (more != null ? more.Size.ToString() : "null")
+                    + " close=" + (close != null ? close.Size.ToString() : "null")
+                    + " verdict=" + (sameSize ? "OK" : "FAIL<<<"));
 
                 // 标题栏截图 (功能键组): 供肉眼确认新图标形状与相邻间距
-                using (var bmp = new Bitmap(280, 32))
+                using (var bmp = new Bitmap(440, 40))
                 {
                     using (var g = Graphics.FromImage(bmp))
-                        g.CopyFromScreen(mf.PointToScreen(new Point(mf.ClientSize.Width - 280, 0)),
-                            Point.Empty, new Size(280, 32));
+                        g.CopyFromScreen(mf.PointToScreen(new Point(mf.ClientSize.Width - 440, 0)),
+                            Point.Empty, new Size(440, 40));
                     bmp.Save("tray-caption.png", System.Drawing.Imaging.ImageFormat.Png);
                 }
 

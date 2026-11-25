@@ -42,6 +42,13 @@ namespace StereoSplitter
         /// </summary>
         static readonly Font BaseFont = new Font("Microsoft YaHei UI", 9F);
 
+        /// <summary>标题栏高度 (设计像素), 与主窗口同一支; ScaleForm 会再乘一次 DPI。</summary>
+        const int TitleBarDesignHeight = 32;
+
+        // 批105: 与主窗口同款自绘标题栏 —— 系统键只留一个关闭, 左上角小图标由窗体图标缩放。
+        CaptionButton titleClose;
+        Icon titleBarIcon;
+
         /// <summary>
         /// 每一路测几段。这些段在**同一个播放流**里连着走 (前面另有 2 段预热不计),
         /// 取中位数。不再按"轮次 × 路"交替: 交替意味着每测一次就要重开一次流,
@@ -60,13 +67,13 @@ namespace StereoSplitter
         readonly bool hostRunning;
 
         readonly RoundedCombo cmbMic = new RoundedCombo { Height = 24, ItemHeight = 24, MaxDropDownItems = 10 };
-        readonly Button btnRescan = new NoCueButton { Text = "刷新" };
+        readonly RoundButton btnRescan = new RoundButton { Text = "刷新" };
         readonly ListView lv = new ListView();
         readonly Label lblTip = new Label();
         readonly Label lblState = new Label();
-        readonly Button btnStart = new NoCueButton { Text = "开始校准" };
-        readonly Button btnApply = new NoCueButton { Text = "应用建议值" };
-        readonly Button btnClose = new NoCueButton { Text = "关闭" };
+        readonly RoundButton btnStart = new RoundButton { Text = "开始校准" };
+        readonly RoundButton btnApply = new RoundButton { Text = "应用建议值" };
+        readonly RoundButton btnClose = new RoundButton { Text = "关闭" };
         readonly TextBox txtLog = new TextBox();
 
         List<MicDeviceInfo> mics = new List<MicDeviceInfo>();
@@ -88,12 +95,26 @@ namespace StereoSplitter
 
             Text = "延迟校准 · 麦克风互相关";
             StartPosition = FormStartPosition.CenterParent;
-            FormBorderStyle = FormBorderStyle.FixedDialog;
+            // 批105: 同步主窗口风格 —— 收掉系统标题栏, 自己画同色标题栏 + 圆角边框。
+            // 保留 WS_THICKFRAME 让 DWM 给出 Win11 圆角与边框几何 (与主窗口同一手法),
+            // 但不给缩放热区 (见 WM_NCHITTEST), 仍是固定大小的对话框。
+            FormBorderStyle = FormBorderStyle.None;
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = false;
-            ClientSize = new Size(580, 520);
+            AutoScaleMode = AutoScaleMode.None;
+            SetStyle(ControlStyles.ResizeRedraw | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.AllPaintingInWmPaint, true);
+            DoubleBuffered = true;
+            // 用设计像素写, Load 里的 Dpi.ScaleForm 会再乘一次因子 (与主窗口一致)。
+            Padding = new Padding(0, TitleBarDesignHeight, 0, 0);
+            ClientSize = new Size(580, 520 + TitleBarDesignHeight);
             Font = BaseFont;
+            try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+            try { if (Icon != null) titleBarIcon = new Icon(Icon, Dpi.S(16), Dpi.S(16)); } catch { }
+
+            titleClose = new CaptionButton(CaptionGlyph.Close) { AccessibleName = "关闭" };
+            titleClose.Click += (s, e) => Close();
 
             BuildUi();
             ReloadMics();
@@ -106,24 +127,26 @@ namespace StereoSplitter
 
         void BuildUi()
         {
-            var lblMic = new Label { Text = "麦克风:", Location = new Point(12, 15), AutoSize = true };
+            // 内容整体让出一条自绘标题栏 (设计像素; Load 里 ScaleForm 会统一乘 DPI)。
+            int top = TitleBarDesignHeight;
+            var lblMic = new Label { Text = "麦克风:", Location = new Point(12, 15 + top), AutoSize = true };
 
-            cmbMic.Location = new Point(72, 12);
+            cmbMic.Location = new Point(72, 12 + top);
             cmbMic.Width = 400;
             // 弹层宽度跟着本体走 (RoundedCombo.DropDownWidth 默认 0 = 同宽): 比本体宽出来的那一截,
             // 视觉上就是两个错开的框。名字太长时靠行内省略号收尾。
 
-            btnRescan.Location = new Point(480, 11);
+            btnRescan.Location = new Point(480, 11 + top);
             btnRescan.Width = 88;
             btnRescan.Height = 24;
             btnRescan.Click += (s, e) => ReloadMics();
 
-            lblTip.Location = new Point(12, 44);
+            lblTip.Location = new Point(12, 44 + top);
             lblTip.Size = new Size(556, 50);
             lblTip.AutoSize = false;
             lblTip.ForeColor = Color.FromArgb(90, 96, 106);
 
-            lv.Location = new Point(12, 96);
+            lv.Location = new Point(12, 96 + top);
             lv.Size = new Size(556, 140);
             lv.View = View.Details;
             lv.FullRowSelect = true;
@@ -137,23 +160,23 @@ namespace StereoSplitter
             lv.Columns.Add("建议", 66, HorizontalAlignment.Right);
             lv.Columns.Add("状态", 112);
 
-            lblState.Location = new Point(12, 244);
+            lblState.Location = new Point(12, 244 + top);
             lblState.Size = new Size(556, 20);
             lblState.ForeColor = Color.FromArgb(90, 96, 106);
 
-            btnStart.Location = new Point(12, 268);
+            btnStart.Location = new Point(12, 268 + top);
             btnStart.Size = new Size(112, 28);
             btnStart.Click += (s, e) => ToggleMeasure();
 
-            btnApply.Location = new Point(132, 268);
+            btnApply.Location = new Point(132, 268 + top);
             btnApply.Size = new Size(112, 28);
             btnApply.Click += (s, e) => ApplySuggestions();
 
-            btnClose.Location = new Point(478, 268);
+            btnClose.Location = new Point(478, 268 + top);
             btnClose.Size = new Size(90, 28);
             btnClose.Click += (s, e) => Close();
 
-            txtLog.Location = new Point(12, 306);
+            txtLog.Location = new Point(12, 306 + top);
             txtLog.Size = new Size(556, 202);
             txtLog.Multiline = true;
             txtLog.ReadOnly = true;
@@ -161,13 +184,141 @@ namespace StereoSplitter
             txtLog.BackColor = Color.White;
             txtLog.WordWrap = true;
 
+            // 按钮换成主窗口同款自绘圆角描边按钮 (白底 + 同一支浅灰边框 + 深灰字)
+            foreach (var b in new[] { btnRescan, btnStart, btnApply, btnClose })
+            {
+                b.Outline = true;
+                b.FillColor = Color.White;
+                b.BorderColor = OutputCardControl.BorderColor;
+                b.TextColor = Color.FromArgb(64, 64, 64);
+            }
+
             Controls.AddRange(new Control[]
             {
                 lblMic, cmbMic, btnRescan, lblTip, lv, lblState,
-                btnStart, btnApply, btnClose, txtLog
+                btnStart, btnApply, btnClose, txtLog, titleClose
             });
-            // 与主窗口同一套 DPI 放大 (控件都按 96 DPI 摆好后, 在 Load 里整体乘一次)
-            Load += (s2, e2) => Dpi.ScaleForm(this);
+            // 与主窗口同一套 DPI 放大 + 圆角边框 (控件都按 96 DPI 摆好后, Load 里整体乘一次)
+            Load += (s2, e2) =>
+            {
+                Dpi.ScaleForm(this);
+                LayoutTitleBar();
+                ApplyWindowFrame();
+            };
+        }
+
+        /// <summary>标题栏右端的关闭键: 与主窗口窗口键同宽 (46 设计px), 高 = 标题栏高。</summary>
+        void LayoutTitleBar()
+        {
+            if (titleClose == null) return;
+            int bw = Dpi.S(46);
+            titleClose.SetBounds(ClientSize.Width - bw, 0, bw, Padding.Top);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            int h = Padding.Top;
+            if (h <= 0) return;
+            // 与主窗口 PaintCaption 同一支底色: 标题栏与内容区融为一体, 不画分隔线。
+            using (var b = new SolidBrush(BackColor))
+                e.Graphics.FillRectangle(b, 0, 0, ClientSize.Width, h);
+
+            int x = Dpi.S(12);
+            if (titleBarIcon != null)
+            {
+                int isz = Dpi.S(16);
+                e.Graphics.DrawIcon(titleBarIcon, new Rectangle(x, (h - isz) / 2, isz, isz));
+                x += isz + Dpi.S(8);
+            }
+            int limit = titleClose != null ? titleClose.Left - Dpi.S(8) : ClientSize.Width - Dpi.S(8);
+            TextRenderer.DrawText(e.Graphics, Text, Font,
+                new Rectangle(x, 0, Math.Max(0, limit - x), h), Color.FromArgb(32, 32, 32),
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter
+                | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+
+        /// <summary>Win11 圆角 + 边框色, 与主窗口完全一致 (批105)。</summary>
+        void ApplyWindowFrame()
+        {
+            if (!IsHandleCreated) return;
+            try
+            {
+                int round = 2;   // DWMWCP_ROUND
+                DwmSetWindowAttribute(Handle, 33, ref round, sizeof(int));
+                int line = unchecked((int)0x00D8D0CB);
+                DwmSetWindowAttribute(Handle, 34, ref line, sizeof(int));
+            }
+            catch { }
+        }
+
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+        static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+        const int WS_THICKFRAME = 0x00040000;
+        const int WS_SYSMENU = 0x00080000;
+        const int WM_NCCALCSIZE = 0x0083;
+        const int WM_NCHITTEST = 0x0084;
+        const int WM_NCACTIVATE = 0x0086;
+        const int WM_NCPAINT = 0x0085;
+        const int HTCLIENT = 1;
+        const int HTCAPTION = 2;
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                // 与主窗口同一手法: 保留 THICKFRAME 让 DWM 给圆角/边框几何, 但客户区盖满整窗,
+                // 那条框由 DWM 按指定颜色画, 系统标题栏一律不画 (下面拦 NC 消息)。
+                cp.Style |= WS_THICKFRAME | WS_SYSMENU;
+                return cp;
+            }
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
+            {
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            if (m.Msg == WM_NCACTIVATE)
+            {
+                m.Result = (IntPtr)1;
+                Invalidate(new Rectangle(0, 0, ClientSize.Width, Padding.Top));
+                return;
+            }
+            if (m.Msg == WM_NCPAINT)
+            {
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            base.WndProc(ref m);
+            // 系统没有标题栏可拖: 标题区空白交回 HTCAPTION (关闭键是子控件, 自己收点击)。
+            if (m.Msg == WM_NCHITTEST && (int)m.Result == HTCLIENT)
+            {
+                var cursor = new Point((short)(m.LParam.ToInt64() & 0xFFFF),
+                                       (short)((m.LParam.ToInt64() >> 16) & 0xFFFF));
+                Point p = PointToClient(cursor);
+                if (p.Y >= 0 && p.Y < Padding.Top)
+                {
+                    if (titleClose != null && titleClose.Visible && titleClose.Bounds.Contains(p))
+                        m.Result = (IntPtr)HTCLIENT;
+                    else
+                        m.Result = (IntPtr)HTCAPTION;
+                }
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && titleBarIcon != null)
+            {
+                try { titleBarIcon.Dispose(); } catch { }
+                titleBarIcon = null;
+            }
+            base.Dispose(disposing);
         }
 
         /// <summary>提示文案: 说清"音乐不用停"以及失败时该调什么。</summary>
