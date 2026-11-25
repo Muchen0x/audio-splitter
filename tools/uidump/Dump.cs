@@ -2489,6 +2489,77 @@ namespace StereoSplitter
                 return;
             }
 
+            // 真实鼠标点击日志按钮 (批84 用户反馈"点击隐藏后窗口异常且有残留"):
+            // Invoke 模拟不带来激活/悬停/鼠标路径, 残留类问题常只在真点击时出现。
+            // 点击后按时刻连续抓帧, 找出异常出现在哪一帧。
+            if (args.Length >= 1 && args[0] == "logclick")
+            {
+                StereoSplitter.Dpi.Init();
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(20, 20);
+                mf.TopMost = true;
+                mf.Show();
+                for (int i = 0; i < 14; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+                var scc = Field(mf, "splitContainer") as SplitContainer;
+                var btnLog2 = Field(mf, "btnLog") as Control;
+                Action<string> snap = tag =>
+                {
+                    using (var bmp = new Bitmap(mf.Width, mf.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
+                        bmp.Save("logclick-" + tag + ".png", System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    Console.Out.WriteLine("SNAP " + tag
+                        + " rect=" + mf.Location + mf.Size
+                        + " client=" + mf.ClientSize
+                        + " collapsed=" + scc.Panel2Collapsed
+                        + " winH=" + mf.ClientSize.Height + " dist=" + scc.SplitterDistance
+                        + " p2h=" + scc.Panel2.Height);
+                };
+                // 外扩 30px 抓屏: 窗口缩小时旧内容若残留在屏上会落在这个圈里
+                Action<string> wideSnap = tag =>
+                {
+                    var r = new Rectangle(mf.Location.X - 30, mf.Location.Y - 30,
+                        mf.Width + 60, mf.Height + 60);
+                    using (var bmp = new Bitmap(r.Width, r.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(r.Location, Point.Empty, r.Size);
+                        bmp.Save("logclick-" + tag + "-wide.png", System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                };
+                Action realClickBtn = () =>
+                {
+                    Point p = btnLog2.PointToScreen(new Point(btnLog2.Width / 2, btnLog2.Height / 2));
+                    SetCursorPos(p.X, p.Y);
+                    for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    mouse_event(0x0002, 0, 0, 0, IntPtr.Zero);          // LEFTDOWN
+                    Application.DoEvents(); System.Threading.Thread.Sleep(60);
+                    mouse_event(0x0004, 0, 0, 0, IntPtr.Zero);          // LEFTUP
+                };
+                snap("base");
+                realClickBtn();                                         // 1) 隐藏
+                for (int i = 0; i < 5; i++) Application.DoEvents();
+                snap("hide-t0");
+                System.Threading.Thread.Sleep(80); Application.DoEvents();
+                snap("hide-t80");
+                System.Threading.Thread.Sleep(200); Application.DoEvents();
+                snap("hide-t280");
+                System.Threading.Thread.Sleep(600); Application.DoEvents();
+                snap("hide-t880");
+                wideSnap("hide-t880");
+                realClickBtn();                                         // 2) 显示
+                for (int i = 0; i < 5; i++) Application.DoEvents();
+                snap("show-t0");
+                System.Threading.Thread.Sleep(300); Application.DoEvents();
+                snap("show-t300");
+                wideSnap("show-t300");
+                mf.Close();
+                return;
+            }
+
             // DPI 适配自检: 打印缩放相关的实际值 (uidump 自己也要 Init, 否则 Dpi.S() 恒为 1)
             if (args.Length >= 1 && args[0] == "dpiprobe")
             {

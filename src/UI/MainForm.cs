@@ -91,7 +91,7 @@ namespace StereoSplitter
         int _lastP2H;
         /// <summary>收起时定格的日志面板高度 (物理 px): 恢复时窗口按它长出日志区。0 = 没记过。</summary>
         int _logRestoreH;
-        /// <summary>收起前定格的窗口客户高度 (物理 px): 恢复时直接还原到它。0 = 没记过。
+        /// <summary>收起前定格的窗口高度 (物理 px; 本窗体 Size==ClientSize): 恢复时直接还原到它。0 = 没记过。
         /// <para>按钮收起与拖到最底收起在这里统一: 两种路径下收起动作**之前**的窗口高度
         /// 就是展开态该有的高度 (拖到最底时窗口本来就还是全尺寸, 分隔距离已被钳到容器底,
         /// 不能再按"面板高度"倒推 —— 那会把恢复目标多算一个日志区高度, 窗口越点越长)。</para></summary>
@@ -998,13 +998,18 @@ namespace StereoSplitter
                 // 展开态窗口高度 = 收起动作**之前**的高度 (按钮收起后原样还原; 拖到最底
                 // 收起时窗口本来就还是全尺寸 —— 分隔距离被钳在容器底, 面板高度不能用于
                 // 倒推)。**面板高度与窗口高度都必须在收起前定格**: Panel2Collapsed=true
-                // 后 Panel2.Height 归零, 再读就只有缝隙宽了
+                // 后 Panel2.Height 归零, 再读就只有缝隙宽了。
+                // 高度用 **Size** 赋值, 不能用 ClientSize: 本窗体是 WS_THICKFRAME +
+                // WM_NCCALCSIZE 抹边框的自绘窗体 (客户区恒等于窗口矩形), ClientSize
+                // 赋值会按"客户+边框"反算窗口矩形, 真实窗口凭空大 16px, NCCALCSIZE
+                // 又把客户区撑满整窗 → 多出的底带/右带没人重绘, 留着缩窗前的旧像素
+                // (用户看到的"窗口异常且有残留"), 分隔距离也被钳位漂移 16px
                 int shrink = splitContainer.Panel2.Height + sw;
-                _logShowClientH = ClientSize.Height;
+                _logShowClientH = Size.Height;
                 splitContainer.Panel2Collapsed = true;
                 if (canResize)
-                    ClientSize = new Size(ClientSize.Width,
-                        Math.Max(Dpi.S(100), ClientSize.Height - shrink));
+                    Size = new Size(Size.Width,
+                        Math.Max(Dpi.S(100), Size.Height - shrink));
             }
             else
             {
@@ -1013,12 +1018,13 @@ namespace StereoSplitter
                 try
                 {
                     // 窗口先长回收起前定格的高度 (面板还收着 → 布局回调被抑制), 再展开面板、
-                    // 落位分隔距离。只增不减: 收起期间用户把窗口拉大过就尊重新尺寸
+                    // 落位分隔距离。只增不减: 收起期间用户把窗口拉大过就尊重新尺寸。
+                    // 用 Size 赋值 (理由见收起分支注释 —— ClientSize 会反算出 +16 边框)
                     int p2h = _logRestoreH > 0 ? _logRestoreH : Dpi.S(110);
                     if (canResize)
                     {
-                        int target = _logShowClientH > 0 ? _logShowClientH : ClientSize.Height + p2h + sw;
-                        ClientSize = new Size(ClientSize.Width, Math.Max(ClientSize.Height, target));
+                        int target = _logShowClientH > 0 ? _logShowClientH : Size.Height + p2h + sw;
+                        Size = new Size(Size.Width, Math.Max(Size.Height, target));
                     }
                     splitContainer.Panel2Collapsed = false;
                     int maxDist = splitContainer.Height - sw - splitContainer.Panel2MinSize;
