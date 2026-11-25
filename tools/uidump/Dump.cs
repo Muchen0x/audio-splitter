@@ -2464,7 +2464,6 @@ namespace StereoSplitter
                     + " panel2H=" + scc.Panel2.Height + " p2vis=" + scc.Panel2.Visible
                     + " p2min=" + scc.Panel2MinSize + " sccH=" + scc.Height
                     + " lastLogDist=" + (int)Field(mf, "lastLogDist")
-                    + " showH=" + (int)Field(mf, "_logShowClientH")
                     + " restoreH=" + (int)Field(mf, "_logRestoreH")
                     + " lastP2H=" + (int)Field(mf, "_lastP2H");
                 Console.Out.WriteLine("LOG-CLICK before: " + stOf());
@@ -2556,6 +2555,38 @@ namespace StereoSplitter
                 System.Threading.Thread.Sleep(300); Application.DoEvents();
                 snap("show-t300");
                 wideSnap("show-t300");
+
+                // 批88: 收起 → 用户缩放窗口 → 展开, 应在**当前**大小下方接上"分隔条+日志区",
+                // 而不是恢复隐藏前大小; 收起态窗口保留的应是分隔条上面的部分 (不含分隔条)
+                realClickBtn();                                         // 3) 再隐藏
+                for (int i = 0; i < 5; i++) Application.DoEvents();
+                System.Threading.Thread.Sleep(200); Application.DoEvents();
+                int collapsedH2 = mf.ClientSize.Height;
+                int distAfterCollapse = scc.SplitterDistance;
+                mf.Size = new Size(mf.Width, collapsedH2 - 120);        // 用户拉小窗口
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                int resizedH = mf.ClientSize.Height;
+                int restoreH = (int)Field(mf, "_logRestoreH");
+                snap("resize-t0");
+                realClickBtn();                                         // 4) 再显示
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                int shownH = mf.ClientSize.Height;
+                int expectH = resizedH + restoreH + scc.SplitterWidth;
+                // 收起保留 = 标题栏 + 窗体让边 + Panel1 (收起态 Panel1 填满容器, dist 钳到容器高);
+                // 分隔条位置(8px)与日志区都不在窗口里 = 用户要求的"只保留分隔条上面的部分"
+                int keepExpect = mf.Padding.Top + mf.Padding.Bottom + distAfterCollapse;
+                Console.Out.WriteLine("RESIZE-RESTORE collapsedWinH=" + collapsedH2
+                    + " keepExpect=" + keepExpect
+                    + " scc=" + scc.Bounds + " p1h=" + scc.Panel1.Height + " sw=" + scc.SplitterWidth
+                    + " padTop=" + mf.Padding.Top + " padBot=" + mf.Padding.Bottom
+                    + " resizedH=" + resizedH + " restoreH=" + restoreH
+                    + " shownH=" + shownH + " expectH=" + expectH
+                    + " collapsed=" + scc.Panel2Collapsed
+                    + " p2h=" + scc.Panel2.Height + " dist=" + scc.SplitterDistance
+                    + " verdict=" + (shownH == expectH && !scc.Panel2Collapsed
+                                && Math.Abs(collapsedH2 - keepExpect) <= 1 ? "OK" : "FAIL"));
+                snap("resize-show");
+                wideSnap("resize-show");
                 mf.Close();
                 return;
             }
