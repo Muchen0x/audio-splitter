@@ -20,15 +20,14 @@ namespace StereoSplitter
         // Load 里的 Dpi.ScaleForm 统一乘 DPI。
         const int TitleBarDesignHeight = 32;
 
-        CaptionButton titleClose;               // 标题栏右端关闭键 (与主窗口同款)
-        Icon titleBarIcon;                      // 标题栏小图标 (exe 内嵌 app.ico 的 16px 克隆)
+        CaptionButton titleClose;               // 标题栏右端关闭键 (中性灰悬停, 批115)
 
-        // 次要操作 (取消) 用与下拉同一套黑色细边; 主操作 (添加) 保留强调蓝,
-        // 它是这一屏的唯一主动作, 边与字同色才能一眼分出主次。
+        // 批115: 标题栏不再画应用图标 (用户要求), 也没有 titleBarIcon 字段了。
+
+        // 批115: 按钮组「留白-取消-留白-添加-留白」三处留白严格等宽 (取消在左、添加在右),
+        // 客户区 330 = 3×58 + 2×78, 按钮宽 78, 中缝与两端留白同为 58。两按钮样式一致 (批113)。
         const int BtnW = 78;
         const int BtnH = 28;
-        // 批113: 按钮组改成「留白-添加-留白-取消-留白」三处留白严格等宽 ——
-        // 客户区 330 = 3×58 + 2×78, 所以按钮加宽到 78, 中缝与两端留白同为 58。
         const int BtnGap = 58;
 
         readonly RoundedCombo cmbDevice = new RoundedCombo
@@ -84,9 +83,12 @@ namespace StereoSplitter
             ClientSize = new Size(330, 144 + TitleBarDesignHeight);
             Font = new Font("Microsoft YaHei UI", 9F);
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-            try { if (Icon != null) titleBarIcon = new Icon(Icon, Dpi.S(16), Dpi.S(16)); } catch { }
-
-            titleClose = new CaptionButton(CaptionGlyph.Close) { AccessibleName = "关闭" };
+            titleClose = new CaptionButton(CaptionGlyph.Close)
+            {
+                AccessibleName = "关闭",
+                // 批115: 弹窗关闭键不用红色悬停, 对齐输出卡片上的 × (中性灰)
+                NeutralClose = true
+            };
             titleClose.Click += (s, e) => { DialogResult = DialogResult.Cancel; };
 
             // —— 布局 (设计像素, 相对内容区) ——
@@ -103,6 +105,9 @@ namespace StereoSplitter
             cmbDevice.Size = new Size(ComboW, 26);
             cmbChannel.Location = new Point(ComboX, Row2Y + top);
             cmbChannel.Size = new Size(ComboW, 26);
+            // 批115: 弹窗里的下拉不画蓝色焦点框 (用户要求; 弹层展开中本来也不画)
+            cmbDevice.FocusCueEnabled = false;
+            cmbChannel.FocusCueEnabled = false;
 
             cmbDevice.Items.AddRange(deviceTexts);
             cmbDevice.ItemGrayedFilter = idx =>
@@ -125,27 +130,14 @@ namespace StereoSplitter
             cmbChannel.Items.AddRange(chanItems.ToArray());
             cmbChannel.SelectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
 
-            // —— 按钮组: 添加在左、取消在右, 三处留白 (左端/中缝/右端) 严格等宽 58 ——
+            // —— 按钮组: 取消在左、添加在右 (批115 用户要求互换), 三处留白 (左端/中缝/右端)
+            //    严格等宽 58; 两按钮字体/边框/文字色完全一致 (批113) ——
             int btnY = 144 - M - BtnH;      // 100, 底部留白 = 左右留白 = 16
             int btnLeft = (330 - (BtnW * 2 + BtnGap)) / 2;   // = 58
-            // 批113: 添加不再用强调蓝 —— 字体/边框/文字色全部与取消一致 (同一套浅灰框
-            // + 深灰字), 两个按钮除了文字完全相同。
-            btnOk = new RoundButton
-            {
-                Text = "添加",
-                Location = new Point(btnLeft, btnY + top),
-                Size = new Size(BtnW, BtnH),
-                Outline = true,
-                FillColor = Color.White,
-                BorderColor = OutputCardControl.BorderColor,   // 与取消同一套浅灰框
-                TextColor = Color.FromArgb(64, 64, 64)
-            };
-            btnOk.Click += (s, e) => Confirm();
-
             btnCancel = new RoundButton
             {
                 Text = "取消",
-                Location = new Point(btnLeft + BtnW + BtnGap, btnY + top),
+                Location = new Point(btnLeft, btnY + top),
                 Size = new Size(BtnW, BtnH),
                 Outline = true,
                 FillColor = Color.White,
@@ -153,6 +145,18 @@ namespace StereoSplitter
                 TextColor = Color.FromArgb(64, 64, 64)
             };
             btnCancel.Click += (s, e) => { DialogResult = DialogResult.Cancel; };
+
+            btnOk = new RoundButton
+            {
+                Text = "添加",
+                Location = new Point(btnLeft + BtnW + BtnGap, btnY + top),
+                Size = new Size(BtnW, BtnH),
+                Outline = true,
+                FillColor = Color.White,
+                BorderColor = OutputCardControl.BorderColor,   // 与取消完全一致 (批113)
+                TextColor = Color.FromArgb(64, 64, 64)
+            };
+            btnOk.Click += (s, e) => Confirm();
 
             Controls.AddRange(new Control[] { lblDev, cmbDevice, lblChan, cmbChannel, btnOk, btnCancel, titleClose });
             AcceptButton = btnOk;
@@ -183,13 +187,8 @@ namespace StereoSplitter
             using (var b = new SolidBrush(BackColor))
                 e.Graphics.FillRectangle(b, 0, 0, ClientSize.Width, h);
 
+            // 批115: 标题栏不画应用图标, 标题文字直接从左留白起
             int x = Dpi.S(12);
-            if (titleBarIcon != null)
-            {
-                int isz = Dpi.S(16);
-                e.Graphics.DrawIcon(titleBarIcon, new Rectangle(x, (h - isz) / 2, isz, isz));
-                x += isz + Dpi.S(8);
-            }
             int limit = titleClose != null ? titleClose.Left - Dpi.S(8) : ClientSize.Width - Dpi.S(8);
             TextRenderer.DrawText(e.Graphics, Text, Font,
                 new Rectangle(x, 0, Math.Max(0, limit - x), h), Color.FromArgb(32, 32, 32),
@@ -272,11 +271,7 @@ namespace StereoSplitter
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing && titleBarIcon != null)
-            {
-                try { titleBarIcon.Dispose(); } catch { }
-                titleBarIcon = null;
-            }
+            // 批115: 标题栏不再画应用图标, 没有需要释放的 titleBarIcon 了。
             base.Dispose(disposing);
         }
 

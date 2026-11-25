@@ -46,6 +46,13 @@ namespace StereoSplitter
             set { if (glyph == value) return; glyph = value; Invalidate(); }
         }
 
+        /// <summary>
+        /// 关闭键不用红色悬停 (批115)。主窗口的关闭键仍走 Windows 红底约定; 弹窗 (延迟校准/
+        /// 添加设备) 的关闭键设 true —— 悬停/按下与其它窗口键一样只加深灰底, 观感对齐
+        /// 输出卡片上的 × (深灰描边, 不变红)。
+        /// </summary>
+        public bool NeutralClose;
+
         bool IsClose { get { return glyph == CaptionGlyph.Close; } }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -54,12 +61,13 @@ namespace StereoSplitter
 
             if (hot || down)
             {
-                Color back = down ? (IsClose ? ClosePress : PressBack)
-                                  : (IsClose ? CloseHover : HoverBack);
+                bool red = IsClose && !NeutralClose;   // 弹窗关闭键走中性灰 (批115)
+                Color back = down ? (red ? ClosePress : PressBack)
+                                  : (red ? CloseHover : HoverBack);
                 using (var b = new SolidBrush(back)) g.FillRectangle(b, ClientRectangle);
             }
 
-            Color ink = IsClose && (hot || down) ? Color.White : Ink;
+            Color ink = IsClose && !NeutralClose && (hot || down) ? Color.White : Ink;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 

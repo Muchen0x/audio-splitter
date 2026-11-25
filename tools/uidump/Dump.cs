@@ -653,21 +653,28 @@ namespace StereoSplitter
                 Control dev = Field(dlg, "cmbDevice") as Control;
                 Control chan = Field(dlg, "cmbChannel") as Control;
                 Control close = Field(dlg, "titleClose") as Control;
-                int leftInset = ok != null ? ok.Left : -1;
-                int rightInset = cancel != null ? dlg.ClientSize.Width - cancel.Right : -1;
-                int midGap = cancel != null && ok != null ? cancel.Left - ok.Right : -1;
-                // 批113: 添加在左、取消在右, 三处留白 (左端/中缝/右端) 严格等宽 Dpi.S(58);
-                // 两按钮边框色一致 (添加不再是强调蓝)。
+                int leftInset = cancel != null ? cancel.Left : -1;
+                int rightInset = ok != null ? dlg.ClientSize.Width - ok.Right : -1;
+                int midGap = cancel != null && ok != null ? ok.Left - cancel.Right : -1;
+                // 批113: 三处留白 (左端/中缝/右端) 严格等宽 Dpi.S(58), 两按钮边框色一致。
+                // 批115: 取消在左、添加在右 (互换); 关闭键中性灰悬停 (NeutralClose);
+                // 弹窗内下拉不画蓝色焦点框 (FocusCueEnabled=false)。
                 object okBorder = ok != null ? ok.GetType().GetProperty("BorderColor").GetValue(ok, null) : null;
                 object cancelBorder = cancel != null ? cancel.GetType().GetProperty("BorderColor").GetValue(cancel, null) : null;
+                object neutral = close != null ? Field(close, "NeutralClose") : null;
+                object cueDev = dev != null ? Field(dev, "FocusCueEnabled") : null;
+                object cueChan = chan != null ? Field(chan, "FocusCueEnabled") : null;
                 Console.Out.WriteLine("ADDDLG-BTN left=" + leftInset + " mid=" + midGap + " right=" + rightInset
-                    + " okLeft=" + (ok != null && cancel != null && ok.Left < cancel.Left ? "yes" : "no")
+                    + " cancelLeft=" + (ok != null && cancel != null && cancel.Left < ok.Left ? "yes" : "no")
                     + " borderSame=" + (Equals(okBorder, cancelBorder) ? "yes" : "no")
+                    + " neutralClose=" + (Equals(neutral, true) ? "yes" : "no")
+                    + " focusCue=" + (Equals(cueDev, false) && Equals(cueChan, false) ? "off" : "on")
                     + " titleH=" + dlg.Padding.Top
                     + " close=" + (close != null ? close.Width + "x" + close.Height : "null")
                     + " verdict=" + (ok != null && cancel != null && dev != null && chan != null
                         && leftInset == Dpi.S(58) && midGap == Dpi.S(58) && rightInset == Dpi.S(58)
-                        && ok.Left < cancel.Left && Equals(okBorder, cancelBorder)
+                        && cancel.Left < ok.Left && Equals(okBorder, cancelBorder)
+                        && Equals(neutral, true) && Equals(cueDev, false) && Equals(cueChan, false)
                         && ok.Size == cancel.Size
                         && dev.Right == chan.Right && dlg.Padding.Top == Dpi.S(32)
                         ? "OK" : "FAIL<<<"));

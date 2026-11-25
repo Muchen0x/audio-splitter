@@ -108,7 +108,15 @@ namespace StereoSplitter
         /// <summary>弹层是否展开 (壳据此决定描边深浅)。</summary>
         internal bool IsOpen { get { return open; } }
         /// <summary>此刻是否该画焦点描边 (键盘进来才画, 见 keyboardFocusCues)。</summary>
-        internal bool ShowFocusCue { get { return Focused && keyboardFocusCues; } }
+        /// <remarks>批115: 弹窗 (延迟校准/添加设备) 的下拉设 <see cref="FocusCueEnabled"/>=false
+        /// —— 用户不要蓝色焦点框; 弹层展开中也不画 (弹层自身的高亮足够)。</remarks>
+        internal bool ShowFocusCue
+        {
+            get { return FocusCueEnabled && Focused && keyboardFocusCues && !open; }
+        }
+
+        /// <summary>是否允许画蓝色焦点描边 (默认 true)。弹窗里的下拉置 false (批115)。</summary>
+        internal bool FocusCueEnabled = true;
 
         /// <summary>
         /// 单调毫秒时钟。
@@ -336,9 +344,10 @@ namespace StereoSplitter
             // 边框: 与输出卡片同一套浅灰细边。展开/hover 用"加深一档 + 加粗到 1.5px"两件事
             // 一起做反馈 (只加粗在浅灰上几乎看不出); 蓝色只留给键盘焦点
             // (鼠标点一下就变蓝、收起后蓝还挂在框上, 看起来就是"焦点框残留",
-            //  见 keyboardFocusCues 的说明)。
+            //  见 keyboardFocusCues 的说明)。批115: 弹层展开中也不画蓝框 (弹层高亮足够),
+            // 且弹窗可整体关掉 (FocusCueEnabled=false)。
             Color border = !Enabled ? BorderDisabled
-                         : (Focused && keyboardFocusCues) ? BorderActive
+                         : ShowFocusCue ? BorderActive
                          : BorderNormal;
             bool strong = Enabled && (open || hot);
             if (strong && border == BorderNormal) border = BorderHot;
