@@ -3082,67 +3082,62 @@ namespace StereoSplitter
                 : muted ? SpeakerLook.Cross
                 : SpeakerLook.Waves;
 
-            // 几何按 22×22 设计, 换尺寸时整体等比缩放 (卡片/主界面都用 22, 这里只是兜底)
-            float s = Math.Min(Width, Height) / 22f;
+            // 几何按 22×22 设计, 与 GainGlyph 同一 /23 缩放基准: 笔画伸出路径两侧各
+            // 1.1px, 缩一档给抗锯齿留余量, 同时保证两者在 22px 下的实际线宽完全一致。
+            float s = Math.Min(Width, Height) / 23f;
             DrawSpeaker(g, Width / 2f, Height / 2f, s, ink, back, look);
         }
 
         /// <summary>
-        /// 画喇叭 (描边风格, 照用户给的 SVG 描的)。坐标是 1024 视图等比折算到 22×22 的结果:
-        /// 内容 866×660 装进 20px 宽 (k=20/866), 中心 (497,522.8) 对准控件中心 ——
-        /// 所以喇叭占左半边, 声波/×占右半边, 和原图一样。
-        /// 本体画法: 外轮廓填墨色, 内轮廓填底色, 两圈之间就是 1.5px 的"描边墙"
-        /// (原图内外轮廓相距 64, 折算正好 1.48px, 不用再调)。
+        /// 画喇叭 (批111: 照用户给的新 SVG 的几何, 但本体**镂空描边**, 线宽与
+        /// <see cref="GainGlyph"/> 完全一致 —— 同一 2.2 设计px 笔画, 同一 /23 缩放基准)。
+        /// <para>1024 视图内容 819×819 (x 102.4~921.6 / y 102.4~921.6), 中心 (512,512)
+        /// 对准控件中心 —— 喇叭占左半边, 声波/×占右半边。</para>
+        /// <para>喇叭轮廓: (512,102.4)→(224.768,269.312)→(102.4,269.312)→(102.4,754.688)
+        /// →(224.768,754.688)→(512,921.6) 闭合; 折算后 409.6→10.0、287.232→7.01、242.688→5.93。</para>
+        /// <para>声波: 两道圆弧 (圆心在喇叭口 (563.2,512) → 控件中心右 1.25px), 内弧中径 2.8、
+        /// 外弧中径 7.5, 都是右半圆 (±90°); 笔画一律 2.2, 与喇叭轮廓/×/增益圆环同一粗细。</para>
         /// </summary>
         static void DrawSpeaker(Graphics g, float cx, float cy, float s, Color ink, Color back, SpeakerLook look)
         {
-            // 外轮廓 (圆角在 22px 下只剩 0.74px, 直接当直角画)
-            var outer = new[]
+            // 镂空喇叭本体: 闭合轮廓一次描出, 圆角连接 (22px 下尖角不会戳出毛刺)
+            var horn = new[]
             {
-                new PointF(-9.26f, -3.84f), new PointF(-5.46f, -3.84f),   // 方箱顶边
-                new PointF(-0.75f, -7.62f), new PointF(0.45f, -7.04f),    // 锥形上斜边 + 锥口上角
-                new PointF(0.45f,  7.05f),  new PointF(-0.75f,  7.63f),   // 锥口下角 + 下斜边
-                new PointF(-5.59f,  3.75f), new PointF(-9.26f,  3.75f),   // 方箱底边
-                new PointF(-10.0f,  3.01f), new PointF(-10.0f, -3.10f),   // 右侧圆角
+                new PointF(  0f,  -10f),    // 锥口上角 (512,102.4)
+                new PointF(-7.01f, -5.93f), // (224.768,269.312)
+                new PointF(-10f,  -5.93f),  // (102.4,269.312)
+                new PointF(-10f,   5.93f),  // (102.4,754.688)
+                new PointF(-7.01f,  5.93f), // (224.768,754.688)
+                new PointF(  0f,   10f)     // 锥口下角 (512,921.6)
             };
-            // 内轮廓: 与外轮廓相距恒 64 (原图如此), 这 64 就是描边墙的厚度
-            var inner = new[]
+            using (var p = new Pen(ink, Math.Max(1f, 2.2f * s)))
             {
-                new PointF(-8.53f, -2.36f), new PointF(-8.53f,  2.28f),
-                new PointF(-5.09f,  2.28f), new PointF(-1.03f,  5.51f),
-                new PointF(-1.03f, -5.50f), new PointF(-4.95f, -2.36f),
-            };
-
-            using (var fill = new SolidBrush(ink))
-                g.FillPolygon(fill, Scale(outer, cx, cy, s));
-            using (var fill = new SolidBrush(back))
-                g.FillPolygon(fill, Scale(inner, cx, cy, s));
+                p.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
+                g.DrawPolygon(p, Scale(horn, cx, cy, s));
+            }
 
             if (look == SpeakerLook.Bare) return;   // 音量 0: 只剩喇叭, 波和 × 都不画
 
             if (look == SpeakerLook.Waves)
             {
-                // 两道同心圆弧, 圆心在控件中心 (原图如此), 只取右侧 ~91°。
-                // 原图线宽 32 折算 0.74px —— 22px 下会断成虚线, 放到 1.1px。
-                using (var p = new Pen(ink, Math.Max(1f, 1.1f * s)))
+                // 两道声波弧: 圆心在喇叭口右侧 1.25px, 都取右半圆, 平头端帽。
+                // 笔画与喇叭轮廓同宽 (2.2), 三种状态四条线一个粗细。
+                float acx = cx + 1.25f * s;
+                using (var p = new Pen(ink, Math.Max(1f, 2.2f * s)))
                 {
-                    p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
-                    p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
-                    for (int i = 0; i < 2; i++)
-                    {
-                        float r = (230f + i * 205f) * 20f / 866f * s;   // 原图半径 230 / 435
-                        g.DrawArc(p, cx - 0.5f * s - r, cy - r, r * 2, r * 2, -45.5f, 91f);
-                    }
+                    g.DrawArc(p, acx - 2.8f * s, cy - 2.8f * s, 5.6f * s, 5.6f * s, -90f, 180f);
+                    g.DrawArc(p, acx - 7.5f * s, cy - 7.5f * s, 15f * s, 15f * s, -90f, 180f);
                 }
                 return;
             }
 
-            // 静音 ×: 原图是一个高瘦的叉 (半宽 2.7 / 半高 3.6), 中心在控件中心右侧 6.9px。
-            using (var p = new Pen(ink, Math.Max(1f, 1.1f * s)))
+            // 静音 ×: 与喇叭/声波同一笔画 (2.2 圆头), 居于弧带占的区域中心
+            // (控件中心右 6.5px), 半宽 2.4 / 半高 3.2。
+            using (var p = new Pen(ink, Math.Max(1f, 2.2f * s)))
             {
                 p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
                 p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
-                float mx = cx + 6.9f * s, my = cy, hw = 2.7f * s, hh = 3.6f * s;
+                float mx = cx + 6.5f * s, my = cy, hw = 2.4f * s, hh = 3.2f * s;
                 g.DrawLine(p, mx - hw, my - hh, mx + hw, my + hh);
                 g.DrawLine(p, mx - hw, my + hh, mx + hw, my - hh);
             }
