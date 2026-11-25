@@ -526,10 +526,12 @@ namespace StereoSplitter
                     for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
                     Console.Out.WriteLine("CALIB client=" + cf.ClientSize);
                     var titleClose = Field(cf, "titleClose") as Control;
+                    // 批116: 弹窗关闭键悬浮效果对齐输出卡片 × → 必须是 NeutralClose
                     bool styled = cf.FormBorderStyle == FormBorderStyle.None
                         && cf.Padding.Top == Dpi.S(32)
                         && titleClose != null
-                        && titleClose.Size == new Size(Dpi.S(46), Dpi.S(32));
+                        && titleClose.Size == new Size(Dpi.S(46), Dpi.S(32))
+                        && Equals(Field(titleClose, "NeutralClose"), true);
                     Console.Out.WriteLine("CALIB-STYLE border=" + cf.FormBorderStyle
                         + " paddingTop=" + cf.Padding.Top + " close=" + (titleClose != null ? titleClose.Bounds.ToString() : "null")
                         + " verdict=" + (styled ? "OK" : "FAIL<<<"));
@@ -674,10 +676,16 @@ namespace StereoSplitter
                 object neutral = close != null ? Field(close, "NeutralClose") : null;
                 object cueDev = dev != null ? Field(dev, "FocusCueEnabled") : null;
                 object cueChan = chan != null ? Field(chan, "FocusCueEnabled") : null;
+                // 批116: 关闭键悬浮配色必须与输出卡片 × (GearButton) 同源 —— 直接比静态色字段
+                object capHover = StaticField(typeof(CaptionButton), "CardHoverBack");
+                object gearHover = StaticField(typeof(GearButton), "HoverBack");
+                object capActive = StaticField(typeof(CaptionButton), "CardIconActive");
+                object gearActive = StaticField(typeof(GearButton), "IconActive");
                 Console.Out.WriteLine("ADDDLG-BTN left=" + leftInset + " mid=" + midGap + " right=" + rightInset
                     + " cancelLeft=" + (ok != null && cancel != null && cancel.Left < ok.Left ? "yes" : "no")
                     + " borderSame=" + (Equals(okBorder, cancelBorder) ? "yes" : "no")
                     + " neutralClose=" + (Equals(neutral, true) ? "yes" : "no")
+                    + " hoverSame=" + (Equals(capHover, gearHover) && Equals(capActive, gearActive) ? "yes" : "no")
                     + " focusCue=" + (Equals(cueDev, false) && Equals(cueChan, false) ? "off" : "on")
                     + " titleH=" + dlg.Padding.Top
                     + " close=" + (close != null ? close.Width + "x" + close.Height : "null")
@@ -685,9 +693,29 @@ namespace StereoSplitter
                         && leftInset == Dpi.S(58) && midGap == Dpi.S(58) && rightInset == Dpi.S(58)
                         && cancel.Left < ok.Left && Equals(okBorder, cancelBorder)
                         && Equals(neutral, true) && Equals(cueDev, false) && Equals(cueChan, false)
+                        && Equals(capHover, gearHover) && Equals(capActive, gearActive)
                         && ok.Size == cancel.Size
                         && dev.Right == chan.Right && dlg.Padding.Top == Dpi.S(32)
                         ? "OK" : "FAIL<<<"));
+                // 批116: 悬浮态截图 —— 反射置 hot, 验证关闭键的圆角浅灰底真实画出来的样子
+                if (close != null)
+                {
+                    SetField(close, "hot", true);
+                    close.Invalidate();
+                    for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                    string hoverFile = "close-hover.png";
+                    Rectangle sr = dlg.RectangleToScreen(close.Bounds);
+                    using (var bmp = new Bitmap(sr.Width, sr.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp))
+                            g.CopyFromScreen(sr.Location, Point.Empty, sr.Size);
+                        bmp.Save(hoverFile, System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    Console.Out.WriteLine("ADDDLG-CLOSE-HOVER -> " + hoverFile);
+                    SetField(close, "hot", false);
+                    close.Invalidate();
+                    for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                }
                 string file = System.IO.Directory.Exists(path)
                     ? System.IO.Path.Combine(path, "adddlg.png") : path;
                 using (var bmp = new Bitmap(dlg.Width, dlg.Height))
@@ -4002,6 +4030,30 @@ namespace StereoSplitter
                 t = t.BaseType;
             }
             return null;
+        }
+
+        /// <summary>读类型的静态字段 (含 private)。</summary>
+        static object StaticField(Type t, string name)
+        {
+            while (t != null)
+            {
+                var fi = t.GetField(name, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+                if (fi != null) return fi.GetValue(null);
+                t = t.BaseType;
+            }
+            return null;
+        }
+
+        /// <summary>写实例字段 (含 private)。</summary>
+        static void SetField(object o, string name, object value)
+        {
+            var t = o.GetType();
+            while (t != null)
+            {
+                var fi = t.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                if (fi != null) { fi.SetValue(o, value); return; }
+                t = t.BaseType;
+            }
         }
 
         /// <summary>抓按钮左侧图形区 (动效画的那一带) 的灰度快照, 供两帧差分。</summary>

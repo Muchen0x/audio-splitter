@@ -48,10 +48,16 @@ namespace StereoSplitter
 
         /// <summary>
         /// 关闭键不用红色悬停 (批115)。主窗口的关闭键仍走 Windows 红底约定; 弹窗 (延迟校准/
-        /// 添加设备) 的关闭键设 true —— 悬停/按下与其它窗口键一样只加深灰底, 观感对齐
-        /// 输出卡片上的 × (深灰描边, 不变红)。
+        /// 添加设备) 的关闭键设 true —— 悬浮效果对齐输出卡片上的 × (批116: 圆角浅灰底 +
+        /// 图标加深, GearButton 同款配色), 不变红。
         /// </summary>
         public bool NeutralClose;
+
+        // 批116: 输出卡片 × (GearButton) 的悬浮配色 —— NeutralClose 的关闭键照搬这套,
+        // 与卡片右上角的「×」悬停时观感一致 (圆角浅灰底, 图标加深一档)。
+        static readonly Color CardHoverBack = Color.FromArgb(234, 234, 234);
+        static readonly Color CardPressBack = Color.FromArgb(216, 216, 216);
+        static readonly Color CardIconActive = Color.FromArgb(44, 44, 42);
 
         bool IsClose { get { return glyph == CaptionGlyph.Close; } }
 
@@ -61,13 +67,28 @@ namespace StereoSplitter
 
             if (hot || down)
             {
-                bool red = IsClose && !NeutralClose;   // 弹窗关闭键走中性灰 (批115)
-                Color back = down ? (red ? ClosePress : PressBack)
-                                  : (red ? CloseHover : HoverBack);
-                using (var b = new SolidBrush(back)) g.FillRectangle(b, ClientRectangle);
+                if (NeutralClose)
+                {
+                    // 批116: 圆角浅灰底 (半径与弹层/卡片同源 WindowRadiusPx), 按下加深一档。
+                    // 不铺满矩形: 卡片 × 的悬浮底就是这种圆角小方块。
+                    using (var path = UiDraw.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1),
+                        NoFocusSplitContainer.WindowRadiusPx))
+                    using (var b = new SolidBrush(down ? CardPressBack : CardHoverBack))
+                        g.FillPath(b, path);
+                }
+                else
+                {
+                    bool red = IsClose;   // 主窗口关闭键走 Windows 红底约定
+                    Color back = down ? (red ? ClosePress : PressBack)
+                                      : (red ? CloseHover : HoverBack);
+                    using (var b = new SolidBrush(back)) g.FillRectangle(b, ClientRectangle);
+                }
             }
 
-            Color ink = IsClose && !NeutralClose && (hot || down) ? Color.White : Ink;
+            // 图标加深: NeutralClose 悬停/按下时对齐 GearButton 的 IconActive
+            Color ink;
+            if (NeutralClose) ink = (hot || down) && Enabled ? CardIconActive : Ink;
+            else ink = IsClose && (hot || down) ? Color.White : Ink;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 

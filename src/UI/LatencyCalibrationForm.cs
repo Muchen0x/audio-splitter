@@ -113,7 +113,8 @@ namespace StereoSplitter
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             try { if (Icon != null) titleBarIcon = new Icon(Icon, Dpi.S(16), Dpi.S(16)); } catch { }
 
-            titleClose = new CaptionButton(CaptionGlyph.Close) { AccessibleName = "关闭" };
+            // 批116: 关闭键悬浮效果对齐输出卡片 × (圆角浅灰底), 不用 Windows 红底约定
+            titleClose = new CaptionButton(CaptionGlyph.Close) { AccessibleName = "关闭", NeutralClose = true };
             titleClose.Click += (s, e) => Close();
 
             BuildUi();
