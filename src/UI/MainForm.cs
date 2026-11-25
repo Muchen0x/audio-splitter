@@ -87,6 +87,23 @@ namespace StereoSplitter
         GearButton btnLog;                 // 标题栏里的日志面板开关 (在更多按钮左边, 双状态图标)
         /// <summary>日志面板上次"非收起"的分隔距离 (拖到最下自动收起前记录, 恢复时用)。0 = 没记过。</summary>
         int lastLogDist;
+        /// <summary>最近一次"像样" (>=40 设计像素) 的日志面板高度 (物理 px, OnSplitterMoved 记录)。</summary>
+        int _lastP2H;
+        /// <summary>收起时定格的日志面板高度 (物理 px): 恢复时窗口按它长出日志区。0 = 没记过。</summary>
+        int _logRestoreH;
+        /// <summary>收起前定格的窗口客户高度 (物理 px): 恢复时直接还原到它。0 = 没记过。
+        /// <para>按钮收起与拖到最底收起在这里统一: 两种路径下收起动作**之前**的窗口高度
+        /// 就是展开态该有的高度 (拖到最底时窗口本来就还是全尺寸, 分隔距离已被钳到容器底,
+        /// 不能再按"面板高度"倒推 —— 那会把恢复目标多算一个日志区高度, 窗口越点越长)。</para></summary>
+        int _logShowClientH;
+        /// <summary>
+        /// 程序化恢复日志面板期间为 true: 抑制 <see cref="OnSplitterMoved"/> 里
+        /// "Panel2.Height&lt;=0 → 自动收起" 的守卫。收起态下分隔距离被钳到容器高度,
+        /// 展开面板的一瞬间布局仍按旧距离算出 Panel2.Height=0 —— 没有抑制会被误判成
+        /// "拖到最底"当场重新收起 (表现: 拖到底收起后首次点日志按钮不展开, 状态与
+        /// 图标错位一拍, 探针 LOG-CLICK 暴露)。BeginInvoke 延迟清零, 覆盖排队中的布局回调。
+        /// </summary>
+        bool _logToggling;
         // 自绘标题栏的三个窗口键。系统标题栏已收掉 (见构造函数), 这三个是它唯一的替代品。
         CaptionButton btnMin, btnMax, btnClose;
         Icon titleBarIcon;                 // 标题栏左侧的小图标 (16px), 由窗体图标缩放而来
@@ -409,11 +426,12 @@ namespace StereoSplitter
             btnSettings.Click += (s2, e2) => OpenSettings();
 
             // 「日志面板」开关: 更多按钮左边 (用户指定), 双状态图标 ——
-            // 圆角窗+文字行 = 显示中, 同一扇窗+斜杠 = 已收起。点击开合;
+            // 图标表示**点击后的动作** (用户批84纠正"状态反了"): 显示中 → 窗+斜杠
+            // (点了就收起), 已收起 → 窗+文字行 (点了就展开)。点击开合;
             // 把分隔条拉到最底也会直接收起 (OnSplitterMoved, 用户指定)。
             btnLog = new GearButton
             {
-                Glyph = ButtonGlyph.LogOn,
+                Glyph = ButtonGlyph.LogOff,   // 启动时日志面板显示中 → 图标是"收起"动作
                 Size = new Size(26, 26),
                 TabStop = true
             };
@@ -934,9 +952,12 @@ namespace StereoSplitter
             InvalidateSeamZone();
             if (splitContainer == null || splitContainer.Panel2Collapsed) return;
             if (splitContainer.Panel2.Height > Dpi.S(40))
+            {
                 lastLogDist = splitContainer.SplitterDistance;   // 只记"像样"的档位 (拖动途中 >=40px 的最后一站)
-            else if (splitContainer.Panel2.Height <= 0)
-                SetLogPanelVisible(false);                       // 拉到最底 = 日志面板整体隐藏
+                _lastP2H = splitContainer.Panel2.Height;
+            }
+            else if (splitContainer.Panel2.Height <= 0 && !_logToggling)
+                SetLogPanelVisible(false);                       // 拖到最底 = 日志面板整体隐藏
         }
 
         /// <summary>日志按钮标题栏提示 (随状态换文案)。</summary>
@@ -950,35 +971,75 @@ namespace StereoSplitter
 
         /// <summary>
         /// 日志面板整体开合 (标题栏日志按钮 / 分隔条拉到最底)。
-        /// <para>收起用 <see cref="SplitContainer.Panel2Collapsed"/>: 面板与分隔条一起消失,
-        /// 内容区顶到窗口底。恢复时先还原面板再摆回收起前的档位 (没记过就用启动默认的
-        /// "日志区 110 高"), 图标随状态切换 (窗+文字行 / 窗+斜杠)。</para>
+        /// <para>收起用 <see cref="SplitContainer.Panel2Collapsed"/>: 面板与分隔条一起消失。
+        /// 窗口跟着开合缩放 (用户批84要求): 收起 → 窗口下缘收到分隔条位置 (缩掉日志区+
+        /// 缝隙), 展开 → 窗口长回原来的大小; 最大化状态下高度不归我们管, 只收放面板。
+        /// 恢复时按收起前定格的日志高度长出面板再落位分隔距离 (没记过就长出默认
+        /// "日志区 110 高"), 图标表示<b>点击后的动作</b> (显示中 → 斜杠窗, 收起 → 文字行窗)。</para>
         /// </summary>
         void SetLogPanelVisible(bool show)
         {
             if (splitContainer == null || btnLog == null) return;
             if (show == !splitContainer.Panel2Collapsed)
             {
-                btnLog.Glyph = show ? ButtonGlyph.LogOn : ButtonGlyph.LogOff;   // 幂等: 只同步图标
+                btnLog.Glyph = show ? ButtonGlyph.LogOff : ButtonGlyph.LogOn;   // 幂等: 只同步图标 (图标=动作)
                 if (tipTop != null) tipTop.SetToolTip(btnLog, LogTip());
                 return;
             }
-            splitContainer.Panel2Collapsed = !show;
+            int sw = splitContainer.SplitterWidth;
+            bool canResize = WindowState == FormWindowState.Normal;
+            if (!show)
+            {
+                // 定格要恢复的日志高度: 当前面板像样就用当前值, 否则用最近像样档 (拖到最底
+                // 收起时面板已归零, 只能靠 OnSplitterMoved 一路记下的 _lastP2H)
+                _logRestoreH = splitContainer.Panel2.Height > Dpi.S(20)
+                    ? splitContainer.Panel2.Height
+                    : (_lastP2H > 0 ? _lastP2H : Dpi.S(110));
+                // 展开态窗口高度 = 收起动作**之前**的高度 (按钮收起后原样还原; 拖到最底
+                // 收起时窗口本来就还是全尺寸 —— 分隔距离被钳在容器底, 面板高度不能用于
+                // 倒推)。**面板高度与窗口高度都必须在收起前定格**: Panel2Collapsed=true
+                // 后 Panel2.Height 归零, 再读就只有缝隙宽了
+                int shrink = splitContainer.Panel2.Height + sw;
+                _logShowClientH = ClientSize.Height;
+                splitContainer.Panel2Collapsed = true;
+                if (canResize)
+                    ClientSize = new Size(ClientSize.Width,
+                        Math.Max(Dpi.S(100), ClientSize.Height - shrink));
+            }
+            else
+            {
+                // 程序化恢复期间抑制"Panel2.Height<=0 → 自动收起"守卫 (见 _logToggling 注释)
+                _logToggling = true;
+                try
+                {
+                    // 窗口先长回收起前定格的高度 (面板还收着 → 布局回调被抑制), 再展开面板、
+                    // 落位分隔距离。只增不减: 收起期间用户把窗口拉大过就尊重新尺寸
+                    int p2h = _logRestoreH > 0 ? _logRestoreH : Dpi.S(110);
+                    if (canResize)
+                    {
+                        int target = _logShowClientH > 0 ? _logShowClientH : ClientSize.Height + p2h + sw;
+                        ClientSize = new Size(ClientSize.Width, Math.Max(ClientSize.Height, target));
+                    }
+                    splitContainer.Panel2Collapsed = false;
+                    int maxDist = splitContainer.Height - sw - splitContainer.Panel2MinSize;
+                    int want = lastLogDist > 0 && lastLogDist <= maxDist
+                        ? lastLogDist
+                        : Math.Max(0, splitContainer.Height - p2h - sw);
+                    try { splitContainer.SplitterDistance = want; } catch { }
+                }
+                finally
+                {
+                    if (IsHandleCreated) BeginInvoke((Action)(() => _logToggling = false));
+                    else _logToggling = false;
+                }
+            }
             // 左右让边是窗体自己的绘制区 (喇叭口弧画在那里), 容器收放不会自动失效它:
             // 收起时旧弧没人擦 → 残留; 恢复时若 SplitterDistance 没变 (SplitterMoved
             // 不触发) 没人画 → 圆弧缺失。整条让边失效, 收起由背景填充擦净、恢复由
             // PaintSplitterBleed 重画弧 (用户报告的两个 bug 同根)。
             InvalidateSplitterBleed();
             InvalidateSeamZone();
-            if (show)
-            {
-                int maxDist = splitContainer.Height - splitContainer.SplitterWidth - splitContainer.Panel2MinSize;
-                int want = lastLogDist > 0 && lastLogDist <= maxDist
-                    ? lastLogDist
-                    : Math.Max(0, splitContainer.Height - Dpi.S(110) - splitContainer.SplitterWidth);
-                try { splitContainer.SplitterDistance = want; } catch { }
-            }
-            btnLog.Glyph = show ? ButtonGlyph.LogOn : ButtonGlyph.LogOff;
+            btnLog.Glyph = show ? ButtonGlyph.LogOff : ButtonGlyph.LogOn;
             if (tipTop != null) tipTop.SetToolTip(btnLog, LogTip());
         }
 

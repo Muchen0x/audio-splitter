@@ -1698,7 +1698,8 @@ namespace StereoSplitter
         /// 容器画自己界内的一段 (局部坐标, 窗口边缘在 x=-Left / Parent宽-Left),
         /// 左右让边 (ResizeBorder) 里的两段由 MainForm.PaintSplitterBleed 用**同一条**
         /// 路径补齐 —— 两边同一套数学, 接缝才对得上。深带色 <see cref="SeamDark"/>。</para>
-        /// <para>日志面板整体收起 (Panel2Collapsed) 时 SplitterRectangle 为空, 自然不画。</para>
+        /// <para>日志面板整体收起 (Panel2Collapsed) 时不画 (OnPaint 显式守卫 ——
+        /// SplitterRectangle 在收起态并不为空, 不能靠它自然跳过)。</para>
         /// </summary>
         internal static readonly Color SeamDark = Color.FromArgb(25, 25, 25);
 
@@ -1731,6 +1732,11 @@ namespace StereoSplitter
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
+            // 面板整体收起时滑带必须跟着消失 (批84): Panel2Collapsed 下 SplitterRectangle
+            // **并不为空** —— 它仍按 SplitterDistance 取带区, 若距离还落在容器界内 (恢复
+            // 流程或钳位残留), 这里会画出一段没有面板接续的悬空滑带, 表现为"隐藏了日志
+            // 面板, 分隔条却还在"。
+            if (Panel1Collapsed || Panel2Collapsed) return;
             Rectangle sr = SplitterRectangle;
             if (sr.Height <= 0 || sr.Width <= 0) return;
             // **无视增量裁剪, 整面重画**: 快速拖动时 WinForms 给的失效区只是增量条,

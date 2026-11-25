@@ -2307,16 +2307,20 @@ namespace StereoSplitter
                     + " panel2=" + p2Db + " (期望 True/True)");
                 shot("normal");
 
-                // 按钮收起 (SplitterDistance 不变): 让边里的旧喇叭口弧必须被擦净 (批76)
+                // 按钮收起 (批84: 窗口跟着缩小到分隔条位置, 图标 = 点击后的动作 → LogOn)
+                int winH0 = mf.ClientSize.Height, p2h0 = scc.Panel2.Height, sw0 = scc.SplitterWidth;
                 onClick.Invoke(btnLog, new object[] { EventArgs.Empty });
                 for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
-                Console.Out.WriteLine("LOG-BTN-COLLAPSED collapsed=" + scc.Panel2Collapsed + " (期望 True) glyph=" + glyphOf() + " (期望 LogOff)");
+                Console.Out.WriteLine("LOG-BTN-COLLAPSED collapsed=" + scc.Panel2Collapsed + " (期望 True) glyph=" + glyphOf() + " (期望 LogOn)"
+                    + " winH " + winH0 + "->" + mf.ClientSize.Height + " (期望收掉 p2h+sw=" + (p2h0 + sw0) + ")");
                 shot("btn-collapsed");
 
-                // 按钮恢复 (SplitterDistance 不变 → SplitterMoved 不触发): 喇叭口弧必须重画
+                // 按钮恢复 (批84: 窗口长回原大小, 图标 = 点击后的动作 → LogOff)
                 onClick.Invoke(btnLog, new object[] { EventArgs.Empty });
                 for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
-                Console.Out.WriteLine("LOG-BTN-RESTORED collapsed=" + scc.Panel2Collapsed + " (期望 False) dist=" + scc.SplitterDistance + " glyph=" + glyphOf() + " (期望 LogOn)");
+                Console.Out.WriteLine("LOG-BTN-RESTORED collapsed=" + scc.Panel2Collapsed + " (期望 False) dist=" + scc.SplitterDistance
+                    + " glyph=" + glyphOf() + " (期望 LogOff)"
+                    + " winH->" + mf.ClientSize.Height + " (期望还原 " + winH0 + ")");
                 shot("btn-restored");
 
                 // 真实鼠标小步拖动 (复现用户"小幅度拖动显示异常"): 快速拖 + 分段截图
@@ -2450,15 +2454,27 @@ namespace StereoSplitter
                 for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
                 Console.Out.WriteLine("DRAG-BOTTOM collapsed=" + scc.Panel2Collapsed + " (期望 True)"
                     + " panel2Visible=" + scc.Panel2.Visible
-                    + " glyph=" + glyphOf() + " (期望 LogOff)");
+                    + " glyph=" + glyphOf() + " (期望 LogOn, 图标=动作)"
+                    + " winH=" + mf.ClientSize.Height + " (已收掉缝隙 sw)");
                 shot("collapsed");
 
-                // 点日志按钮 = 恢复
+                // 点日志按钮 = 恢复 (窗口按收起前定格的日志高度长回日志区)
+                int winHCollapsed = mf.ClientSize.Height;
+                Func<string> stOf = () => "collapsed=" + scc.Panel2Collapsed + " dist=" + scc.SplitterDistance
+                    + " panel2H=" + scc.Panel2.Height + " p2vis=" + scc.Panel2.Visible
+                    + " p2min=" + scc.Panel2MinSize + " sccH=" + scc.Height
+                    + " lastLogDist=" + (int)Field(mf, "lastLogDist")
+                    + " showH=" + (int)Field(mf, "_logShowClientH")
+                    + " restoreH=" + (int)Field(mf, "_logRestoreH")
+                    + " lastP2H=" + (int)Field(mf, "_lastP2H");
+                Console.Out.WriteLine("LOG-CLICK before: " + stOf());
                 onClick.Invoke(btnLog, new object[] { EventArgs.Empty });
-                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("LOG-CLICK sync-after-click: " + stOf());
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); if (i < 3) Console.Out.WriteLine("LOG-CLICK pump" + i + ": " + stOf()); }
                 Console.Out.WriteLine("LOG-CLICK restored collapsed=" + scc.Panel2Collapsed + " (期望 False)"
                     + " dist=" + scc.SplitterDistance + " panel2H=" + scc.Panel2.Height
-                    + " glyph=" + glyphOf() + " (期望 LogOn)");
+                    + " glyph=" + glyphOf() + " (期望 LogOff)"
+                    + " winH " + winHCollapsed + "->" + mf.ClientSize.Height + " (期望长回日志区, >收起时)");
                 shot("restored");
 
                 // 再点两次 = 收起 / 恢复 (幂等开关)
