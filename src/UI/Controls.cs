@@ -350,10 +350,14 @@ namespace StereoSplitter
             // 铺的父容器底色盖住 —— 与 RoundedCombo 同一手法, 同一个视觉结果。</para>
             if (Width > 4 && Height > 4)
             {
-                int r = Math.Max(1, radius - 1);
+                // 批100: 可见外缘弧与卡片/下拉/数字壳同一套半像素对齐 —— 填充半径 radius
+                // 落在 (0,0,W,H), 描边半径同为 radius 但落在 (0.5,0.5,W-1,H-1), 1px 笔
+                // 居中后外缘比填充多 0.5px, 这正是 RoundedCombo/OutputCard 的公式。
+                // 此前 body 用 radius-1、描边 radius-1.5, 可见弧比它们小 1px。
+                int r = Math.Max(1, radius);
                 using (var bodyPath = UiDraw.RoundRect(new Rectangle(0, 0, Width, Height), r))
                 using (var edgePath = UiDraw.RoundRect(
-                    new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), r - 0.5f))
+                    new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), r))
                 {
                     using (var b = new SolidBrush(c))
                         g.FillPath(b, bodyPath);
@@ -2343,15 +2347,13 @@ namespace StereoSplitter
             using (var b = new SolidBrush(NoFocusSplitContainer.SeamLine))
                 g.FillRectangle(b, 0, ly1, Width, ly2 - ly1);
             // 3) 圆头条: 高 = 缝带宽 - 2 (比线上下各凸出 2 物理px), 左右让 AaMargin 给
-            //    AA 渐变 —— 端部圆滑 (批94)。批97: 端部改**椭圆角** —— 垂直半径仍钳到
-            //    半高 (几何必然), 水平半径用窗口圆角 (WindowRadiusPx, 随 DPI): 细长条装不下
-            //    8px 的正圆弧, 但端部弧的**横向跨度**与窗口四角一致 (用户 "所有圆角
-            //    包括分隔条的") —— 半圆头 (rx=3) 换平缓椭圆头 (rx=8), 弧线更舒展。
+            //    AA 渐变 —— 端部圆滑 (批94)。批97 曾用椭圆角 (rx=窗口圆角 8/10, ry=半高),
+            //    端头被拉成扁长椭圆, 看着尖; 批100 按用户要求改回**正半圆端头** ——
+            //    RoundRect 的水平/垂直半径同为半高, 端头是完整的半圆, 最圆润。
             float th = Height - 2f;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-            using (var path = UiDraw.RoundRectEx(new RectangleF(AaMargin, 1f, Width - 2 * AaMargin, th),
-                NoFocusSplitContainer.WindowRadiusPx, th / 2f))
+            using (var path = UiDraw.RoundRect(new RectangleF(AaMargin, 1f, Width - 2 * AaMargin, th), th / 2f))
             using (var b = new SolidBrush(ThumbColor))
                 g.FillPath(b, path);
         }

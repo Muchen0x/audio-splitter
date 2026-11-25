@@ -1,0 +1,23 @@
+圆角统一收尾: 按钮可见弧对齐窗口/卡片 + 分隔条把手端头改回正半圆 (批100)
+
+用户问"其他圆角弧度是一样的吗"并给出把手条截图 ("这个圆角要圆润一点")。
+
+1) RoundButton 可见弧比窗口/卡片小 1px
+   根因: OnPaint 里 body 用 radius-1、描边用 radius-1.5, 可见外缘 = radius-1;
+   而 RoundedCombo / OutputCard / 数字壳等用的是半像素对齐公式 —— 填充 radius
+   落在 (0,0,W,H), 描边 radius 落在 (0.5,0.5,W-1,H-1), 1px 笔居中后外缘
+   = radius+0.5。实测八倍图: 按钮 r=10, 下拉/卡片 r=11.5, 差 1px。
+   修复: 按钮改成同一套公式 (body=radius, 描边=radius @ inset 0.5)。
+   实测: btnAdd / btnClear / combo / card 拟合半径全部 11.5, err=0.063 完全一致。
+
+2) 分隔条把手条端头太尖
+   批97 为"所有圆角包括分隔条的"把端头从半圆换成扁椭圆
+   (rx=WindowRadiusPx=10, ry=半高=3), 横向跨度 9px, 看着像尖梭形。
+   修复: 换回 UiDraw.RoundRect 的正半圆端头 (rx=ry=半高=3)。
+   实测: 端头高度剖面从 [2,3,4,4,4,5,5,5,6] (9px 渐变) 变成
+   [4,5,6,6,6,...] (3px 渐变), 端头是完整半圆。
+
+验证: 编译 0 错误; 自检 34 项全过; seamend 缝端弧与窗口底角 worst=1 (OK);
+corners/seam/logclick/cardshell/settings/logshell/scroll/toggle/dpiprobe 全绿;
+CARDSHELL-THUMB-FIT 仍为既有的前置条件 FAIL (窗口够大无滚动条时断言无意义,
+已用 HEAD 基线确认非本次引入); VERIFY OK。
