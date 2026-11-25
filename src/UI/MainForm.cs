@@ -617,6 +617,16 @@ namespace StereoSplitter
             // 都在"更多"弹层里 (控件由本类持有, 由 SettingsFlyout 搬入搬出)。
             splitContainer.Panel1.Controls.AddRange(new Control[] { cmbDefault, btnRefresh, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, lblRunState, flwSpecChannels, btnAddOutput, cardHost });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, lblWater, lblWaterIv, nudWaterShell, lblWaterSec, btnClearLog, txtLog });
+            // 面板自身重绘双缓冲 (DoubleBuffered 是 protected, 反射开): 实时拖动 (批77) 时
+            // 面板每步变高, 不缓冲的话"擦背景(浅) → 子控件重绘"交错出闪帧 (批78 用户报告)。
+            // 容器自身已在其 ctor 里开双缓冲; 原生 TextBox 只能靠拖动期间的 WS_EX_COMPOSITED 覆盖。
+            var dbProp = typeof(Control).GetProperty("DoubleBuffered",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            if (dbProp != null)
+            {
+                dbProp.SetValue(splitContainer.Panel1, true, null);
+                dbProp.SetValue(splitContainer.Panel2, true, null);
+            }
 
             // 提示文案统一说明"运行中能不能改", 置灰时不至于让人以为坏了。
             // 必须放在所有控件都建好之后（水位监控那几个是后面才 new 的）。

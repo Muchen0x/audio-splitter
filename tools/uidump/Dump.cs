@@ -2119,6 +2119,16 @@ namespace StereoSplitter
                     + " W=" + scc.SplitterWidth + " back=" + scc.BackColor
                     + " dist=" + scc.SplitterDistance + " collapsed=" + scc.Panel2Collapsed
                     + " glyph=" + glyphOf());
+                // 批78 防闪: 容器双缓冲 + 面板双缓冲 (反射读)
+                var miGetStyle = typeof(Control).GetMethod("GetStyle",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                bool sccDb = (bool)miGetStyle.Invoke(scc, new object[] { ControlStyles.OptimizedDoubleBuffer });
+                var piDb = typeof(Control).GetProperty("DoubleBuffered",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                bool p1Db = (bool)piDb.GetValue(scc.Panel1, null);
+                bool p2Db = (bool)piDb.GetValue(scc.Panel2, null);
+                Console.Out.WriteLine("ANTIFLICKER container=" + sccDb + " (期望 True) panel1=" + p1Db
+                    + " panel2=" + p2Db + " (期望 True/True)");
                 shot("normal");
 
                 // 按钮收起 (SplitterDistance 不变): 让边里的旧喇叭口弧必须被擦净 (批76)
@@ -2153,7 +2163,8 @@ namespace StereoSplitter
                         shot("drag-mid");
                         // 批77: 实时拖动 —— 拖动中途距离就该已经落位 (原生 XOR 预览时代是原值不动)
                         Console.Out.WriteLine("DRAG-MID-LIVE dist=" + scc.SplitterDistance
-                            + " (期望=" + (dist0 + 3) + ", 实时落位生效) panel1H=" + scc.Panel1.Height);
+                            + " (期望=" + (dist0 + 3) + ", 实时落位生效) panel1H=" + scc.Panel1.Height
+                            + " composited=" + ((NoFocusSplitContainer)scc).SubtreeComposited + " (期望 True, 批78 防闪)");
                     }
                 }
                 mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);              // LEFTUP
@@ -2181,7 +2192,8 @@ namespace StereoSplitter
                 shot("drag-back");
                 Console.Out.WriteLine("DRAG-BACK dist=" + scc.SplitterDistance + " (期望=" + (dist0 + 5) + ")");
                 Console.Out.WriteLine("DRAG-END-COUNT=" + ((NoFocusSplitContainer)scc).DragEndCount
-                    + " LIVE-MOVES=" + ((NoFocusSplitContainer)scc).LiveDragMoves + " (期望>0)");
+                    + " LIVE-MOVES=" + ((NoFocusSplitContainer)scc).LiveDragMoves + " (期望>0)"
+                    + " composited-off=" + !((NoFocusSplitContainer)scc).SubtreeComposited + " (期望 True, 松手即撤)");
                 // 整窗强制重画: 若能治愈 230 花纹 → 陈旧像素问题 (增量裁剪漏行), 不是几何问题
                 mf.Invalidate(true);
                 for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }

@@ -1196,6 +1196,54 @@ namespace StereoSplitter
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern IntPtr SetFocus(IntPtr hWnd);
 
+        // ---- 批78 拖动防闪 ----
+        // 实时拖动每步都重排面板 + 整面重画滑带; 容器/面板/原生文本框各自擦背景与
+        // 重绘交错时会闪。容器自身滑带绘制走双缓冲 (见 ctor), 拖动期间再给整棵子树
+        // 开 WS_EX_COMPOSITED: 系统把子控件 (面板/文本框等) 以自底向上顺序合成进一
+        // 层缓冲再统一上屏, 消除子控件逐个擦背景的闪帧 (文本框是原生控件, 托管双缓冲
+        // 帮不到它, 只有这条覆盖得到)。
+        const int GWL_EXSTYLE = -20;
+        const int WS_EX_COMPOSITED = 0x02000000;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+        static extern IntPtr GetWindowLongPtrW(IntPtr hWnd, int nIndex);
+        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+        static extern int GetWindowLongW(IntPtr hWnd, int nIndex);
+        static int GetWindowLong(IntPtr hWnd, int nIndex)
+        {
+            return IntPtr.Size == 8 ? (int)GetWindowLongPtrW(hWnd, nIndex) : GetWindowLongW(hWnd, nIndex);
+        }
+        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+        static extern IntPtr SetWindowLongPtrW(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
+        static extern int SetWindowLongW(IntPtr hWnd, int nIndex, int dwNewLong);
+        static void SetWindowLong(IntPtr hWnd, int nIndex, int value)
+        {
+            if (IntPtr.Size == 8) SetWindowLongPtrW(hWnd, nIndex, (IntPtr)value);
+            else SetWindowLongW(hWnd, nIndex, value);
+        }
+
+        /// <summary>拖动期间给容器子树加/去 <see cref="WS_EX_COMPOSITED"/> (探针可读回验证)。</summary>
+        void SetSubtreeComposited(bool on)
+        {
+            if (!IsHandleCreated) return;
+            int style = GetWindowLong(Handle, GWL_EXSTYLE);
+            int want = on ? (style | WS_EX_COMPOSITED) : (style & ~WS_EX_COMPOSITED);
+            if (want != style) SetWindowLong(Handle, GWL_EXSTYLE, want);
+        }
+
+        internal bool SubtreeComposited
+        {
+            get { return IsHandleCreated && (GetWindowLong(Handle, GWL_EXSTYLE) & WS_EX_COMPOSITED) != 0; }
+        }
+
+        public NoFocusSplitContainer()
+        {
+            // 滑带绘制双缓冲: 实时拖动时每步整面重画滑带 (先铺浅底再画深带),
+            // 不缓冲的话两步之间会闪出浅色帧 (批78 用户报告"拖动时会闪烁")。
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        }
+
         IntPtr restoreFocus = IntPtr.Zero;
 
         protected override void Select(bool directed, bool forward)
@@ -1279,6 +1327,7 @@ namespace StereoSplitter
                     _dragStartY = LParamPt(m.LParam).Y;
                     _dragOrigDist = SplitterDistance;
                     Capture = true;                    // 原生拖动也会设捕获, 这里自己接管
+                    SetSubtreeComposited(true);        // 拖动期间子树合成绘制防闪 (见顶部注释)
                     return;
                 }
                 base.WndProc(ref m);
@@ -1295,6 +1344,7 @@ namespace StereoSplitter
                 {
                     _liveDrag = false;
                     Capture = false;
+                    SetSubtreeComposited(false);
                     // 拖到最底 (拖动中被夹在 max-1, 面板高度还剩 1px) → 松手落到真正的
                     // max, Panel2 高度归零 → SplitterMoved → OnSplitterMoved 整体收起
                     int min = Panel1MinSize;
@@ -1316,6 +1366,7 @@ namespace StereoSplitter
             if (m.Msg == 0x0215 && _liveDrag)          // WM_CAPTURECHANGED: 捕获被意外抢走
             {                                          // (弹窗等) → 放弃拖动, 停在最后落位
                 _liveDrag = false;
+                SetSubtreeComposited(false);
             }
             if (m.Msg == 0x0007)                       // WM_SETFOCUS: 焦点被抢到分隔条 → 立即还回
             {
