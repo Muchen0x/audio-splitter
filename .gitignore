@@ -23,5 +23,6 @@ SplitterGUI.ini
 docs/
 SplitterGUI.ini.bak
 
-# uidump 截图输出 (临时验证用): 根目录下的 png 全是探针产物
+# uidump 截图输出 (临时验证用): 根目录与 test-screenshots/ 下的 png 全是探针产物
 /*.png
+/test-screenshots/
