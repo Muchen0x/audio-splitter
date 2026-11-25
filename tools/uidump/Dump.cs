@@ -2560,6 +2560,161 @@ namespace StereoSplitter
                 return;
             }
 
+            // 卡片区滚动壳 (批85): 原生竖条裁掉 + 右侧留白带自绘细条 + 栅格居中、左右留白对称
+            if (args.Length >= 1 && args[0] == "cardshell")
+            {
+                StereoSplitter.Dpi.Init();
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(20, 20);
+                mf.TopMost = true;
+                mf.Show();
+                for (int i = 0; i < 14; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(60); }
+                var shell = Field(mf, "cardShell") as Control;
+                var host = Field(mf, "cardHost") as Control;
+                var shellParent = shell.Parent;
+                StereoSplitter.CardBarOverlay bar = null;
+                foreach (Control c in shell.Controls) if (c is StereoSplitter.CardBarOverlay) { bar = (StereoSplitter.CardBarOverlay)c; break; }
+                var hostScroll = (ScrollableControl)host;
+                int textEnd = (int)Field(shell, "textEnd");
+                int cut = -1;
+                if (host.Region != null)
+                    using (var g = shell.CreateGraphics()) cut = (int)host.Region.GetBounds(g).Width;
+
+                // GEO: 壳/内衬/可视宽几何
+                var vs = hostScroll.VerticalScroll;
+                Console.Out.WriteLine("CARDSHELL-GEO shell={X=" + shell.Left + ",Y=" + shell.Top
+                    + ",W=" + shell.Width + ",H=" + shell.Height + "} inner={X=" + host.Left
+                    + ",Y=" + host.Top + ",W=" + host.Width + ",H=" + host.Height + "}"
+                    + " contentW=" + (int)typeof(StereoSplitter.CardScrollShell).InvokeMember("ContentWidth",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.GetProperty, null, shell, null)
+                    + " cut=" + cut + " textEnd=" + textEnd
+                    + " vscroll=" + vs.Visible + " vmax=" + vs.Maximum + " vval=" + vs.Value
+                    + " dispH=" + hostScroll.DisplayRectangle.Height
+                    + " autoScroll=" + hostScroll.AutoScroll
+                    + " shellScreen=" + shell.PointToScreen(Point.Empty)
+                    + " barScreen=" + (bar != null ? bar.RectangleToScreen(bar.ClientRectangle).ToString() : "null")
+                    + " hostScreen=" + host.RectangleToScreen(host.ClientRectangle).ToString());
+
+                // SYM: 壳在面板里左右留白对称; 单列卡片行左右留白对称
+                int leftGap = shell.Left;
+                int rightGap = shellParent.ClientSize.Width - shell.Right;
+                var card0 = host.Controls.Count > 0 ? host.Controls[0] : null;
+                int cardLeftGap = -1, cardRightGap = -1;
+                if (card0 != null)
+                {
+                    cardLeftGap = shell.Left + host.Left + card0.Left;
+                    cardRightGap = shellParent.ClientSize.Width - cardLeftGap - card0.Width;
+                }
+                Console.Out.WriteLine("CARDSHELL-SYM shellL=" + leftGap + " shellR=" + rightGap
+                    + " (期望相等±1) cardL=" + cardLeftGap + " cardR=" + cardRightGap
+                    + " (期望相等±1, 单列铺满时都=" + StereoSplitter.Dpi.S(20) + ")");
+                bool symOk = Math.Abs(leftGap - rightGap) <= 1
+                    && (card0 == null || Math.Abs(cardLeftGap - cardRightGap) <= 1);
+
+                // BAR: 右侧留白带里扫自绘滑条色 (198,203,211); LEAK: 带内不应有原生条深色箭头 (<70)
+                int thumbPx = 0, darkPx = 0, hotPx = 0;
+                // dark 只扫留白带列 (band 外是卡片内容, X 钮/微调控件的深色像素不算泄漏)
+                int bandL = shell.PointToScreen(Point.Empty).X - mf.Left + textEnd;
+                int scanL = bandL, scanR = mf.ClientSize.Width - 1;
+                using (var bmp = new Bitmap(mf.Width, mf.Height))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                        g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
+                    for (int x = scanL; x < scanR; x++)
+                        for (int y = shell.Top; y < shell.Bottom - 1; y++)
+                        {
+                            if (y >= bmp.Height || x >= bmp.Width) continue;
+                            var p = bmp.GetPixel(x, y);
+                            if (p.R == 198 && p.G == 203 && p.B == 211) thumbPx++;
+                            else if (p.R == 172 && p.G == 178 && p.B == 188) hotPx++;
+                            if (p.R < 70 && p.G < 70 && p.B < 70) darkPx++;
+                        }
+                }
+                Console.Out.WriteLine("CARDSHELL-BAR thumbPx=" + thumbPx + " hotPx=" + hotPx + " darkPx=" + darkPx + " (thumb/hot 合计>20 = 自绘滑条在屏; dark=0 = 无原生箭头)");
+                Console.Out.WriteLine("CARDSHELL-SYM-OK " + symOk);
+
+                // SYMW: 多宽度扫描 (用户批85补充: 左右留白一样多, 滚动条不记入、算留白的一部分)。
+                // 每档宽度断言: 壳在面板左右留白相等 + 卡片行在窗口左右留白相等 (滚动条
+                // 已被壳裁出内容宽, 天然"不记入", 自绘细条落右侧留白带内)。
+                bool symwOk = true;
+                int[] sweepW = new int[] { 0, 900, 1100 };   // 0 = 保持当前宽
+                foreach (int sw in sweepW)
+                {
+                    if (sw > 0)
+                    {
+                        mf.ClientSize = new Size(sw, mf.ClientSize.Height);
+                        for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                    }
+                    Control card0w = host.Controls.Count > 0 ? host.Controls[0] : null;
+                    int lg = shell.Left, rg = shellParent.ClientSize.Width - shell.Right;
+                    int clg = -1, crg = -1;
+                    if (card0w != null)
+                    {
+                        clg = shell.Left + host.Left + card0w.Left;
+                        crg = shellParent.ClientSize.Width - clg - card0w.Width;
+                    }
+                    bool okW = Math.Abs(lg - rg) <= 1 && (card0w == null || Math.Abs(clg - crg) <= 1);
+                    if (!okW) symwOk = false;
+                    Console.Out.WriteLine("CARDSHELL-SYMW winW=" + mf.ClientSize.Width
+                        + " shellL=" + lg + " shellR=" + rg + " cardL=" + clg + " cardR=" + crg
+                        + " cols=" + (int)Field(mf, "lastCardCols") + " ok=" + okW
+                        + " shellW=" + shell.Width + " contentW=" + (int)typeof(StereoSplitter.CardScrollShell).InvokeMember("ContentWidth",
+                            BindingFlags.Instance | BindingFlags.Public | BindingFlags.GetProperty, null, shell, null)
+                        + " cardW=" + (card0w != null ? card0w.Width : -1)
+                        + " hostW=" + host.Width + " textEnd=" + (int)Field(shell, "textEnd"));
+                }
+                Console.Out.WriteLine("CARDSHELL-SYMW-OK " + symwOk);
+                mf.ClientSize = new Size(625, 625);
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                // DRAG-BAR: 真实鼠标拖滑块 → 卡片滚动位置变化
+                int before = Math.Abs(hostScroll.AutoScrollPosition.Y);
+                // 先扫出滑块当前竖直范围 (在条带中线上找滑条色)
+                int bxCol = -1, tyFound = -1, thFound = 0;
+                using (var bmp = new Bitmap(mf.Width, mf.Height))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                        g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
+                    int shellScreenX = shell.PointToScreen(Point.Empty).X - mf.Left;
+                    int zoneR = shellScreenX + shell.Width - 2;
+                    for (int x = shellScreenX + textEnd; x < zoneR && bxCol < 0; x++)
+                    {
+                        int first = -1, cnt = 0;
+                        for (int y = shell.Top; y < shell.Bottom; y++)
+                        {
+                            if (y >= bmp.Height || x >= bmp.Width) continue;
+                            var p = bmp.GetPixel(x, y);
+                            bool th = (p.R == 198 && p.G == 203 && p.B == 211) || (p.R == 172 && p.G == 178 && p.B == 188);
+                            if (th) { if (first < 0) first = y; cnt++; }
+                        }
+                        if (cnt > 10) { bxCol = x; tyFound = first; thFound = cnt; }
+                    }
+                }
+                if (bxCol >= 0)
+                {
+                    Point grab = new Point(mf.Left + bxCol, mf.Top + tyFound + thFound / 2);
+                    SetCursorPos(grab.X, grab.Y);
+                    for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    mouse_event(0x0002, 0, 0, 0, IntPtr.Zero);
+                    for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    for (int i = 1; i <= 6; i++)
+                    {
+                        SetCursorPos(grab.X, grab.Y + i * 15);
+                        Application.DoEvents(); System.Threading.Thread.Sleep(30);
+                        Application.DoEvents();
+                    }
+                    mouse_event(0x0004, 0, 0, 0, IntPtr.Zero);
+                    for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    int after = Math.Abs(hostScroll.AutoScrollPosition.Y);
+                    Console.Out.WriteLine("CARDSHELL-DRAG before=" + before + " after=" + after
+                        + " (期望显著增大) starts=" + (int)Field(bar, "DragStarts")
+                        + " moves=" + (int)Field(bar, "DragMoves"));
+                }
+                else Console.Out.WriteLine("CARDSHELL-DRAG skip (没找到滑块 —— 内容不足一屏?)");
+                mf.Close();
+                return;
+            }
+
             // DPI 适配自检: 打印缩放相关的实际值 (uidump 自己也要 Init, 否则 Dpi.S() 恒为 1)
             if (args.Length >= 1 && args[0] == "dpiprobe")
             {

@@ -24,7 +24,8 @@ namespace StereoSplitter
         readonly List<OutputCardControl> cards = new List<OutputCardControl>();// 控件, 与 models 一一对应
         readonly List<OutputLane> lanes = new List<OutputLane>();              // 内核输入, 由 models 扁平化得到
         bool normalizing;        // 合并/行数校正期间屏蔽卡片事件重入
-        FlowLayoutPanel cardHost;
+        BufferedFlowPanel cardHost;
+        CardScrollShell cardShell;   // 卡片区壳: 原生竖条裁掉, 右侧留白带自绘细条 (与日志壳同一套)
         FlowLayoutPanel flwSpecChannels;
         RunNoteLabel lblRunState;   // 规格行的运行状态字 (启动中…/运行中/正在停止…/启动失败), 空闲态隐藏;
                                     // 超宽时占满空地滚动 (见 RunNoteLabel)
@@ -32,7 +33,7 @@ namespace StereoSplitter
         bool syncDictWarned;     // SyncSettingsDict 控件读取失败只提示一次
         int gridLogCols = -1;    // 上次记过日志的列数 (只在列数变化时打, 拖动窗口不刷屏)
         // 上次真正摆过的栅格参数: 完全一致时跳过重排 (缩放窗口时每帧都会被叫到好几次)
-        int lastCardCols = -1, lastCardW = -1, lastRightGap = -1, lastCardCount = -1;
+        int lastCardCols = -1, lastCardW = -1, lastRightGap = -1, lastCardCount = -1, lastCardPadLeft = -1;
         Size lastLogPanelSize = Size.Empty;   // 日志面板上次的尺寸 (没变就不重摆日志框)
         int lastVolPanelW = -1;              // 音量行上次的面板宽度
         Size lastTopPanelSize = Size.Empty;   // 顶部三行 + 卡片区上次的面板尺寸 (宽或高变都要重排)
@@ -559,6 +560,13 @@ namespace StereoSplitter
                 // 右边和下边都会切出可视区 (卡片右缘被切、最后一张卡被压掉一半)。
                 Anchor = AnchorStyles.Top | AnchorStyles.Left
             };
+            // 卡片壳包住卡片区: 原生滚动条被窗口区域裁掉 (用户批85 "输出卡片的滑动条也和
+            // 日志内容区域的做一样"), 右侧留白带由壳自绘细条; 左右留白对称、卡片栅格居中
+            // (壳的摆位在 LayoutTopRows 里, 与卡片区旧位置相同)。
+            cardShell = new CardScrollShell(cardHost) { Location = cardHost.Location };
+            // 卡片增删会改滚动范围 → 滑条立刻重画 (拖动/滚轮路径走 Inner.ScrollChanged)
+            cardHost.ControlAdded += (s2, e2) => cardShell.RefreshBar();
+            cardHost.ControlRemoved += (s2, e2) => cardShell.RefreshBar();
 
             // 该下拉决定"预缓冲深度 + WASAPI 输出缓冲"整套组合, 直接影响稳态延迟, 不是启动耗时。
             // 选项里的总预估 = 捕获(约10ms) + 内部缓冲目标(driftTarget) + 输出缓冲, 不含 USB/DAC/声波;
@@ -576,6 +584,14 @@ namespace StereoSplitter
             // 否则卡片的宽度会取决于创建那一刻滚动条在不在 (差 17px 对不齐)。
             cardHost.Resize += (s2, e2) => FitCardWidths();
             cardHost.ClientSizeChanged += (s2, e2) => FitCardWidths();
+            // 壳几何 (ContentWidth) 定型后的补算: cardHost.Resize 是在壳 Recalc 的
+            // Inner.SetBounds **过程中**触发的, 那一刻 textEnd 还是上一轮的旧值 ——
+            // 只靠它 Fit 会永远滞后一代 (窗口拉宽后卡片停在旧宽度, 实测 900 宽时
+            // 卡片仍 561)。BeginInvoke 排到 Recalc 完成之后, 用新几何再算一遍。
+            cardShell.SizeChanged += (s2, e2) =>
+            {
+                if (IsHandleCreated) BeginInvoke((Action)FitCardWidths);
+            };
             btnAddOutput.Click += (s2, e2) => AddOutputViaDialog();
             btnCalibrate.Click += (s2, e2) => OpenLatencyCalibration();
             cmbSpec.SelectedIndexChanged += (s2, e2) =>
@@ -641,7 +657,7 @@ namespace StereoSplitter
 
             // 主面板只放高频控件; 缓冲档位 / 时钟校正 / 捕获消音 / 关闭行为 / 延迟校准
             // 都在"更多"弹层里 (控件由本类持有, 由 SettingsFlyout 搬入搬出)。
-            splitContainer.Panel1.Controls.AddRange(new Control[] { cmbDefault, btnRefresh, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, lblRunState, flwSpecChannels, btnAddOutput, cardHost });
+            splitContainer.Panel1.Controls.AddRange(new Control[] { cmbDefault, btnRefresh, btnMuteMaster, volMaster, lblVolMaster, icoGain, volGain, lblVolGain, btnStart, cmbSpec, lblRunState, flwSpecChannels, btnAddOutput, cardShell });
             splitContainer.Panel2.Controls.AddRange(new Control[] { lblLogTitle, nudWaterShell, btnClearLog, logShell });
             // 面板自身重绘双缓冲 (DoubleBuffered 是 protected, 反射开): 实时拖动 (批77) 时
             // 面板每步变高, 不缓冲的话"擦背景(浅) → 子控件重绘"交错出闪帧 (批78 用户报告)。

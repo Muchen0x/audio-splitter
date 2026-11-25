@@ -128,11 +128,29 @@ namespace StereoSplitter
     /// </summary>
     class BufferedFlowPanel : FlowLayoutPanel
     {
+        /// <summary>
+        /// 滚动位置/范围变了 (滚轮、拖原生滚动条、内容增删触发的布局)。卡片区壳
+        /// (<see cref="CardScrollShell"/>) 拿它重绘自绘细条 —— ScrollableControl
+        /// 没有现成的滚动通知事件。
+        /// </summary>
+        public event EventHandler ScrollChanged;
+
         public BufferedFlowPanel()
         {
             // DoubleBuffered 是 protected, 只能在子类里开
             DoubleBuffered = true;
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+            // WM_VSCROLL (拖原生条/转发) / WM_MOUSEWHEEL (滚轮) —— 两条路径都会变滚动位置
+            if (m.Msg == 0x115 || m.Msg == 0x20A)
+            {
+                var h = ScrollChanged;
+                if (h != null) h(this, EventArgs.Empty);
+            }
         }
     }
 
@@ -1475,6 +1493,283 @@ namespace StereoSplitter
         }
     }
 
+    /// <summary>
+    /// 输出卡片区滚动条覆盖层: 画在卡片区窗口**之上**的窄竖条控件 (宽 = 右侧留白带),
+    /// 滑条的绘制与全部鼠标交互都在它身上。为什么要一层覆盖件而不直接在壳 (<see cref="CardScrollShell"/>,
+    /// 卡片区的父窗口) 上画: 父窗口的绘制被 WS_CLIPCHILDREN 语义裁进子窗口矩形之外 ——
+    /// 卡片区窗口加宽后矩形盖住了整条留白带, 父窗口对滑带的失效**永远落不出 WM_PAINT**
+    /// (实测 PaintCount 卡死、强制 Invalidate 也不画); 顶层兄弟控件不受这层裁剪, 画得着、点得着。
+    /// 视觉与日志圆角壳 (<see cref="RoundLogShell"/>) 同一套: 4px 圆头细条, 无边框无箭头。
+    /// </summary>
+    class CardBarOverlay : Control
+    {
+        static readonly Color ThumbColor = Color.FromArgb(198, 203, 211);      // 与日志壳/下拉列表同一支灰
+        static readonly Color ThumbHotColor = Color.FromArgb(172, 178, 188);   // 悬停/拖拽加深一档
+        static int BarW { get { return Dpi.S(4); } }      // 滑条粗细 (设计 px, 与日志壳一致)
+
+        public readonly CardScrollShell Shell;
+        bool barHot;
+        bool dragThumb;
+        int dragGrabY;
+        /// <summary>诊断: OnPaint 次数 / 按下滑块次数 / 拖拽落位次数 / 最近 GetScrollInfo 读数 (探针读)。</summary>
+        internal int PaintCount, DragStarts, DragMoves, DbgNMax, DbgNPage, DbgNPos;
+        internal bool DbgGot, DbgGeo;
+
+        const int SB_VERT = 1;
+        const int WM_MOUSEWHEEL = 0x20A;
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct SCROLLINFO
+        {
+            public int cbSize, fMask, nMin, nMax, nPage, nPos, nTrackPos;
+        }
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool GetScrollInfo(IntPtr hWnd, int nBar, ref SCROLLINFO si);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        public CardBarOverlay(CardScrollShell shell)
+        {
+            Shell = shell;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.ResizeRedraw, true);
+            TabStop = false;
+        }
+
+        /// <summary>滚动信息/位置变了 → 重画滑条 (宿主转发卡片区的滚动通知)。</summary>
+        public void RefreshBar()
+        {
+            Invalidate();
+        }
+
+        /// <summary>当前竖向滚动信息 (nMax/nPage/nPos, 像素单位); 没有滚动需求返回 false。</summary>
+        bool GetVert(out SCROLLINFO si)
+        {
+            si = new SCROLLINFO();
+            var inner = Shell.Inner;
+            if (inner == null || !inner.IsHandleCreated) return false;
+            si.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(SCROLLINFO));
+            si.fMask = 0x1 | 0x2 | 0x4;    // SIF_RANGE | SIF_PAGE | SIF_POS
+            bool got = GetScrollInfo(inner.Handle, SB_VERT, ref si);
+            DbgGot = got; DbgNMax = si.nMax; DbgNPage = si.nPage; DbgNPos = si.nPos;
+            return got && si.nMax > 0;
+        }
+
+        bool ThumbGeometry(SCROLLINFO si, out int trackTop, out int trackLen, out int ty, out int th)
+        {
+            ty = th = 0;
+            trackTop = Dpi.S(6);
+            trackLen = Height - 1 - trackTop * 2;
+            bool ok = si.nPage < si.nMax + 1 && trackLen >= BarW * 4;
+            DbgGeo = ok;
+            if (!ok) return false;
+            th = Math.Max(Dpi.S(18), (int)((long)trackLen * si.nPage / (si.nMax + 1)));
+            if (th > trackLen) th = trackLen;
+            int maxTop = si.nMax + 1 - si.nPage;
+            ty = trackTop + (maxTop > 0 ? (int)((long)(trackLen - th) * si.nPos / maxTop) : 0);
+            return true;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            PaintCount++;
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            using (var b = new SolidBrush(BackColor))
+                g.FillRectangle(b, ClientRectangle);
+
+            SCROLLINFO si;
+            if (!GetVert(out si)) return;
+            int trackTop, trackLen, ty, th;
+            if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
+            // 滑条在覆盖层 (留白带) 内水平居中
+            int bx = Math.Max(0, (Width - 1 - BarW) / 2);
+            using (var path = UiDraw.RoundRect(new RectangleF(bx, ty, BarW, th), BarW / 2f))
+            using (var b = new SolidBrush(barHot || dragThumb ? ThumbHotColor : ThumbColor))
+                g.FillPath(b, path);
+        }
+
+        // ---- 鼠标交互: 覆盖层盖在卡片区之上, 条带内的事件全落在这里 ----
+
+        /// <summary>
+        /// 落滚动位置。试过三条路 (探针 cardshell 模式实测): AutoScrollPosition 赋值
+        /// 在这套布局下完全不生效 (读回恒 0)、外部 WM_VSCROLL 的 SB_THUMBTRACK/
+        /// THUMBPOSITION 被忽略 —— 只有 <c>VerticalScroll.Value</c> 赋值能精确落位,
+        /// 就用它; 滚动事件由 Inner.Scroll 回来刷新滑条。
+        /// </summary>
+        void SetScrollPos(int pos)
+        {
+            var inner = Shell.Inner;
+            if (inner == null || !inner.IsHandleCreated) return;
+            try { inner.VerticalScroll.Value = Math.Max(0, pos); }
+            catch { }
+            Invalidate();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left) return;
+            SCROLLINFO si;
+            if (!GetVert(out si)) return;
+            int trackTop, trackLen, ty, th;
+            if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
+            if (e.Y >= ty && e.Y < ty + th)
+            {
+                dragThumb = true;
+                dragGrabY = e.Y - ty;
+                DragStarts++;
+                Capture = true;
+            }
+            else SetScrollPos(si.nPos + (e.Y < ty ? -trackLen : trackLen));
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (!barHot) { barHot = true; Invalidate(); }
+            if (!dragThumb) return;
+            SCROLLINFO si;
+            if (!GetVert(out si)) return;
+            int trackTop, trackLen, ty, th;
+            if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
+            int maxTop = si.nMax + 1 - si.nPage;
+            if (maxTop <= 0) return;
+            int pos = (int)Math.Round((e.Y - trackTop - dragGrabY) * (double)maxTop / Math.Max(1, trackLen - th));
+            pos = Math.Max(0, Math.Min(maxTop, pos));
+            DragMoves++;
+            SetScrollPos(pos);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (!barHot) return;
+            barHot = false;
+            Invalidate();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (dragThumb) { dragThumb = false; Capture = false; Invalidate(); }
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            var inner = Shell.Inner;
+            if (inner == null || !inner.IsHandleCreated || e.Delta == 0) return;
+            var p = PointToScreen(e.Location);
+            SendMessage(inner.Handle, WM_MOUSEWHEEL,
+                (IntPtr)((e.Delta << 16) & unchecked((int)0xFFFF0000)),
+                (IntPtr)(((p.Y & 0xFFFF) << 16) | (p.X & 0xFFFF)));
+        }
+    }
+
+    /// <summary>
+    /// 输出卡片区滚动壳: 把卡片区 (FlowLayoutPanel) 的原生竖向滚动条改成与日志圆角壳
+    /// (<see cref="RoundLogShell"/>) **同一套**的样子 (用户批85: "输出卡片的滑动条也和日志
+    /// 内容区域的做一样")。两件事:
+    /// <para>① 藏原生条: Inner 窗口比可视区加宽一条滚动条宽 (SM_CXVSCROLL 初估 + ClientSize
+    /// 实测自校正), 窗口区域切在 client 右缘 —— 原生条整条落在可见区域之外, 看不见点不到。</para>
+    /// <para>② 自绘细条: <see cref="CardBarOverlay"/> 盖在卡片区窗口之上 (父窗口被
+    /// WS_CLIPCHILDREN 裁进子矩形, 画不到留白带, 必须用顶层兄弟控件画), 4px 圆头灰条,
+    /// 拖拽 / 点击翻页 / 滚轮全在覆盖层处理。</para>
+    /// <para>壳本身不画边框不画圆角 —— 卡片自带圆角外框。左右内衬对称 (PadX),
+    /// 卡片栅格在可视宽内由宿主动态居中 (Padding.Left)。</para>
+    /// </summary>
+    class CardScrollShell : Panel
+    {
+        static int StripW { get { return Dpi.S(10); } }   // 滑条带/命中区宽 (设计 px)
+        static int PadX { get { return Dpi.S(10); } }     // 左右内衬留白 (设计 px, 对称)
+
+        public readonly BufferedFlowPanel Inner;
+        public readonly CardBarOverlay Bar;
+        int textEnd;                 // 卡片可视区右缘 (壳坐标, 不含): 右侧留白带从此到壳右缘
+
+        public CardScrollShell(BufferedFlowPanel cards)
+        {
+            Inner = cards;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+            Controls.Add(cards);
+            cards.ScrollChanged += (s, e) => RefreshBar();
+            cards.Scroll += (s, e) => RefreshBar();     // AutoScrollPosition 程序赋值不发 WM_VSCROLL
+            // 句柄重建 (AutoScroll 开关等会换新 HWND) 会丢窗口 Region —— 原生条整条漏出来;
+            // 与 RoundLogShell 同一套兜底: 句柄重建后重摆+重裁
+            cards.HandleCreated += OnInnerHandleCreated;
+            Bar = new CardBarOverlay(this);
+            Controls.Add(Bar);
+            Bar.BringToFront();                         // 必须在卡片区窗口之上 (画滑条、接条带鼠标)
+            Size = new Size(559, 166);
+        }
+
+        void OnInnerHandleCreated(object sender, EventArgs e)
+        {
+            if (IsHandleCreated) BeginInvoke((Action)Recalc);   // 等布局稳定后再裁
+        }
+
+        /// <summary>滚动位置/范围变了 → 重画滑条 (宿主在卡片增删/栅格重排后也调它)。</summary>
+        public void RefreshBar()
+        {
+            if (Bar != null && Bar.IsHandleCreated) Bar.RefreshBar();
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            BeginInvoke((Action)Recalc);
+        }
+
+        protected override void OnResize(System.EventArgs eventargs)
+        {
+            base.OnResize(eventargs);
+            Recalc();
+        }
+
+        void Recalc()
+        {
+            if (Inner == null || IsDisposed) return;
+            int ih = Math.Max(1, Height);
+            int textW = Math.Max(StripW + 40, Width - 2 * PadX);
+            if (Inner.IsHandleCreated)
+            {
+                // Inner 窗口宽 = 可视宽 + 原生滚动条宽 (client 实测自校正一次) —— client ==
+                // textW 时卡片铺满到可视区右缘, 原生条落在 client 之外的非客户区
+                int w = textW + Math.Max(1, GetSystemMetrics(2));
+                Inner.SetBounds(PadX, 0, w, ih);
+                int cw = Inner.ClientSize.Width;
+                if (cw != textW)
+                {
+                    w = Math.Max(1, w + textW - cw);
+                    Inner.SetBounds(PadX, 0, w, ih);
+                }
+            }
+            // 窗口区域切在 client 右缘 (原生条在 client 之外, 整条被排除; 兜底不超过 textW)
+            int cut = Math.Max(1, Math.Min(Inner.IsHandleCreated ? Inner.ClientSize.Width : textW, textW));
+            textEnd = PadX + cut;
+            Region old = Inner.Region;
+            Inner.Region = new Region(new Rectangle(0, 0, cut, ih));
+            if (old != null) old.Dispose();
+            // 覆盖层恰好盖住留白带 (卡片可视区右缘 .. 壳右缘): 画滑条、接条带鼠标事件
+            int barW = Math.Max(1, Width - textEnd);
+            if (Bar.Left != textEnd || Bar.Width != barW || Bar.Height != ih)
+                Bar.SetBounds(textEnd, 0, barW, ih);
+        }
+
+        /// <summary>
+        /// 卡片可视宽度 (像素): 宿主用它替代 cardHost.ClientSize.Width 算栅格 ——
+        /// 后者会随原生滚动条显隐跳动 (差一条滚动条宽), 这里永远是裁剪后的稳定值。
+        /// </summary>
+        public int ContentWidth
+        {
+            get { return Math.Max(1, Math.Min(Width - 2 * PadX, textEnd - PadX)); }
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern int GetSystemMetrics(int nIndex);
+    }
     // 不接受焦点的 SplitContainer: 点击/拖动分隔条不产生焦点虚线框
     class NoFocusSplitContainer : SplitContainer
     {
