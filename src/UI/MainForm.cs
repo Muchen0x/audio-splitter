@@ -949,7 +949,7 @@ namespace StereoSplitter
                 g.FillRectangle(light, splitContainer.Right, y - pad, grip, h + pad * 2); // 右让边浅底
             }
 
-            // 深带路径 (整条, 窗体客户区坐标), 只让左右让边可见:
+            // 缝线路径 (整条, 窗体客户区坐标), 只让左右让边可见:
             // 裁剪矩形在 x=grip / rx 处是硬切 (不走 AA), 容器在自己的 x=0 处接着画同一条
             // 曲线 —— 两侧同色相接, 接缝落在像素边界上不会露缝
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
@@ -961,8 +961,8 @@ namespace StereoSplitter
                 g.Clip = clip;
                 using (var path = NoFocusSplitContainer.BuildSeamPath(
                     0f, ClientSize.Width, y + linePad, y + h - linePad, r))
-                using (var dark = new SolidBrush(NoFocusSplitContainer.SeamDark))
-                    g.FillPath(dark, path);
+                using (var line = new SolidBrush(NoFocusSplitContainer.SeamLine))
+                    g.FillPath(line, path);
                 g.Clip = oldClip;
                 oldClip.Dispose();
             }

@@ -2409,7 +2409,12 @@ namespace StereoSplitter
                                 for (int y = yFrom; y <= yTo; y++)
                                 {
                                     var p = bmp.GetPixel(x, y);
-                                    if (p.R < 70 && p.G < 70 && p.B < 70) ys.Add(y);
+                                    // 批95: 缝线色改为窗口边框色 (203,208,216), 不再是深色 ——
+                                    // 判定换成缝线色 ±16: 弧缘 AA 渐变行要稳定入窗 (±12 会把
+                                    // 渐变行时而算入时而排除, 出 ±1 假抖动); 背景 240 距缝色
+                                    // 37, 不会误入
+                                    if (Math.Abs(p.R - 203) <= 16 && Math.Abs(p.G - 208) <= 16
+                                        && Math.Abs(p.B - 216) <= 16) ys.Add(y);
                                 }
                                 return ys.ToArray();
                             };
@@ -2434,8 +2439,9 @@ namespace StereoSplitter
                     mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
                     Application.DoEvents();
                     Console.Out.WriteLine(jtag + "-RANGE dTop=" + jmin + ".." + jmax + " dBot=" + jminBot + ".." + jmaxBot
-                        + " (期望各自恒定单一值; 出现多值/-99 = 圆角与滑带不同步)");
-                    if (jmin != jmax || jminBot != jmaxBot || jmin == -99)
+                        + " (期望恒定; 批95 缝线换浅色后弧缘 AA 渐变行随亚像素位置翻转, ±1 = 检测噪声放行;\n"
+                        + "  超过 ±1 或 -99 才算圆角与滑带不同步)");
+                    if (jmax - jmin > 1 || jmaxBot - jminBot > 1 || jmin == -99)
                     {
                         using (var bmp = new Bitmap(mf.Width, mf.Height))
                         {
@@ -2761,6 +2767,80 @@ namespace StereoSplitter
                     + " cardW=" + cardWn + " hscroll=" + hbar
                     + " (期望 False = 挤压带不出横条且卡宽贴可视宽) verdict="
                     + (!hbar && cardWn == contentNarrow ? "OK" : "FAIL"));
+                mf.ClientSize = new Size(625, 625);
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+
+                // HBAR2 (批95): 再窄过 HardMinW —— 内容真放不下 → 横向滚动必要, 原生横条
+                // 仍被窗口区域裁掉, 底部留白带应出现**自绘**横条 (与竖条同款 4px 圆头灰),
+                // 且真实拖拽能落位
+                mf.ClientSize = new Size(340, 625);
+                for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                var innerCards = Field(shell, "Inner") as ScrollableControl;
+                var hbarCtl = Field(shell, "HBar") as Control;
+                int contentSq = (int)typeof(StereoSplitter.CardScrollShell).InvokeMember("ContentWidth",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.GetProperty, null, shell, null);
+                int cardWs = host.Controls.Count > 0 ? host.Controls[0].Width : -1;
+                bool hVis = innerCards != null && innerCards.HorizontalScroll.Visible;
+                int hThumbPx = 0, hDarkPx = 0, hTx0 = -1, hTx1 = -1;
+                Point hbO = hbarCtl.PointToScreen(Point.Empty);
+                int hbL = hbO.X - mf.Left, hbT = hbO.Y - mf.Top;
+                using (var bmp = new Bitmap(mf.Width, mf.Height))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                        g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
+                    for (int x = hbL; x < hbL + hbarCtl.Width && x < bmp.Width; x++)
+                        for (int y = hbT; y < hbT + hbarCtl.Height && y < bmp.Height; y++)
+                        {
+                            var p = bmp.GetPixel(x, y);
+                            bool th = (p.R == 198 && p.G == 203 && p.B == 211) || (p.R == 172 && p.G == 178 && p.B == 188);
+                            if (th)
+                            {
+                                hThumbPx++;
+                                if (hTx0 < 0) hTx0 = x;
+                                hTx1 = x;
+                            }
+                            // 原生横条深色箭头/滑块 (<70) 不该出现在底部条带
+                            if (p.R < 70 && p.G < 70 && p.B < 70) hDarkPx++;
+                        }
+                }
+                Console.Out.WriteLine("CARDSHELL-HBAR2 winW=340 contentW=" + contentSq + " cardW=" + cardWs
+                    + " hscroll=" + hVis + " hThumbPx=" + hThumbPx + " (期望>20) hDarkPx=" + hDarkPx
+                    + " (期望0 = 原生横条仍被裁掉) verdict="
+                    + (hVis && hThumbPx > 20 && hDarkPx == 0 ? "OK" : "FAIL"));
+                using (var bmp2 = new Bitmap(mf.Width, mf.Height))
+                {
+                    using (var g = Graphics.FromImage(bmp2))
+                        g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
+                    bmp2.Save("cardshell-hbar2.png", System.Drawing.Imaging.ImageFormat.Png);
+                    Console.Out.WriteLine("HBAR2-SHOT -> cardshell-hbar2.png");
+                }
+                // 拖拽横条: 条带中线找滑块列 → 真实鼠标右拖
+                int hDrag0 = innerCards != null && innerCards.HorizontalScroll.Visible
+                    ? innerCards.HorizontalScroll.Value : -1;
+                int hDrag1 = -1, hStarts = 0, hMoves = 0;
+                if (hThumbPx > 20)
+                {
+                    int grabY = hbT + hbarCtl.Height / 2;
+                    Point grabH = new Point(mf.Left + (hTx0 + hTx1) / 2, mf.Top + grabY);
+                    SetCursorPos(grabH.X, grabH.Y);
+                    for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    mouse_event(0x0002, 0, 0, 0, IntPtr.Zero);
+                    for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    for (int i = 1; i <= 6; i++)
+                    {
+                        SetCursorPos(grabH.X + i * 15, grabH.Y);
+                        Application.DoEvents(); System.Threading.Thread.Sleep(30);
+                        Application.DoEvents();
+                    }
+                    mouse_event(0x0004, 0, 0, 0, IntPtr.Zero);
+                    for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                    hDrag1 = innerCards.HorizontalScroll.Value;
+                    hStarts = (int)Field(hbarCtl, "DragStarts");
+                    hMoves = (int)Field(hbarCtl, "DragMoves");
+                }
+                Console.Out.WriteLine("CARDSHELL-DRAG-H before=" + hDrag0 + " after=" + hDrag1
+                    + " (期望 after>before=0) starts=" + hStarts + " moves=" + hMoves
+                    + " verdict=" + (hDrag1 > hDrag0 && hStarts >= 1 ? "OK" : "FAIL"));
                 mf.ClientSize = new Size(625, 625);
                 for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
 

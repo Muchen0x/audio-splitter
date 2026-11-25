@@ -145,8 +145,9 @@ namespace StereoSplitter
         protected override void WndProc(ref Message m)
         {
             base.WndProc(ref m);
-            // WM_VSCROLL (拖原生条/转发) / WM_MOUSEWHEEL (滚轮) —— 两条路径都会变滚动位置
-            if (m.Msg == 0x115 || m.Msg == 0x20A)
+            // WM_VSCROLL (拖原生条/转发) / WM_HSCROLL (横向) / WM_MOUSEWHEEL (滚轮)
+            // —— 三条路径都会变滚动位置 (批95: 横向滑条也要跟着刷新)
+            if (m.Msg == 0x115 || m.Msg == 0x114 || m.Msg == 0x20A)
             {
                 var h = ScrollChanged;
                 if (h != null) h(this, EventArgs.Empty);
@@ -1674,6 +1675,175 @@ namespace StereoSplitter
     }
 
     /// <summary>
+    /// 输出卡片区**横向**滑条 (批95): 窗口窄到卡片只剩最小宽还在挤 (窄过
+    /// CardGrid.HardMinW, 内容确实放不下) 时 Inner 冒出横向滚动, 原生横条被
+    /// Inner 的窗口区域裁掉看不见 —— 这里在壳的**底部留白带**画一条与竖向
+    /// (<see cref="CardBarOverlay"/>) 完全同款的 4px 圆头灰条: 同一支色、同一粗细、
+    /// 同一套拖拽/翻页/滚轮交互, 底缘贴壳底缘 (竖条贴右缘的镜像)。
+    /// <para>内容放得下时一条都不画 (GetH 先查 HorizontalScroll.Visible, 批87
+    /// 同款守卫 —— GetScrollInfo 的 nMax/nPage 旧缓存不可信)。</para>
+    /// </summary>
+    class CardHBarOverlay : Control
+    {
+        static readonly Color ThumbColor = Color.FromArgb(198, 203, 211);      // 与竖条同一支灰
+        static readonly Color ThumbHotColor = Color.FromArgb(172, 178, 188);   // 悬停/拖拽加深一档
+        static int BarW { get { return Dpi.S(4); } }
+
+        public readonly CardScrollShell Shell;
+        bool barHot;
+        bool dragThumb;
+        int dragGrabX;
+        /// <summary>诊断 (探针读): OnPaint 次数 / 按下滑块次数 / 拖拽落位次数。</summary>
+        internal int PaintCount, DragStarts, DragMoves;
+        internal bool DbgGot;
+
+        const int SB_HORZ = 0;
+        const int WM_MOUSEHWHEEL = 0x20E;
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct SCROLLINFO
+        {
+            public int cbSize, fMask, nMin, nMax, nPage, nPos, nTrackPos;
+        }
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool GetScrollInfo(IntPtr hWnd, int nBar, ref SCROLLINFO si);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        public CardHBarOverlay(CardScrollShell shell)
+        {
+            Shell = shell;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.ResizeRedraw, true);
+            TabStop = false;
+        }
+
+        public void RefreshBar()
+        {
+            Invalidate();
+        }
+
+        /// <summary>当前横向滚动信息 (nMax/nPage/nPos, 像素单位); 没有滚动需求返回 false。</summary>
+        bool GetH(out SCROLLINFO si)
+        {
+            si = new SCROLLINFO();
+            var inner = Shell.Inner;
+            if (inner == null || !inner.IsHandleCreated) return false;
+            if (!inner.HorizontalScroll.Visible) return false;   // 放得下不画 (批87 同款)
+            si.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(SCROLLINFO));
+            si.fMask = 0x1 | 0x2 | 0x4;    // SIF_RANGE | SIF_PAGE | SIF_POS
+            bool got = GetScrollInfo(inner.Handle, SB_HORZ, ref si);
+            DbgGot = got;
+            return got && si.nMax > 0;
+        }
+
+        /// <summary>滑块几何: tx..tx+tw 为滑块中心线行程, gx..gx+gw 为滑块矩形 (横条)。</summary>
+        bool ThumbGeometryH(SCROLLINFO si, out int trackLeft, out int trackLen, out int gx, out int gw)
+        {
+            gx = gw = 0;
+            trackLeft = Dpi.S(6);
+            trackLen = Width - 1 - trackLeft * 2;
+            bool ok = si.nPage < si.nMax + 1 && trackLen >= BarW * 4;
+            if (!ok) return false;
+            gw = Math.Max(Dpi.S(18), (int)((long)trackLen * si.nPage / (si.nMax + 1)));
+            if (gw > trackLen) gw = trackLen;
+            int maxLeft = si.nMax + 1 - si.nPage;
+            gx = trackLeft + (maxLeft > 0 ? (int)((long)(trackLen - gw) * si.nPos / maxLeft) : 0);
+            return true;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            PaintCount++;
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            using (var b = new SolidBrush(BackColor))
+                g.FillRectangle(b, ClientRectangle);
+
+            SCROLLINFO si;
+            if (!GetH(out si)) return;
+            int trackLeft, trackLen, gx, gw;
+            if (!ThumbGeometryH(si, out trackLeft, out trackLen, out gx, out gw)) return;
+            // 滑条贴合壳底缘 (竖条贴右缘的镜像): 底缘离壳底 1 物理像素
+            int by = Math.Max(0, Height - BarW - 1);
+            using (var path = UiDraw.RoundRect(new RectangleF(gx, by, gw, BarW), BarW / 2f))
+            using (var b = new SolidBrush(barHot || dragThumb ? ThumbHotColor : ThumbColor))
+                g.FillPath(b, path);
+        }
+
+        void SetScrollPos(int pos)
+        {
+            var inner = Shell.Inner;
+            if (inner == null || !inner.IsHandleCreated) return;
+            try { inner.HorizontalScroll.Value = Math.Max(0, pos); }   // 竖条同款: 只有 Value 赋值能精确落位
+            catch { }
+            Invalidate();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left) return;
+            SCROLLINFO si;
+            if (!GetH(out si)) return;
+            int trackLeft, trackLen, gx, gw;
+            if (!ThumbGeometryH(si, out trackLeft, out trackLen, out gx, out gw)) return;
+            if (e.X >= gx && e.X < gx + gw)
+            {
+                dragThumb = true;
+                dragGrabX = e.X - gx;
+                DragStarts++;
+                Capture = true;
+            }
+            else SetScrollPos(si.nPos + (e.X < gx ? -trackLen : trackLen));
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (!barHot) { barHot = true; Invalidate(); }
+            if (!dragThumb) return;
+            SCROLLINFO si;
+            if (!GetH(out si)) return;
+            int trackLeft, trackLen, gx, gw;
+            if (!ThumbGeometryH(si, out trackLeft, out trackLen, out gx, out gw)) return;
+            int maxLeft = si.nMax + 1 - si.nPage;
+            if (maxLeft <= 0) return;
+            int pos = (int)Math.Round((e.X - trackLeft - dragGrabX) * (double)maxLeft / Math.Max(1, trackLen - gw));
+            pos = Math.Max(0, Math.Min(maxLeft, pos));
+            DragMoves++;
+            SetScrollPos(pos);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (!barHot) return;
+            barHot = false;
+            Invalidate();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (dragThumb) { dragThumb = false; Capture = false; Invalidate(); }
+        }
+
+        /// <summary>倾斜滚轮 / 触摸板横滑 → 转给 Inner 的横向滚动 (竖条转发 WM_MOUSEWHEEL 的镜像)。</summary>
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            var inner = Shell.Inner;
+            if (inner == null || !inner.IsHandleCreated || e.Delta == 0) return;
+            var p = PointToScreen(e.Location);
+            SendMessage(inner.Handle, WM_MOUSEHWHEEL,
+                (IntPtr)((e.Delta << 16) & unchecked((int)0xFFFF0000)),
+                (IntPtr)(((p.Y & 0xFFFF) << 16) | (p.X & 0xFFFF)));
+        }
+    }
+
+    /// <summary>
     /// 输出卡片区滚动壳: 把卡片区 (FlowLayoutPanel) 的原生竖向滚动条改成与日志圆角壳
     /// (<see cref="RoundLogShell"/>) **同一套**的样子 (用户批85: "输出卡片的滑动条也和日志
     /// 内容区域的做一样")。两件事:
@@ -1683,7 +1853,9 @@ namespace StereoSplitter
     /// WS_CLIPCHILDREN 裁进子矩形, 画不到留白带, 必须用顶层兄弟控件画), 4px 圆头灰条,
     /// 拖拽 / 点击翻页 / 滚轮全在覆盖层处理。</para>
     /// <para>留白 (批89/91): 左右下各 PadX, 上 PadX/2 (用户要求上留白缩一半), 滑条算在
-    /// 右侧留白里 (不占内容宽), 滑条右缘贴壳右缘。不加边框 (批90: 用户看过圆角框后要求撤掉)。</para>
+    /// 右侧留白里 (不占内容宽), 滑条右缘贴壳右缘。不加边框 (批90: 用户看过圆角框后要求撤掉)。
+    /// 批95: 挤压出横滚 (窄过 CardGrid.HardMinW) 时, 底部留白带画与竖条同款的横向滑条
+    /// (<see cref="CardHBarOverlay"/>), 原生横条同样被窗口区域裁掉。</para>
     /// </summary>
     class CardScrollShell : Panel
     {
@@ -1693,6 +1865,7 @@ namespace StereoSplitter
 
         public readonly BufferedFlowPanel Inner;
         public readonly CardBarOverlay Bar;
+        public readonly CardHBarOverlay HBar;   // 横向滑条 (批95): 挤压出横滚时画在底部留白带
         int textEnd;                 // 卡片可视区右缘 (壳坐标, 不含): 右侧留白带从此到框线
 
         public CardScrollShell(BufferedFlowPanel cards)
@@ -1709,6 +1882,9 @@ namespace StereoSplitter
             Bar = new CardBarOverlay(this);
             Controls.Add(Bar);
             Bar.BringToFront();                         // 必须在卡片区窗口之上 (画滑条、接条带鼠标)
+            HBar = new CardHBarOverlay(this);
+            Controls.Add(HBar);
+            HBar.BringToFront();
             Size = new Size(559, 166);
         }
 
@@ -1721,6 +1897,7 @@ namespace StereoSplitter
         public void RefreshBar()
         {
             if (Bar != null && Bar.IsHandleCreated) Bar.RefreshBar();
+            if (HBar != null && HBar.IsHandleCreated) HBar.RefreshBar();
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -1745,27 +1922,46 @@ namespace StereoSplitter
             int textW = Math.Max(StripW + 40, Width - 2 * PadX);
             if (Inner.IsHandleCreated)
             {
-                // Inner 窗口宽 = 可视宽 + 原生滚动条宽 (client 实测自校正一次) —— client ==
-                // textW 时卡片铺满到可视区右缘, 原生条落在 client 之外的非客户区
-                int w = textW + Math.Max(1, GetSystemMetrics(2));
-                Inner.SetBounds(PadX, padTop, w, ih);
+                // Inner 窗口宽 = 可视宽 + 原生竖条宽, 高 = 可视高 + 原生横条宽 (批95,
+                // 竖条同款数学: 挤压出横滚时 Inner 窗口加高一条横条高, client 实测
+                // 自校正) —— client == 可视区时内容铺满可视区, 原生条 (竖右横下) 都
+                // 落在 client 之外的非客户区, 由下面的窗口区域整体裁掉
+                int cyH = Inner.HorizontalScroll.Visible ? Math.Max(1, GetSystemMetrics(3)) : 0;   // SM_CYHSCROLL
+                int w = textW + Math.Max(1, GetSystemMetrics(2));                                   // SM_CXVSCROLL
+                int h = ih + cyH;
+                Inner.SetBounds(PadX, padTop, w, h);
                 int cw = Inner.ClientSize.Width;
                 if (cw != textW)
                 {
                     w = Math.Max(1, w + textW - cw);
-                    Inner.SetBounds(PadX, padTop, w, ih);
+                    Inner.SetBounds(PadX, padTop, w, h);
+                }
+                int ch = Inner.ClientSize.Height;
+                if (ch != ih)
+                {
+                    // 横条显隐与预估差一档 (SetBounds 前读到的是上一状态): client 高 !=
+                    // 可视高 → 按差值再修一次, 目标是 client 高恰好 = ih (批85 同款)
+                    h = Math.Max(1, h + ih - ch);
+                    Inner.SetBounds(PadX, padTop, w, h);
                 }
             }
-            // 窗口区域切在 client 右缘 (原生条在 client 之外, 整条被排除; 兜底不超过 textW)
+            // 窗口区域: 宽切在 client 右缘, 高切在 client 底缘 (min clientH/可视高) ——
+            // 竖条在 client 右侧、横条在 client 底部, 整条都在区域之外, 看不见点不到
             int cut = Math.Max(1, Math.Min(Inner.IsHandleCreated ? Inner.ClientSize.Width : textW, textW));
+            int cutH = Math.Max(1, Math.Min(Inner.IsHandleCreated ? Inner.ClientSize.Height : ih, ih));
             textEnd = PadX + cut;
             Region old = Inner.Region;
-            Inner.Region = new Region(new Rectangle(0, 0, cut, ih));
+            Inner.Region = new Region(new Rectangle(0, 0, cut, cutH));
             if (old != null) old.Dispose();
-            // 覆盖层恰好盖住右侧留白带 (卡片可视区右缘 .. 壳右缘): 画滑条、接条带鼠标事件
+            // 竖条覆盖层恰好盖住右侧留白带 (卡片可视区右缘 .. 壳右缘): 画滑条、接条带鼠标事件
             int barW = Math.Max(1, Width - textEnd);
             if (Bar.Left != textEnd || Bar.Top != padTop || Bar.Width != barW || Bar.Height != ih)
                 Bar.SetBounds(textEnd, padTop, barW, ih);
+            // 横条覆盖层 (批95) 盖住底部留白带 (padTop+ih .. 壳底), 宽 = 卡片可视宽:
+            // 有横滚需求时画 4px 圆头灰条 (与竖条同款), 没有就只铺底色 (隐形)
+            int hbarH = Math.Max(1, Height - padTop - ih);
+            if (HBar.Left != PadX || HBar.Top != padTop + ih || HBar.Width != textEnd - PadX || HBar.Height != hbarH)
+                HBar.SetBounds(PadX, padTop + ih, Math.Max(1, textEnd - PadX), hbarH);
         }
 
         /// <summary>
@@ -2004,11 +2200,14 @@ namespace StereoSplitter
         /// 矩形被这条缝分成上下两块。路径由 <see cref="BuildSeamPath"/> 统一描述:
         /// 容器画自己界内的一段 (局部坐标, 窗口边缘在 x=-Left / Parent宽-Left),
         /// 左右让边 (ResizeBorder) 里的两段由 MainForm.PaintSplitterBleed 用**同一条**
-        /// 路径补齐 —— 两边同一套数学, 接缝才对得上。深带色 <see cref="SeamDark"/>。</para>
+        /// 路径补齐 —— 两边同一套数学, 接缝才对得上。线色 <see cref="SeamLine"/>。</para>
         /// <para>日志面板整体收起 (Panel2Collapsed) 时不画 (OnPaint 显式守卫 ——
         /// SplitterRectangle 在收起态并不为空, 不能靠它自然跳过)。</para>
         /// </summary>
-        internal static readonly Color SeamDark = Color.FromArgb(25, 25, 25);
+        /// <summary>缝线色 (批95): 与窗口边框同一支 —— DWMWA_BORDER_COLOR 用的就是
+        /// <see cref="OutputCardControl.BorderColor"/> (203,208,216), 分隔条不再是
+        /// 黑线, 整窗只有一套线条色 (原来 25,25,25 的黑线是批93 之前"深色滑带"的遗产)。</summary>
+        internal static readonly Color SeamLine = OutputCardControl.BorderColor;
 
         /// <summary>
         /// 喇叭口的圆角半径 (物理像素): 跟随窗口的 Win11 系统圆角 —— 固定 8 物理像素、
@@ -2052,7 +2251,7 @@ namespace StereoSplitter
             // 这里强制按控件整面重画 —— GDI 会把子控件 (上下两块面板) 裁出去,
             // 不会画到它们身上; 滑带区只有 20 来行像素, 全画的开销可忽略。
             e.Graphics.SetClip(ClientRectangle);
-            // 深色滑带: 整条路径用窗体客户区坐标描述、平移成本控件局部坐标 ——
+            // 缝线: 整条路径用窗体客户区坐标描述、平移成本控件局部坐标 ——
             // 界内画得到的部分 (中段直边 + 喇叭口靠内一截) 在这里出来;
             // 落在左右让边里的部分 (x&lt;0 / x&gt;Width) 被控件边界裁掉, 由
             // MainForm.PaintSplitterBleed 补。同一条路径两处各画一段, 弧线无缝相接。
@@ -2066,10 +2265,11 @@ namespace StereoSplitter
                     sr.Height + 2 * (int)SeamRadiusPx + 4);
             using (var path = BuildSeamPath(xl, xr,
                 sr.Top + (sr.Height - 2) / 2, sr.Bottom - (sr.Height - 2) / 2, SeamRadiusPx))
-            using (var b = new SolidBrush(SeamDark))
+            using (var b = new SolidBrush(SeamLine))
                 e.Graphics.FillPath(b, path);
-            // 缝带缩成一条细线 (批93): 视觉深色只有中间 2 物理px, 上下留浅色与面板
-            // 连成一体 ("缩成一条线, 只保留圆角和中间把手条"); 端部仍沿窗口边缘外扩
+            // 缝带缩成一条细线 (批93): 视觉线只有中间 2 物理px, 上下留浅色与面板
+            // 连成一体 ("缩成一条线, 只保留圆角和中间把手条"); 批95 线色改为与窗口
+            // 边框同一支 (OutputCardControl.BorderColor); 端部仍沿窗口边缘外扩
             // 成喇叭口弧。中央把手圆头条改为**覆盖层控件** (SeamThumbOverlay) 画 ——
             // 条比线"突出一点" (上下各凸 2 物理px), 凸出部分落在上下面板的子窗口
             // 区域, 容器绘制被 WS_CLIPCHILDREN 裁掉画不到 (批85 CardBarOverlay 同款
@@ -2083,7 +2283,7 @@ namespace StereoSplitter
     /// <para>批94 (用户: "不够圆滑"): 原来 Region 裁成胶囊 + 填充同一路径 —— Region
     /// 是**硬裁** (逐像素), 把填充路径的 抗锯齿边缘像素裁掉, 端部呈锯齿方角。
     /// 改为覆盖层矩形 = **整条缝带段** (高 = 缝带宽), 自己复刻底下的像素
-    /// (缝带底色 + 深色细线段, 与容器 OnPaint 同一套公式逐像素对齐), 再用抗锯齿
+    /// (缝带底色 + 细线段, 与容器 OnPaint 同一套公式逐像素对齐), 再用抗锯齿
     /// 胶囊画把手条 —— 所有 AA 都落进自己的缓冲区, 不再需要 Region; 条外的鼠标
     /// 命中仍靠 <see cref="WndProc"/> 回 HTTRANSPARENT 穿透到下层缝带 (条上照样
     /// 能按住拖分隔条)。</para>
@@ -2113,11 +2313,12 @@ namespace StereoSplitter
             //    窗体 BackColor), 逐像素同色, 与条两侧的容器绘制无缝相接
             using (var b = new SolidBrush(Parent != null ? Parent.BackColor : BackColor))
                 g.FillRectangle(b, 0, 0, Width, Height);
-            // 2) 深色细线段: 与容器同一公式 (y1=(H-2)/2, y2=H-(H-2)/2), 容器在条两侧
+            // 2) 细线段: 与容器同一公式 (y1=(H-2)/2, y2=H-(H-2)/2), 容器在条两侧
             //    画的是同一条线, 这里接上中间被条盖住的一段 (平头矩形, 与容器的
-            //    直线段完全同行 —— 容器画线边缘恰在整像素, 无 AA)
+            //    直线段完全同行 —— 容器画线边缘恰在整像素, 无 AA); 批95 线色 =
+            //    窗口边框色 (SeamLine)
             int ly1 = (Height - 2) / 2, ly2 = Height - (Height - 2) / 2;
-            using (var b = new SolidBrush(NoFocusSplitContainer.SeamDark))
+            using (var b = new SolidBrush(NoFocusSplitContainer.SeamLine))
                 g.FillRectangle(b, 0, ly1, Width, ly2 - ly1);
             // 3) 抗锯齿圆头胶囊: 高 = 缝带宽 - 2 (比线上下各凸出 2 物理px), 左右让
             //    AaMargin 给 AA 渐变 —— 端部圆滑 (批94)
