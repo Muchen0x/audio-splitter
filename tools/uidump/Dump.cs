@@ -2401,7 +2401,7 @@ namespace StereoSplitter
                         {
                             using (var g = Graphics.FromImage(bmp))
                                 g.CopyFromScreen(mf.Location, Point.Empty, mf.Size);
-                            int xc = scc.PointToScreen(new Point(scc.Width / 2, 0)).X - mf.Left;
+                            int xc = scc.PointToScreen(new Point(Math.Max(10, (int)(scc.Width * 0.15f)), 0)).X - mf.Left;
                             int yc = scc.Top + scc.SplitterDistance;   // 滑带上缘 (帧坐标)
                             Func<int, int, int, int[]> darkRows = (x, yFrom, yTo) =>
                             {

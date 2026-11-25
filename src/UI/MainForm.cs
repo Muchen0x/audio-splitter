@@ -86,6 +86,7 @@ namespace StereoSplitter
             new System.Collections.Generic.List<IMessageFilter>();
         GearButton btnSettings;            // 标题栏里的齿轮 (在最小化左边)
         GearButton btnLog;                 // 标题栏里的日志面板开关 (在更多按钮左边, 双状态图标)
+        SeamThumbOverlay seamThumb;        // 分隔条中央把手条覆盖层 (批93: 突出于细缝线, 宽 15% 缝带)
         /// <summary>日志面板上次"非收起"的分隔距离 (拖到最下自动收起前记录, 恢复时用)。0 = 没记过。</summary>
         int lastLogDist;
         /// <summary>最近一次"像样" (>=40 设计像素) 的日志面板高度 (物理 px, OnSplitterMoved 记录)。</summary>
@@ -350,9 +351,10 @@ namespace StereoSplitter
             // Panel1MinSize=Panel2MinSize=0: **两个面板都不设下限**, 分隔条可以任意拖 ——
             // 日志区能一路拉到顶(只看内容)，也能一路压到底(只看日志, 拉到最底自动整体收起)。
             // 窗口整体变矮的情况由 KeepContentOnShrink() 兜底, 不会把内容区缩没。
-            // 缝隙宽 6 (设计px): 用户反馈"还是太粗"再收一档 (10→6)。深色滑带通到窗口
-            // 两缘、端部在窗口边收圆角 (NoFocusSplitContainer.OnPaint + PaintSplitterBleed),
-            // 缝隙区露出的角是浅色 —— 与上下面板连成一个完整的圆角矩形。
+            // 缝隙宽 6 (设计px): 布局与命中区保持整条 (拖动好抓、收起公式稳定);
+            // 批93 起**视觉**只画中间一条 2 物理px 的深色细线 (用户"缩成一条线, 只保留
+            // 圆角和中间把手条"), 缝带上下留浅色与面板连成一体。深色滑带通到窗口
+            // 两缘、端部在窗口边收圆角 (NoFocusSplitContainer.OnPaint + PaintSplitterBleed)。
             splitContainer = new NoFocusSplitContainer
             {
                 Dock = DockStyle.Fill,
@@ -386,6 +388,16 @@ namespace StereoSplitter
             ((NoFocusSplitContainer)splitContainer).DragFeedbackEnd +=
                 (s, e) => { InvalidateSeamZone(); InvalidateSplitterBleed(); };
             Controls.Add(splitContainer);
+
+            // 把手条覆盖层 (批93): 缝带视觉缩成 2 物理px 细线后, 突出的中央把手条由
+            // 这个顶层控件画 (WS_CLIPCHILDREN 裁掉容器/窗体对面板区的绘制, 见类注释);
+            // HTTRANSPARENT 穿透命中 —— 条上按住照样拖分隔条。跟随 SplitterMoved/缩放。
+            seamThumb = new SeamThumbOverlay();
+            seamThumb.Visible = false;
+            Controls.Add(seamThumb);
+            seamThumb.BringToFront();
+            splitContainer.SizeChanged += (s2, e2) => UpdateSeamThumb();
+            splitContainer.SplitterMoved += (s2, e2) => UpdateSeamThumb();
 
             // 捕获行: 原来行首有「捕获:」标签, 已删 (用户要求) —— 这一行只有"选哪台设备被抓取"
             // 一件事, 下拉里的设备名自己说明是什么, 再挂一个标签是重复标注。
@@ -885,7 +897,9 @@ namespace StereoSplitter
         const int ResizeBorderDesign = 6;
         /// <summary>分隔条滑带宽度 (设计px)。OnLoad 里 ScaleForm 之后会重新钉一次 ——
         /// SplitterWidth 是属性, 会被 Form.Scale 二次放大 (见 OnLoad 注释)。</summary>
-        const int SplitterWidthDesign = 6;
+        const int SplitterWidthDesign = 6;   // 布局/命中/收起公式用的缝带宽 (8 物理px) ——
+                                             // 批93 起**视觉**只画中间一条细线 (见 OnPaint),
+                                             // 缝带上下留浅色; 命中区仍整条 8px, 拖动好抓
 
         /// <summary>
         /// 把窗口最外一圈让给窗体自己: 拖边缘缩放、Aero Snap、缩放光标全靠它。
@@ -926,6 +940,8 @@ namespace StereoSplitter
             int h = splitContainer.SplitterWidth;
             float r = NoFocusSplitContainer.SeamRadiusPx;
             int pad = (int)r + 2;               // 喇叭口在带子上/下各外扩 r, 浅底多留 2px 余量
+            // 批93: 视觉细线 = 缝带中间 2 物理px (与 NoFocusSplitContainer.OnPaint 同参)
+            int linePad = (h - 2) / 2;
 
             using (var light = new SolidBrush(SystemColors.Control))
             {
@@ -943,7 +959,8 @@ namespace StereoSplitter
                 clip.Union(new Rectangle(splitContainer.Right, y - pad, grip, h + pad * 2));
                 System.Drawing.Region oldClip = g.Clip;   // 保存绘制区裁剪, 用完还原
                 g.Clip = clip;
-                using (var path = NoFocusSplitContainer.BuildSeamPath(0f, ClientSize.Width, y, y + h, r))
+                using (var path = NoFocusSplitContainer.BuildSeamPath(
+                    0f, ClientSize.Width, y + linePad, y + h - linePad, r))
                 using (var dark = new SolidBrush(NoFocusSplitContainer.SeamDark))
                     g.FillPath(dark, path);
                 g.Clip = oldClip;
@@ -1061,8 +1078,31 @@ namespace StereoSplitter
             // PaintSplitterBleed 重画弧 (用户报告的两个 bug 同根)。
             InvalidateSplitterBleed();
             InvalidateSeamZone();
+            UpdateSeamThumb();                      // 批93: 收起藏把手条, 展开摆回缝带中心
             btnLog.Glyph = show ? ButtonGlyph.LogOff : ButtonGlyph.LogOn;
             if (tipTop != null) tipTop.SetToolTip(btnLog, LogTip());
+        }
+
+        /// <summary>
+        /// 摆分隔条中央把手条覆盖层 (批93): 缝带中心线上、水平居中、宽 15% 缝带可视宽、
+        /// 高 = 视觉线 2 物理px + 上下各凸出 2 = 6。日志面板收起时整条隐藏。
+        /// SplitterMoved / 缩放 / 日志开合都会走到这里。
+        /// </summary>
+        void UpdateSeamThumb()
+        {
+            if (seamThumb == null || splitContainer == null) return;
+            bool show = !splitContainer.Panel2Collapsed && splitContainer.Panel1.Height > 0
+                && splitContainer.Width > 0 && splitContainer.Height > 0;
+            seamThumb.Visible = show;
+            if (!show) return;
+            int sw = splitContainer.SplitterWidth;
+            int cy = splitContainer.Top + splitContainer.Panel1.Bottom + sw / 2;
+            int bw = Math.Max(20, splitContainer.Width * 15 / 100);
+            const int bh = 6;                       // 线 2 + 上下各凸 2 (物理px, 不随 DPI —— 细线视觉)
+            int x = splitContainer.Left + (splitContainer.Width - bw) / 2;
+            int y = splitContainer.Top + splitContainer.Panel1.Bottom + (sw - bh) / 2;
+            if (seamThumb.Left != x || seamThumb.Top != y || seamThumb.Width != bw || seamThumb.Height != bh)
+                seamThumb.SetBounds(x, y, bw, bh);
         }
 
         void ToggleLogPanel()

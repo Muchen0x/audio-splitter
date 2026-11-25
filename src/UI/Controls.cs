@@ -2064,17 +2064,65 @@ namespace StereoSplitter
             using (var b = new SolidBrush(Parent != null ? Parent.BackColor : BackColor))
                 e.Graphics.FillRectangle(b, 0, sr.Top - (int)SeamRadiusPx - 2, Width,
                     sr.Height + 2 * (int)SeamRadiusPx + 4);
-            using (var path = BuildSeamPath(xl, xr, sr.Top, sr.Bottom, SeamRadiusPx))
+            using (var path = BuildSeamPath(xl, xr,
+                sr.Top + (sr.Height - 2) / 2, sr.Bottom - (sr.Height - 2) / 2, SeamRadiusPx))
             using (var b = new SolidBrush(SeamDark))
                 e.Graphics.FillPath(b, path);
-            // 中央把手圆角条 (参考图): 高 3 设计px、宽约 30% 容器宽、水平居中、两端全圆
-            float bh = Dpi.S(3);
-            float bw = Width * 0.3f;
-            float bx = (Width - bw) / 2f;
-            float by = sr.Top + (sr.Height - bh) / 2f;
-            using (var path = UiDraw.RoundRect(new RectangleF(bx, by, bw, bh), bh / 2f))
-            using (var b = new SolidBrush(Color.FromArgb(140, 140, 140)))
-                e.Graphics.FillPath(b, path);
+            // 缝带缩成一条细线 (批93): 视觉深色只有中间 2 物理px, 上下留浅色与面板
+            // 连成一体 ("缩成一条线, 只保留圆角和中间把手条"); 端部仍沿窗口边缘外扩
+            // 成喇叭口弧。中央把手圆头条改为**覆盖层控件** (SeamThumbOverlay) 画 ——
+            // 条比线"突出一点" (上下各凸 2 物理px), 凸出部分落在上下面板的子窗口
+            // 区域, 容器绘制被 WS_CLIPCHILDREN 裁掉画不到 (批85 CardBarOverlay 同款
+            // 教训), 由 MainForm 创建并跟随分隔条移动。
+        }
+    }
+
+    /// <summary>
+    /// 分隔条中央把手条 (批93): 缝带视觉缩成一条 2 物理px 细线后, 把手条"突出一点"
+    /// (比线粗, 上下各凸出 2 物理px) 且宽缩半 (30%→15% 缝带可视宽, 用户指定)。
+    /// <para>为什么是**窗体级覆盖层**: 条凸出的部分落在上下面板的子窗口区域, 容器与
+    /// 窗体的绘制都被 WS_CLIPCHILDREN 裁进子窗口矩形之外画不到 (批85 CardBarOverlay
+    /// 同款教训), 顶层兄弟控件画得着。Region 裁成圆头胶囊, 条外命中/绘制全穿透;
+    /// <see cref="WndProc"/> 把 WM_NCHITTEST 回 HTTRANSPARENT —— 鼠标消息穿透到下层
+    /// 容器/面板, 条上照样能按住拖分隔条 (拖动命中区仍是整条 8px 缝带)。</para>
+    /// </summary>
+    class SeamThumbOverlay : Control
+    {
+        static readonly Color ThumbColor = Color.FromArgb(140, 140, 140);   // 原容器把手条同色
+        const int WM_NCHITTEST = 0x0084;
+        const int HTTRANSPARENT = -1;
+
+        public SeamThumbOverlay()
+        {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.ResizeRedraw, true);
+            TabStop = false;
+        }
+
+        protected override void OnResize(EventArgs eventargs)
+        {
+            base.OnResize(eventargs);
+            if (Width <= 0 || Height <= 0) return;
+            Region old = Region;
+            using (var path = UiDraw.RoundRect(new RectangleF(0f, 0f, Width, Height), Height / 2f))
+                Region = new Region(path);
+            if (old != null) old.Dispose();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            using (var path = UiDraw.RoundRect(new RectangleF(0f, 0f, Width, Height), Height / 2f))
+            using (var b = new SolidBrush(ThumbColor))
+                g.FillPath(b, path);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_NCHITTEST) { m.Result = (IntPtr)HTTRANSPARENT; return; }
+            base.WndProc(ref m);
         }
     }
 
