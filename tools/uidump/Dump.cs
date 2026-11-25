@@ -2016,6 +2016,68 @@ namespace StereoSplitter
             }
 
             // 圆角锯齿检查: 按控件真实位置抓左上角, 打印像素灰度矩阵 + 存 16x 放大图
+            // 批101: 收进托盘 —— 标题栏新增 btnTray + 关闭键×改成收托盘(分流继续)。
+            // 验证: 按钮存在/顺序(托盘在日志左边)/点击后窗口隐藏但进程仍在/托盘图标仍 Visible;
+            // 关闭键点击同样只隐藏不退出。
+            if (args.Length >= 1 && args[0] == "tray")
+            {
+                var mf = new MainForm();
+                mf.StartPosition = FormStartPosition.Manual;
+                mf.Location = new Point(40, 40);
+                mf.Size = new Size(760, 640);
+                mf.TopMost = true;
+                mf.Show();
+                mf.Activate();
+                for (int i = 0; i < 16; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+
+                var tray = Field(mf, "btnTray") as Control;
+                var log = Field(mf, "btnLog") as Control;
+                var more = Field(mf, "btnSettings") as Control;
+                var close = Field(mf, "btnClose") as Control;
+                var icon = Field(mf, "trayIcon") as NotifyIcon;
+                Console.Out.WriteLine("TRAY-BTN tray=" + (tray != null)
+                    + " glyph=" + (tray != null ? Field(tray, "glyph") : null)
+                    + " accessible='" + (tray != null ? tray.AccessibleName : "?") + "'");
+                Console.Out.WriteLine("TRAY-ORDER tray=" + (tray != null ? tray.Left : -1)
+                    + " log=" + (log != null ? log.Left : -1)
+                    + " more=" + (more != null ? more.Left : -1)
+                    + " close=" + (close != null ? close.Left : -1)
+                    + " verdict=" + (tray != null && log != null && more != null
+                        && tray.Left < log.Left && log.Left < more.Left ? "OK" : "FAIL<<<"));
+
+                // 标题栏截图 (功能键组): 供肉眼确认新图标形状与相邻间距
+                using (var bmp = new Bitmap(280, 32))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                        g.CopyFromScreen(mf.PointToScreen(new Point(mf.ClientSize.Width - 280, 0)),
+                            Point.Empty, new Size(280, 32));
+                    bmp.Save("tray-caption.png", System.Drawing.Imaging.ImageFormat.Png);
+                }
+
+                var onClick = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
+                // 1) 点新按钮 → 窗口隐藏, 进程未退出, 托盘图标仍在
+                onClick.Invoke(tray, new object[] { EventArgs.Empty });
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("TRAY-BTN-HIDE visible=" + mf.Visible + " disposed=" + mf.IsDisposed
+                    + " trayVisible=" + (icon != null && icon.Visible)
+                    + " verdict=" + (!mf.Visible && !mf.IsDisposed && icon != null && icon.Visible ? "OK" : "FAIL<<<"));
+
+                // 恢复, 再验关闭键
+                var restore = typeof(MainForm).GetMethod("RestoreFromTray", BindingFlags.Instance | BindingFlags.NonPublic);
+                restore.Invoke(mf, null);
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("TRAY-RESTORE visible=" + mf.Visible
+                    + " verdict=" + (mf.Visible ? "OK" : "FAIL<<<"));
+
+                onClick.Invoke(close, new object[] { EventArgs.Empty });
+                for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                Console.Out.WriteLine("TRAY-CLOSE-HIDE visible=" + mf.Visible + " disposed=" + mf.IsDisposed
+                    + " trayVisible=" + (icon != null && icon.Visible)
+                    + " verdict=" + (!mf.Visible && !mf.IsDisposed && icon != null && icon.Visible ? "OK" : "FAIL<<<"));
+                mf.Close();
+                return;
+            }
+
             if (args.Length >= 1 && args[0] == "corners")
             {
                 var mf = new MainForm();

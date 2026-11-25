@@ -1,0 +1,24 @@
+关闭收进托盘 + 标题栏新增收托盘按钮 (批101)
+
+用户: "当关闭时收进托盘，关闭时在隐藏日志按钮旁边加一个收进托盘的按钮"，
+随后"图标改成和更多里面那个一样"。
+
+1) 关闭键改成收进托盘: btnClose.Click 从 Close() 改为 HideToTray() —— 窗口隐藏、
+   分流继续, 进程仍在; 真正退出走托盘图标右键菜单的「退出」(先置 exiting=true 再
+   Close, 不被 FormClosing 的收托盘分支拦截)。
+
+2) 新增标题栏按钮 btnTray (GearButton, ButtonGlyph.Tray), 放在日志按钮左边, 点击
+   同样 HideToTray()。图标按用户要求改成与「更多」菜单里「关闭时收进托盘」那一行
+   (SettingsFlyout.MenuRow.IconKind.Tray) 完全相同的几何 —— U 形凹槽 + 向下箭头,
+   1.7px 圆头笔画, 两处看着是同一枚图标。
+
+3) 配套: LayoutCaption 功能图标组从 2 个加到 3 个 (托盘/日志/更多), 整组宽度+sw,
+   HitTestCaption 命中列表补 btnLog/btnTray, 控件挂载补 btnTray, 加 tooltip。
+
+4) 探针 uidump tray: 断言按钮存在/顺序(托盘<日志<更多)/Glyph=Tray, 点新按钮与
+   点关闭键都只是隐藏(mf.Visible=False, IsDisposed=False, 托盘图标仍 Visible),
+   以及 RestoreFromTray 能恢复。
+
+验证: 编译 0 错误; 自检 34 项全过; tray 5 项断言全 OK; seamend/seam/logclick/
+cardshell/corners/settings/logshell/scroll/toggle/dpiprobe 关键断言与基线一致。
+标题栏截图确认图标形状与间距正常。

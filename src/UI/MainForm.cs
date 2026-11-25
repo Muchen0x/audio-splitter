@@ -86,6 +86,7 @@ namespace StereoSplitter
             new System.Collections.Generic.List<IMessageFilter>();
         GearButton btnSettings;            // 标题栏里的齿轮 (在最小化左边)
         GearButton btnLog;                 // 标题栏里的日志面板开关 (在更多按钮左边, 双状态图标)
+        GearButton btnTray;                // 标题栏里的收进托盘按钮 (在日志按钮左边, 批101)
         SeamThumbOverlay seamThumb;        // 分隔条中央把手条覆盖层 (批93: 突出于细缝线, 宽 15% 缝带)
         /// <summary>日志面板上次"非收起"的分隔距离 (拖到最下自动收起前记录, 恢复时用)。0 = 没记过。</summary>
         int lastLogDist;
@@ -445,14 +446,27 @@ namespace StereoSplitter
             };
             btnLog.Click += (s2, e2) => ToggleLogPanel();
 
+            // 「收进托盘」: 日志按钮左边, 点击把窗口藏到托盘、分流继续 (托盘图标双击/菜单恢复)。
+            // 与关闭键 × 同一动作 —— 关闭键也改成收托盘 (批101)。
+            btnTray = new GearButton
+            {
+                Glyph = ButtonGlyph.Tray,
+                Size = new Size(26, 26),
+                TabStop = true,
+                AccessibleName = "收进托盘"
+            };
+            btnTray.Click += (s2, e2) => HideToTray();
+
             // 自绘标题栏的三个窗口键: 自右向左 [×][□][—] | [☰], 「更多」在最小化左边。
             // (系统标题栏里塞不进自定义控件, 所以这一组只能自己画)
             btnMin = new CaptionButton(CaptionGlyph.Minimize) { AccessibleName = "最小化" };
             btnMin.Click += (s2, e2) => WindowState = FormWindowState.Minimized;
             btnMax = new CaptionButton(CaptionGlyph.Maximize) { AccessibleName = "最大化" };
             btnMax.Click += (s2, e2) => ToggleMaximize();
-            btnClose = new CaptionButton(CaptionGlyph.Close) { AccessibleName = "关闭" };
-            btnClose.Click += (s2, e2) => Close();
+            // 关闭键改成"收进托盘": 分流继续, 不是真退出 (批101, 用户指定)。
+            // 真退出走托盘图标右键菜单的「退出」(它先置 exiting=true 再 Close, 不会被拦截)。
+            btnClose = new CaptionButton(CaptionGlyph.Close) { AccessibleName = "关闭并收进托盘" };
+            btnClose.Click += (s2, e2) => HideToTray();
 
             // 消音 / 缓冲档位 / 时钟校正 / 关闭行为 / 延迟校准 都已移入设置页:
             // 控件照旧在这里创建 (事件与持久化路径全留在 MainForm), 但不加入主面板,
@@ -691,6 +705,7 @@ namespace StereoSplitter
             tipTop.SetToolTip(volMaster, "总音量，作用在采样层。\n运行中可调。");
             tipTop.SetToolTip(btnMuteMaster, "点击静音 / 取消静音（总静音，作用在采样层，不写设备端点）。\n音量拖到 0 会自动静音，拖回去自动恢复。\n运行中可调。");
             tipTop.SetToolTip(btnLog, LogTip());   // 文案随状态换 (显示中/已收起), SetLogPanelVisible 里同步
+            tipTop.SetToolTip(btnTray, "收进托盘（分流继续，双击托盘图标或右键菜单恢复）");
             tipTop.SetToolTip(nudWaterInterval, "水位监控的刷新间隔（秒，1~99；0 = 关闭监控）。\n随时可改，回车提交。");
             RefreshSettingsTip();
             // 增益/主音量两行的滑条宽度跟面板宽度走 (窗口拉宽自动变长);
@@ -858,7 +873,7 @@ namespace StereoSplitter
 
             // —— 标题栏的五个键挂在窗体上 (不在任何面板里): 它们的坐标系是窗体客户区 ——
             // 最后加 = z-order 最上, 不会被 Dock Fill 的 splitContainer 盖住。
-            Controls.AddRange(new Control[] { btnMin, btnMax, btnClose, btnSettings, btnLog });
+            Controls.AddRange(new Control[] { btnMin, btnMax, btnClose, btnSettings, btnLog, btnTray });
 
             // 标题栏左侧的小图标: 由窗体图标缩到 16 设计像素 (DrawIcon 不缩放, 得自己生成一个尺寸)
             try
@@ -1204,32 +1219,35 @@ namespace StereoSplitter
         // 画底与标题、摆四个键、把"拖窗口 / 双击最大化 / 边缘缩放"还给系统。
 
         /// <summary>
-        /// 按客户区宽度摆标题栏的键, 自右向左: [×] [□] [—] | [☰] [日志]。
+        /// 按客户区宽度摆标题栏的键, 自右向左: [×] [□] [—] | [☰] [日志] [托盘]。
         /// <para>「更多」图标 (原设置齿轮, 用户指定替换) 在最小化**左边**, 它与窗口键组之间
         /// 画一条竖线分隔 (用户指定) —— 功能键与系统键是两类东西。「日志面板」开关在更多
-        /// 左边 (用户指定)。系统标题栏里塞不进自定义控件, 这也是必须自绘标题栏的原因之一。</para>
+        /// 左边 (用户指定),「收进托盘」再在日志左边 (批101)。系统标题栏里塞不进自定义
+        /// 控件, 这也是必须自绘标题栏的原因之一。</para>
         /// </summary>
         void LayoutCaption()
         {
-            if (btnClose == null || btnMin == null || btnMax == null || btnSettings == null || btnLog == null) return;
+            if (btnClose == null || btnMin == null || btnMax == null || btnSettings == null
+                || btnLog == null || btnTray == null) return;
 
             int h = Padding.Top;                 // 已缩放过的真实高度
             if (h <= 0) return;
             int w = ClientSize.Width;
             int bw = Dpi.S(46);                  // 与系统窗口键同宽 (46@96dpi)
-            int sw = Dpi.S(26);                  // 「更多」/「日志」图标
+            int sw = Dpi.S(26);                  // 「更多」/「日志」/「托盘」图标
             int gap = Dpi.S(14);                 // 图标与最小化之间的缝, 正中画竖线分隔 (原 6px 无分隔线)
 
             // 整组从右往左排, 左端用 max(0) 兜底: 窗口被拖到比这组键还窄时, 键退成贴左,
             // 至少图标与最小化还在窗内 (拖动、缩放、关闭都还能用), 而不是整组飘到窗口外。
-            int need = sw * 2 + gap + bw * 3;
+            int need = sw * 3 + gap + bw * 3;
             int left = Math.Max(0, w - need);
 
-            btnLog.SetBounds(left, (h - sw) / 2, sw, sw);
-            btnSettings.SetBounds(left + sw, (h - sw) / 2, sw, sw);
-            btnMin.SetBounds(left + sw * 2 + gap, 0, bw, h);
-            btnMax.SetBounds(left + sw * 2 + gap + bw, 0, bw, h);
-            btnClose.SetBounds(left + sw * 2 + gap + bw * 2, 0, bw, h);
+            btnTray.SetBounds(left, (h - sw) / 2, sw, sw);
+            btnLog.SetBounds(left + sw, (h - sw) / 2, sw, sw);
+            btnSettings.SetBounds(left + sw * 2, (h - sw) / 2, sw, sw);
+            btnMin.SetBounds(left + sw * 3 + gap, 0, bw, h);
+            btnMax.SetBounds(left + sw * 3 + gap + bw, 0, bw, h);
+            btnClose.SetBounds(left + sw * 3 + gap + bw * 2, 0, bw, h);
         }
 
         /// <summary>画标题栏: 底色与内容区同色、无分隔线, 左边图标 + 标题文字。</summary>
@@ -1539,7 +1557,7 @@ namespace StereoSplitter
             if (p.Y < Padding.Top)
             {
                 // 落在键上就交还给控件 (否则 HTCAPTION 会把点击吞掉, 键按不动)
-                foreach (var c in new Control[] { btnMin, btnMax, btnClose, btnSettings })
+                foreach (var c in new Control[] { btnMin, btnMax, btnClose, btnSettings, btnLog, btnTray })
                     if (c != null && c.Visible && c.Bounds.Contains(p)) return HTCLIENT;
                 return HTCAPTION;
             }

@@ -172,7 +172,7 @@ namespace StereoSplitter
     }
 
     /// <summary><see cref="RoundButton"/> 可以画的自绘符号 (不依赖字体)。</summary>
-    enum ButtonGlyph { None, Plus, Nut, SquarePlus, Cross, Refresh, TriangleDown, TriangleRight, More, LogOn, LogOff }
+    enum ButtonGlyph { None, Plus, Nut, SquarePlus, Cross, Refresh, TriangleDown, TriangleRight, More, LogOn, LogOff, Tray }
 
     /// <summary>
     /// 自绘圆角矩形按钮。
@@ -2813,6 +2813,35 @@ namespace StereoSplitter
                             })
                                 g.DrawLine(ps, cx - 6.5f, cy - 7f, cx + 6.5f, cy + 7f);
                         }
+                    }
+                    break;
+
+                case ButtonGlyph.Tray:
+                    // 「收进托盘」(标题栏, 日志按钮旁): 与「更多」菜单里那一行
+                    // (SettingsFlyout.MenuRow.IconKind.Tray) 同一图标 —— U 形托盘 + 向下箭头。
+                    // 几何逐点照搬 (k=1 设计像素, 标题栏图标同样不过 GlyphScale),
+                    // 1.7px 圆头笔画也一致, 两处看着就是同一枚图标。
+                    using (var p = new Pen(icon, 1.7f))
+                    {
+                        p.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                        p.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                        p.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
+                        // U 形托盘槽 (左右竖边 + 底边)
+                        g.DrawLines(p, new[]
+                        {
+                            new PointF(cx - 6.2f, cy - 3.4f),
+                            new PointF(cx - 6.2f, cy + 4.6f),
+                            new PointF(cx + 6.2f, cy + 4.6f),
+                            new PointF(cx + 6.2f, cy - 3.4f)
+                        });
+                        // 向下箭头: 竖干 + 两翼
+                        g.DrawLine(p, cx, cy - 6.6f, cx, cy + 1.6f);
+                        g.DrawLines(p, new[]
+                        {
+                            new PointF(cx - 2.6f, cy - 1f),
+                            new PointF(cx, cy + 1.6f),
+                            new PointF(cx + 2.6f, cy - 1f)
+                        });
                     }
                     break;
 
