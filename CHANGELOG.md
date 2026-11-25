@@ -35,6 +35,8 @@
 
 ### 变更
 
+- 程序对外名称统一为**音频分流**：标题栏、托盘提示、崩溃弹窗、文件属性与 exe 名一并改；
+  `SplitterGUI.cmd` 保留旧启动名，`SplitterGUI.ini` / `%LOCALAPPDATA%\AudioSplitter` 保留旧名以保证升级迁移
 - 自检 29 → **32** 项（新增扫频定位、延迟线重定向 11 条、接缝交叉 7 条）
 - `.editorconfig` 行尾改为 LF（与 `.gitattributes` 一致）、源码统一去 BOM；开发工具移入 `tools/`
 - 版本号改为单一来源：`StereoSplitter.csproj` 的 `<Version>`，本文件与 tag 跟随

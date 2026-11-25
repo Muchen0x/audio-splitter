@@ -1501,6 +1501,10 @@ namespace StereoSplitter
                 sf.Activate();
                 Pump();
 
+                // 批109: 标题栏文案统一为「音频分流」(自绘标题栏直接画 Form.Text)
+                Console.Out.WriteLine("APP-TITLE text='" + sf.Text + "' expect='音频分流'"
+                    + " verdict=" + (sf.Text == "音频分流" ? "OK" : "FAIL<<<"));
+
                 var min = Field(sf, "btnMin") as Control;
                 var gear = Field(sf, "btnSettings") as Control;
                 var max = Field(sf, "btnMax") as Control;

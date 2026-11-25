@@ -1,0 +1,17 @@
+批109 应用标题栏与 exe 程序名统一为「音频分流」
+
+用户: 「应用标题栏 'Audio Splitter - 多路音频分流' 和 exe 程序名改为 '音频分流'」。
+
+- 标题栏: MainForm.Text 改为「音频分流」; 自绘标题栏本来就画 Form.Text, 无需改绘制代码。
+- 对外名称同步: 托盘提示/气泡、崩溃弹窗标题、CLI 用法行、文件属性
+  (AssemblyName / AssemblyTitle / Product / Company) 全部改成「音频分流」。
+- 构建产物: bin/Release/net48/音频分流.exe (旧 SplitterGUI.exe 不再产出)。
+- 兼容: SplitterGUI.ini 与 %LOCALAPPDATA%\AudioSplitter 保留旧名, 老用户升级不丢配置;
+  启动脚本仍叫 SplitterGUI.cmd, 避免改变使用习惯。
+- .cmd 文件保持纯 ASCII + CRLF: cmd.exe 按控制台代码页读批处理, 直接写中文路径会乱码,
+  三个脚本改为按通配符解析 exe 并排除 uidump.exe / 旧残留 SplitterGUI.exe。
+- CI workflow 与 README 当前路径同步更新; CHANGELOG 增加变更条目。
+- Dump.cs titlebar 探针加 APP-TITLE 断言 (sf.Text == '音频分流')。
+
+验证: 编译 0 错误; selftest 34 项全过; 14 个 UI 探针通过
+(CARDSHELL-THUMB-FIT 为 HEAD 基线既有 FAIL); 文件属性 product/title/company 均为「音频分流」。

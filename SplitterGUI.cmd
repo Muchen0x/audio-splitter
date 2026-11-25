@@ -8,21 +8,39 @@ rem With args     -> CLI mode (--selftest / --list / --volprobe ...), attached, 
 setlocal
 cd /d "%~dp0"
 
-set "EXE=bin\Release\net48\SplitterGUI.exe"
+rem Resolve the Chinese-named exe by wildcard so this .cmd stays pure ASCII.
+rem Exclude the layout probe and any leftover binary from before the rename.
+set "EXE="
+set "EXENAME="
+for %%F in ("bin\Release\net48\*.exe") do (
+    if /i not "%%~nxF"=="uidump.exe" if /i not "%%~nxF"=="SplitterGUI.exe" (
+        set "EXE=%%~F"
+        set "EXENAME=%%~nxF"
+    )
+)
 
 echo [launch] building from source...
 dotnet build StereoSplitter.csproj -c Release --nologo -v q
-if not errorlevel 1 goto :launch
+if not errorlevel 1 goto :resolve_after_build
 
 rem A build can fail simply because a running instance holds the exe open.
 rem In that case the running binary IS the current build - just activate it.
-tasklist /fi "imagename eq SplitterGUI.exe" 2>nul | find /i "SplitterGUI.exe" >nul
-if errorlevel 1 (
-    echo   ERROR: build failed, nothing launched.
-    pause
-    exit /b 1
+if not defined EXENAME goto :build_failed
+tasklist 2>nul | find /i "%EXENAME%" >nul
+if errorlevel 1 goto :build_failed
+echo   NOTE: build skipped - %EXENAME% is running; activating that instance.
+goto :launch
+
+:build_failed
+echo   ERROR: build failed, nothing launched.
+pause
+exit /b 1
+
+:resolve_after_build
+set "EXE="
+for %%F in ("bin\Release\net48\*.exe") do (
+    if /i not "%%~nxF"=="uidump.exe" if /i not "%%~nxF"=="SplitterGUI.exe" set "EXE=%%~F"
 )
-echo   NOTE: build skipped - SplitterGUI.exe is running; activating that instance.
 
 :launch
 if not exist "%EXE%" (

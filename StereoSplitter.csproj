@@ -3,7 +3,8 @@
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
     <OutputType>WinExe</OutputType>
-    <AssemblyName>SplitterGUI</AssemblyName>
+    <AssemblyName>音频分流</AssemblyName>
+    <AssemblyTitle>音频分流</AssemblyTitle>
     <RootNamespace>StereoSplitter</RootNamespace>
     <LangVersion>7.3</LangVersion>
     <Deterministic>true</Deterministic>
@@ -33,8 +34,8 @@
     <Version>2.1.0</Version>
     <FileVersion>2.1.0.0</FileVersion>
     <AssemblyVersion>2.1.0.0</AssemblyVersion>
-    <Product>Audio Splitter</Product>
-    <Company>Audio Splitter</Company>
+    <Product>音频分流</Product>
+    <Company>音频分流</Company>
     <Copyright>Copyright © 2026</Copyright>
   </PropertyGroup>
 

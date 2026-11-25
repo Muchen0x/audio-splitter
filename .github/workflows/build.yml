@@ -26,7 +26,7 @@ jobs:
       - name: Route selftest (exit code gate)
         shell: pwsh
         run: |
-          & ./bin/Release/net48/SplitterGUI.exe --selftest
+          & "./bin/Release/net48/音频分流.exe" --selftest
           if ($LASTEXITCODE -ne 0) {
             if ($LASTEXITCODE -eq 3) {
               # F-26: report write failed - any log on disk is stale, do not dump it.
@@ -56,7 +56,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $tag = "$env:GITHUB_REF" -replace '^refs/tags/', ''
-          $exe = "./bin/Release/net48/SplitterGUI.exe"
+          $exe = "./bin/Release/net48/音频分流.exe"
           if (-not (Test-Path $exe)) { Write-Host "::error::exe missing"; exit 1 }
 
           $notesFile = ".github/release-notes/$tag.md"

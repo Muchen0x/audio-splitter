@@ -24,6 +24,8 @@ namespace StereoSplitter.Infrastructure
     /// </summary>
     static class AppPaths
     {
+        // 程序显示名/exe 名已改成「音频分流」, 但这两个旧名是升级迁移的锚点:
+        // 改掉会让老用户的 ini 与 %LOCALAPPDATA% 备份同时失联, 所以原样保留。
         /// <summary>%LOCALAPPDATA% 下的子目录名。</summary>
         public const string ProductFolder = "AudioSplitter";
 

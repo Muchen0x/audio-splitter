@@ -305,7 +305,7 @@ namespace StereoSplitter
 
         public MainForm()
         {
-            Text = "Audio Splitter - 多路音频分流";
+            Text = "音频分流";
             // 图标: 取 exe 内嵌的 app.ico (标题栏/任务栏/托盘共用同一个)
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
@@ -1618,7 +1618,7 @@ namespace StereoSplitter
             // 数值标签: 仅分流运行中(双向绑定生效)为黑, 其余灰色表示无效
             SetVolumeBindVisual(running);
 
-            if (trayIcon != null) trayIcon.Text = "Audio Splitter - " + txt;
+            if (trayIcon != null) trayIcon.Text = "音频分流 - " + txt;
 
             // 水位监控仅运行时按间隔跑, Ready/Stopped 或间隔0=不跑 (防空转)
             SyncWaterTimer();

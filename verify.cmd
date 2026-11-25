@@ -10,7 +10,16 @@ if errorlevel 1 (
 )
 
 echo [2/4] route selftest (exit code gate)...
-bin\Release\net48\SplitterGUI.exe --selftest
+rem Resolve the Chinese-named exe by wildcard (no non-ASCII bytes in this .cmd).
+set "EXE="
+for %%F in ("bin\Release\net48\*.exe") do (
+    if /i not "%%~nxF"=="uidump.exe" if /i not "%%~nxF"=="SplitterGUI.exe" set "EXE=%%~F"
+)
+if not defined EXE (
+    echo   VERIFY FAILED: main exe not found in bin\Release\net48.
+    exit /b 1
+)
+"%EXE%" --selftest
 if errorlevel 1 (
     echo   VERIFY FAILED: selftest returned non-zero - see bin\Release\net48\log\selftest-routing.txt
     exit /b 1

@@ -25,7 +25,7 @@ namespace StereoSplitter
 
             trayIcon = new NotifyIcon();
             trayIcon.Icon = this.Icon != null ? this.Icon : SystemIcons.Application;
-            trayIcon.Text = "Audio Splitter - 就绪";
+            trayIcon.Text = "音频分流 - 就绪";
             trayIcon.ContextMenuStrip = menu;
             trayIcon.Visible = true;
             trayIcon.MouseDoubleClick += (s, e) => { if (e.Button == MouseButtons.Left) RestoreFromTray(); };
@@ -44,7 +44,7 @@ namespace StereoSplitter
             if (!trayTipShown)
             {
                 trayTipShown = true;
-                try { trayIcon.ShowBalloonTip(3000, "Audio Splitter", "已最小化到托盘，双击图标恢复窗口", ToolTipIcon.Info); }
+                try { trayIcon.ShowBalloonTip(3000, "音频分流", "已最小化到托盘，双击图标恢复窗口", ToolTipIcon.Info); }
                 catch { }
             }
         }

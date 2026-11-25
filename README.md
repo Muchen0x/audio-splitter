@@ -1,4 +1,4 @@
-# Audio Splitter（多路音频分流）
+# 音频分流
 
 把系统正在播放的声音**按声道拆开**，送到一台或多台输出设备上。每一路都能独立调节延迟、音量和静音，一台设备也只被打开一次。
 
@@ -17,14 +17,14 @@
 - **时钟漂移校正**：闭环微调重采样比率，多设备长时间对齐不漂移
 - **运行态自适应**：改声道热生效不停链路；不能热改的控件自动置灰
 - **响应式界面**：卡片区按窗口宽度自动分栏，不出横向滚动条；日志区可拖到占满整窗
-- **单文件分发**：NAudio 以嵌入资源打进 exe，`bin\Release\net48\SplitterGUI.exe` 拷走一个文件就能用
+- **单文件分发**：NAudio 以嵌入资源打进 exe，`bin\Release\net48\音频分流.exe` 拷走一个文件就能用
 
 ---
 
 ## 快速上手
 
 1. **装一个虚拟声卡**（如 VB-Audio Virtual Cable、VoiceMeeter，需自行安装），把系统默认播放设备切到它。
-2. 双击 `SplitterGUI.cmd`：它会先做一次增量构建，再启动 `bin\Release\net48\SplitterGUI.exe`（构建失败会停在窗口里显示错误，不会悄悄跑旧二进制）。捕获端选虚拟声卡的捕获端点，选规格，给每台输出设备建一张卡片（选设备、选声道、调音量）。
+2. 双击 `SplitterGUI.cmd`：它会先做一次增量构建，再启动 `bin\Release\net48\音频分流.exe`（构建失败会停在窗口里显示错误，不会悄悄跑旧二进制）。捕获端选虚拟声卡的捕获端点，选规格，给每台输出设备建一张卡片（选设备、选声道、调音量）。
 3. 点**「开始分流」**。停止或退出时，各端点的音量/静音会自动还原。
 
 > 也可以不装虚拟声卡直接捕获真实设备，此时系统声音会同时外放。
@@ -113,7 +113,7 @@ SplitterGUI.cmd --setvol "设备名片段:百分比"     :: 直接写端点音�
 SplitterGUI.cmd --setdefault "设备名片段"        :: 切换系统默认输出
 ```
 
-（`SplitterGUI.cmd` 只是「增量构建 + 运行 `bin\Release\net48\SplitterGUI.exe`」，带参数时前台执行并把退出码原样透传；等价于直接调后者。）
+（`SplitterGUI.cmd` 只是「增量构建 + 运行 `bin\Release\net48\音频分流.exe`」，带参数时前台执行并把退出码原样透传；等价于直接调后者。）
 
 `--setvol` / `--setdefault` 用于**强杀实例后的善后**：任务管理器结束进程或崩溃会跳过还原，端点音量停在分流值、默认输出挂在虚拟声卡上（整机无声）。先 `--list` 确认名字片段匹配到哪台设备，再用这两个开关修回。名字按子串匹配、不区分大小写；**片段匹配到多台设备时会拒绝执行并列出全部候选**（防止改错设备），换更长的片段重试即可。不加参数时程序是纯 GUI，没有任何隐式副作用。
 
@@ -158,7 +158,7 @@ src/
 tools/uidump/     布局量测工具：实例化真实窗口，打印控件边界/重叠/文字截断
 CHANGELOG.md      更新日志 (版本号以 csproj 的 <Version> 为单一来源)
 app.ico           程序图标 (生成脚本在本地的 docs/artifacts/make_icon.py)
-SplitterGUI.cmd   启动脚本：增量构建后运行 bin/Release/net48/SplitterGUI.exe
+SplitterGUI.cmd   启动脚本：增量构建后运行 bin/Release/net48/音频分流.exe
 build.cmd / verify.cmd
 docs/  log/       本地资料与运行日志，均不入库
 ```
@@ -166,7 +166,7 @@ docs/  log/       本地资料与运行日志，均不入库
 代码风格与行尾由 `.editorconfig` / `.gitattributes` 统一：仓库内 **LF**、UTF-8 **无 BOM**，
 两个 `.cmd` 例外（CRLF，`cmd.exe` 对 LF 批处理不可靠）。
 
-配置文件为 `SplitterGUI.ini`（不入库），随 exe 同目录，因此现在位于 `bin\Release\net48\`。
+配置文件仍为 `SplitterGUI.ini`（不入库；程序改名后沿用旧名，老用户升级不会丢设置），随 exe 同目录，因此现在位于 `bin\Release\net48\`。
 根目录刻意不放 exe / ini 副本：那份副本会与源码脱节，双击到的往往是几天前的旧二进制。
 
 > **exe 目录不可写时**（例如装到 `C:\Program Files\`）配置与日志会自动改存

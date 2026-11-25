@@ -62,7 +62,7 @@ namespace StereoSplitter.Infrastructure
                     if (savedPath != null) msg += "\n\n日志已保存到:\n" + savedPath;
                     else msg += "\n\n日志写入失败, 崩溃现场可能丢失:\n" + LastWriteError;
                     if (ex != null) msg += "\n\n" + ex.Message;
-                    MessageBox.Show(msg, "Audio Splitter", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show(msg, "音频分流", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
                 catch { }
             }

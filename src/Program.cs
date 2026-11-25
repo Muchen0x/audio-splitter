@@ -412,7 +412,7 @@ namespace StereoSplitter
         static void PrintUsage(string error)
         {
             if (!string.IsNullOrEmpty(error)) Console.WriteLine("参数错误: " + error);
-            Console.WriteLine("用法: SplitterGUI.exe [命令] [选项]");
+            Console.WriteLine("用法: 音频分流.exe [命令] [选项]");
             Console.WriteLine("  (无参数)                          启动图形界面");
             Console.WriteLine("  --selftest                        路由内核自检 (退出 0/1)");
             Console.WriteLine("  --volprobe                        打印端点音量与 ini 的 UI 值");
