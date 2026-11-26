@@ -14,6 +14,67 @@ using StereoSplitter.Devices;
 namespace StereoSplitter
 {
     /// <summary>
+    /// 批131: 窗口缩放期间给整棵子树开 <see cref="WS_EX_COMPOSITED"/> —— 系统把顶层窗
+    /// 与所有子控件 (自绘面板、原生 TextBox/ListView、自绘滑条覆盖层) 自底向上合成到
+    /// 一层缓冲再统一上屏, 消除缩放时各 HWND 逐个擦背景重绘造成的闪帧。
+    /// <para>为什么不常开: WS_EX_COMPOSITED 常开会拖慢所有子控件的命中/绘制, 且某些控件
+    /// (下拉弹出层) 在合成模式下渲染有差异 —— 只在 WM_ENTERSIZEMOVE ~ WM_EXITSIZEMOVE
+    /// 这段"用户正在拖边/拖角"的窗口内开, 松手即撤, 与批78 分隔条拖动同款。</para>
+    /// <para>另有一个作用: 校准/主窗口的日志是原生 TextBox (托管双缓冲帮不到它), 缩放时
+    /// 文字一段段重画会闪 —— 合成覆盖是唯一能把原生控件也纳入同一帧的手段。</para>
+    /// </summary>
+    static class ResizeFlickerGuard
+    {
+        const int GWL_EXSTYLE = -20;
+        const int WS_EX_COMPOSITED = 0x02000000;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+        static extern IntPtr GetWindowLongPtrW(IntPtr hWnd, int nIndex);
+        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+        static extern int GetWindowLongW(IntPtr hWnd, int nIndex);
+        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+        static extern IntPtr SetWindowLongPtrW(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
+        static extern int SetWindowLongW(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        static int GetStyle(IntPtr h)
+        {
+            return IntPtr.Size == 8 ? (int)GetWindowLongPtrW(h, GWL_EXSTYLE) : GetWindowLongW(h, GWL_EXSTYLE);
+        }
+        static void SetStyle(IntPtr h, int v)
+        {
+            if (IntPtr.Size == 8) SetWindowLongPtrW(h, GWL_EXSTYLE, (IntPtr)v);
+            else SetWindowLongW(h, GWL_EXSTYLE, v);
+        }
+
+        /// <summary>开始缩放: 开合成。返回是否真的改了 (探针读诊断计数)。</summary>
+        public static bool Begin(IntPtr h)
+        {
+            if (h == IntPtr.Zero) return false;
+            int cur = GetStyle(h);
+            if ((cur & WS_EX_COMPOSITED) != 0) return false;
+            SetStyle(h, cur | WS_EX_COMPOSITED);
+            return true;
+        }
+
+        /// <summary>结束缩放: 撤合成并整窗重画一次 (撤掉样式不会自己刷掉合成期残帧)。</summary>
+        public static bool End(IntPtr h)
+        {
+            if (h == IntPtr.Zero) return false;
+            int cur = GetStyle(h);
+            if ((cur & WS_EX_COMPOSITED) == 0) return false;
+            SetStyle(h, cur & ~WS_EX_COMPOSITED);
+            return true;
+        }
+
+        /// <summary>探针读: 当前是否处于合成绘制状态。</summary>
+        public static bool IsComposited(IntPtr h)
+        {
+            return h != IntPtr.Zero && (GetStyle(h) & WS_EX_COMPOSITED) != 0;
+        }
+    }
+
+    /// <summary>
     /// 滚轮路由: 下拉框/数字框自己不吃滚轮, 而是把消息转给外层的 AutoScroll 容器。
     /// <para>以前这里是直接 return —— 值确实没被改, 但滚动链也在控件上断了: 鼠标滑过卡片上的
     /// 下拉或延迟框时, 输出卡片列表就滚不动, 得先把鼠标挪到空白处。这里改成转发,
@@ -1310,6 +1371,12 @@ namespace StereoSplitter
         {
             if (Inner == null || IsDisposed) return;
             int ih = Math.Max(1, Height - 2);
+            // 批131: 缩放时 OnResize + ClientSizeChanged 连发, 尺寸没变就别重摆+重建 Region
+            // —— SetBounds/Region 都会强制原生 TextBox 整段重排文字 (用户报"缩放时日志闪")。
+            int textWNow = Math.Max(StripW + 40, Width - 2 - 2 * PadX);
+            if (Width == lastShellW && Height == lastShellH && textWNow == lastTextW
+                && Inner.IsHandleCreated) return;
+            lastShellW = Width; lastShellH = Height; lastTextW = textWNow;
             // 左右内衬对称: 正文从 1+PadX 到 Width-1-PadX, 两边留白等宽 (用户要求"留白要对称")。
             // 右侧那条留白就是滑条的安放处 —— 滑条在其中居中, 不贴正文也不贴边框。
             int textW = Math.Max(StripW + 40, Width - 2 - 2 * PadX);
@@ -1353,6 +1420,7 @@ namespace StereoSplitter
         {
             // TextBox 句柄重建 (字体/边框等属性变更) 会换新 HWND, Region 随旧句柄一起丢 ——
             // 原生滚动条会整条漏出来; 这里兜底重裁。BeginInvoke 等布局稳定后再做。
+            lastShellW = lastShellH = lastTextW = -1;   // 句柄换了, Region 丢了: 强制重裁
             if (IsHandleCreated) BeginInvoke((Action)Recalc);
         }
 
@@ -1366,8 +1434,25 @@ namespace StereoSplitter
         void RefreshBar()
         {
             int from = textEnd > 0 ? textEnd : Width - StripW - 1;
+            // 批131: TextChanged/ScrollChanged 会连续触发, 缩放期再叠加 → 逐帧抖。
+            // 滑块位置/热态没变就跳过 (热态另走 RefreshBarHot)。
+            SCROLLINFO si;
+            bool got = GetVert(out si);
+            int key = got ? (si.nPos * 65536 + si.nPage + si.nMax) : -1;
+            bool hotNow = barHot || dragThumb;
+            if (key == lastBarKey && from == lastBarFrom && hotNow == lastBarHot) return;
+            lastBarKey = key; lastBarFrom = from; lastBarHot = hotNow;
             Invalidate(new Rectangle(from, 0, Width - from, Height));
         }
+        /// <summary>批131: 热态单独变化时强制重画 (几何守卫不该挡住悬停着色)。</summary>
+        void RefreshBarHot()
+        {
+            lastBarKey = int.MinValue;
+            RefreshBar();
+        }
+        int lastBarKey = int.MinValue, lastBarFrom = -1;
+        bool lastBarHot;
+        int lastShellW = -1, lastShellH = -1, lastTextW = -1;
 
         /// <summary>当前竖向滚动信息 (nMax/nPage/nPos, 行单位); 句柄未建或读不到返回 false。</summary>
         bool GetVert(out SCROLLINFO si)
@@ -1466,7 +1551,7 @@ namespace StereoSplitter
         {
             base.OnMouseMove(e);
             bool over = InStrip(e.X);
-            if (over != barHot) { barHot = over; RefreshBar(); }
+            if (over != barHot) { barHot = over; RefreshBarHot(); }
             if (!dragThumb) return;
             SCROLLINFO si;
             if (!GetVert(out si)) return;
@@ -1756,6 +1841,8 @@ namespace StereoSplitter
         internal bool DbgHBarNeed, DbgHStyle;
         // 批130 诊断 (探针读): 横条按下/拖拽消息次数 —— 验证"能用鼠标拖动"
         internal int HDragStarts, HDragMoves;
+        // 批131 诊断 (探针读): 竖条按下/拖拽消息次数 —— ListView 同样不响应 SB_THUMBTRACK
+        internal int VDragStarts, VDragMoves;
 
         const int SB_VERT = 1;
         const int SB_HORZ = 0;
@@ -1796,6 +1883,7 @@ namespace StereoSplitter
         /// <summary>Item 增删后由窗体调用: 滚动量程变了, 重摆窗口并重画滑条。</summary>
         internal void SyncBar()
         {
+            forceRecalc = true;   // 批131: 量程变了, 突破尺寸守卫重摆
             Recalc();
             RefreshBar();
         }
@@ -1810,6 +1898,14 @@ namespace StereoSplitter
         void Recalc()
         {
             if (Inner == null || IsDisposed) return;
+            // 批131: 缩放时 Resize/ClientSizeChanged/LayoutSettled 连发, 尺寸没变就别重摆+
+            // 重建 Region —— 两者都会强制 ListView 整片重绘 (缩放时滚动条/文字闪)。
+            int padNow = Pad;
+            int ihNow = Math.Max(1, Height - 2 - 2 * padNow);
+            int listWNow = Math.Max(padNow + 40, Width - 2 - 2 * padNow);
+            if (Width == lastShellW && Height == lastShellH && listWNow == lastListW
+                && Inner.IsHandleCreated && !forceRecalc) return;
+            lastShellW = Width; lastShellH = Height; lastListW = listWNow; forceRecalc = false;
             // 批130: 四边留白一致 (Pad), 列表内容区 = 壳 - 2*Pad, 横条出现与否都不改内容区高度
             // —— 原来的做法 hbar 时把 ih 减掉 StripH, 列表会突然缩一截、内容跳动。
             int pad = Pad;
@@ -1858,15 +1954,34 @@ namespace StereoSplitter
             if (need != hbar)
             {
                 hbar = need;
+                forceRecalc = true;   // 批131: 几何没变但布局状态变了, 突破尺寸守卫
                 Recalc();
                 Invalidate();
                 return;
             }
             int from = clientEnd > 0 ? clientEnd : Width - Pad - 1;
+            // 批131: ScrollListView 每次 WM_PAINT 都发 LayoutSettled → 这里若无条件 Invalidate
+            // 会再激起一次 WM_PAINT, 缩放时逐帧抖动。滑块几何/可见性没变就别重画。
+            SCROLLINFO vv, hh2;
+            bool vGot = GetVert(out vv), hGot = GetHorz(out hh2);
+            int vk = vGot ? (vv.nPos * 65536 + vv.nPage) : -1;
+            int hk = hGot ? (hh2.nPos * 65536 + hh2.nPage) : -1;
+            bool hotNow = barHot || dragThumb || dragHThumb;
+            if (vk == lastVKey && hk == lastHKey && from == lastStripFrom
+                && hbar == lastHBar && hotNow == lastHot)
+                return;
+            lastVKey = vk; lastHKey = hk; lastStripFrom = from; lastHBar = hbar; lastHot = hotNow;
+            InvalidateCount++;
             Invalidate(new Rectangle(from, 0, Width - from, Height));
             if (hbar && hStripTop < Height)
                 Invalidate(new Rectangle(0, hStripTop, clientEnd, Height - hStripTop));
         }
+        int lastVKey = int.MinValue, lastHKey = int.MinValue, lastStripFrom = -1;
+        bool lastHBar, lastHot;
+        int lastShellW = -1, lastShellH = -1, lastListW = -1;
+        bool forceRecalc;
+        // 批131 诊断 (探针读): 守卫放行、真正 Invalidate 的次数。
+        internal int InvalidateCount;
 
         /// <summary>当前竖向滚动信息 (nMax/nPage/nPos, 行单位); 句柄未建或读不到返回 false。</summary>
         bool GetVert(out SCROLLINFO si)
@@ -2037,6 +2152,7 @@ namespace StereoSplitter
                 dragThumb = true;
                 dragGrabY = e.Y - ty;
                 Capture = true;
+                VDragStarts++;                 // 批131 诊断
             }
             else SendScroll(e.Y < ty ? SB_PAGEUP : SB_PAGEDOWN, 0);
         }
@@ -2075,7 +2191,16 @@ namespace StereoSplitter
             if (maxTop <= 0) return;
             int posv = (int)Math.Round((e.Y - trackTop - dragGrabY) * (double)maxTop / Math.Max(1, trackLen2 - th));
             posv = Math.Max(0, Math.Min(maxTop, posv));
-            SendScroll(SB_THUMBTRACK, posv);
+            // 批131: 与横条同病 —— ListView 忽略 WM_VSCROLL/SB_THUMBTRACK (实测
+            // starts=1/moves=7 但 pos 0→0)。改走 LVM_SCROLL: 纵向像素增量放 lParam,
+            // nPos 是行单位, 乘行高换成像素; 当前行与拖拽目标行的差即增量。
+            int rowH = Inner.Items.Count > 0
+                ? Inner.GetItemRect(0, ItemBoundsPortion.Entire).Height
+                : Math.Max(1, Dpi.S(21));
+            int deltaY = (posv - sv.nPos) * rowH;
+            if (deltaY != 0 && Inner.IsHandleCreated)
+                SendMessage(Inner.Handle, LVM_SCROLL, IntPtr.Zero, (IntPtr)deltaY);
+            VDragMoves++;                      // 批131 诊断
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
@@ -2143,8 +2268,18 @@ namespace StereoSplitter
         /// <summary>滚动信息/位置变了 → 重画滑条 (宿主转发卡片区的滚动通知)。</summary>
         public void RefreshBar()
         {
+            // 批131: 缩放时 FitCardWidths/ClientSizeChanged 连发, 几何没变就别逐帧重画。
+            SCROLLINFO si;
+            bool got = GetVert(out si);
+            int key = got ? (si.nPos * 65536 + si.nPage + si.nMax) : -1;
+            bool hotNow = barHot || dragThumb;
+            if (key == lastKey && Width == lastW && Height == lastH && hotNow == lastHot) return;
+            lastKey = key; lastW = Width; lastH = Height; lastHot = hotNow;
             Invalidate();
         }
+        internal void RefreshBarHot() { lastKey = int.MinValue; RefreshBar(); }
+        int lastKey = int.MinValue, lastW = -1, lastH = -1;
+        bool lastHot;
 
         /// <summary>当前竖向滚动信息 (nMax/nPage/nPos, 像素单位); 没有滚动需求返回 false。</summary>
         bool GetVert(out SCROLLINFO si)
@@ -2323,8 +2458,18 @@ namespace StereoSplitter
 
         public void RefreshBar()
         {
+            // 批131: 缩放期 FitCardWidths 连发, 几何没变就别逐帧重画。
+            SCROLLINFO si;
+            bool got = GetH(out si);
+            int key = got ? (si.nPos * 65536 + si.nPage + si.nMax) : -1;
+            bool hotNow = barHot || dragThumb;
+            if (key == lastKey && Width == lastW && Height == lastH && hotNow == lastHot) return;
+            lastKey = key; lastW = Width; lastH = Height; lastHot = hotNow;
             Invalidate();
         }
+        internal void RefreshBarHot() { lastKey = int.MinValue; RefreshBar(); }
+        int lastKey = int.MinValue, lastW = -1, lastH = -1;
+        bool lastHot;
 
         /// <summary>当前横向滚动信息 (nMax/nPage/nPos, 像素单位); 没有滚动需求返回 false。</summary>
         bool GetH(out SCROLLINFO si)

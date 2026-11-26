@@ -234,8 +234,19 @@ namespace StereoSplitter
             }
         }
 
+        // 批131: 缩放防闪 (与主窗/校准窗同款) —— 诊断计数供探针读。
+        internal int resizeGuardBegins, resizeGuardEnds;
+        internal bool ResizeComposited { get { return IsHandleCreated && ResizeFlickerGuard.IsComposited(Handle); } }
+
         protected override void WndProc(ref Message m)
         {
+            // 批131: 拖边缩放期间整窗合成绘制, 与其他两个自绘窗口一致。
+            bool enterResize = m.Msg == 0x0231, exitResize = m.Msg == 0x0232;
+            if (enterResize)
+            {
+                ResizeFlickerGuard.Begin(Handle);
+                resizeGuardBegins++;
+            }
             if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
             {
                 m.Result = IntPtr.Zero;
@@ -253,6 +264,16 @@ namespace StereoSplitter
                 return;
             }
             base.WndProc(ref m);
+            // 批131: EXIT 的合成位必须在 base 之后清 (WinForms 会重读/恢复 ExStyle)。
+            if (exitResize)
+            {
+                resizeGuardEnds++;
+                if (IsHandleCreated)
+                {
+                    ResizeFlickerGuard.End(Handle);
+                    Invalidate(true);
+                }
+            }
             // 系统没有标题栏可拖: 标题区空白交回 HTCAPTION (关闭键是子控件, 自己收点击)。
             if (m.Msg == WM_NCHITTEST && (int)m.Result == HTCLIENT)
             {

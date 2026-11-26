@@ -1317,6 +1317,10 @@ namespace StereoSplitter
         // 在 WM_WINDOWPOSCHANGING 里按观察窗拦下 (见 WndProc), DWM 合成前就归位。
         int watchRestoreTicks = -1;
 
+        // 批131: 缩放防闪合成开关的诊断计数 (探针读)。
+        internal int resizeGuardBegins, resizeGuardEnds;
+        internal bool ResizeComposited { get { return IsHandleCreated && ResizeFlickerGuard.IsComposited(Handle); } }
+
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
@@ -1566,6 +1570,14 @@ namespace StereoSplitter
             if (m.Msg == WM_ENTERSIZEMOVE)
             {
                 watchRestoreTicks = -1;     // 用户手动拖动/缩放开始: 关观察窗
+                ResizeFlickerGuard.Begin(Handle);   // 批131: 整窗合成绘制防缩放闪帧
+                resizeGuardBegins++;
+            }
+            bool exitResize = m.Msg == 0x0232 /* WM_EXITSIZEMOVE */;
+            if (exitResize)
+            {
+                resizeGuardEnds++;
+                if (IsHandleCreated) BeginInvoke((Action)(() => { try { if (!IsDisposed) Invalidate(true); } catch { } }));
             }
 
             // "最大化能占多大"由我们说了算: 系统默认给的是**工作区 + 两侧边框**
@@ -1596,6 +1608,14 @@ namespace StereoSplitter
             }
 
             base.WndProc(ref m);
+
+            // 批131: EXIT 的合成位必须在 base 之后清 —— WinForms 处理 EXIT 时会重读/恢复
+            // ExStyle, 先清会被盖回 (探针实测 comp True->True)。
+            if (exitResize && IsHandleCreated)
+            {
+                ResizeFlickerGuard.End(Handle);
+                Invalidate(true);
+            }
 
             // 系统在 NC 区缺失时把所有点都当客户区。这里把它掰回来:
             // 边缘 → 缩放热区, 标题栏空白 → 可拖动 (双击自动最大化、右键系统菜单一并回来)。

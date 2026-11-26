@@ -605,6 +605,36 @@ namespace StereoSplitter
                             && lsZ.Height == lsH0 && lgZ.Height == lgH0 && micZ.Width == micW0;
                         // 批129: 取消缩放最小限制 —— MinimumSize 必须为空 (无下限)。
                         bool minSizeOk = cfZ.MinimumSize.IsEmpty;
+
+                        // 批131: 缩放防闪 —— 发 WM_ENTERSIZEMOVE/WM_EXITSIZEMOVE 验证整窗合成开关;
+                        // 并读取列表壳"守卫放行后的真实 Invalidate 次数" (缩放连发时不该暴涨)。
+                        SendMessage(cfZ.Handle, 0x0231, IntPtr.Zero, IntPtr.Zero); // WM_ENTERSIZEMOVE
+                        for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                        bool compOn = Property(cfZ, "ResizeComposited");
+                        int begN = RefInt(cfZ, "resizeGuardBegins");
+                        Size szS = cfZ.ClientSize;
+                        // 几何守卫: 尺寸稳定后连发 10 次 RefreshBar (模拟 WM_PAINT→LayoutSettled
+                        // 风暴), 真实 Invalidate 只应发生 1 次。这才是缩放抖动的放大器。
+                        int invBefore = RefInt(lsZ, "InvalidateCount");
+                        MethodInfo rbM = lsZ.GetType().GetMethod("RefreshBar",
+                            BindingFlags.Instance | BindingFlags.NonPublic);
+                        for (int i = 0; i < 10; i++)
+                        {
+                            if (rbM != null) rbM.Invoke(lsZ, null);
+                            Application.DoEvents();
+                        }
+                        int invIdle = RefInt(lsZ, "InvalidateCount") - invBefore;
+                        SendMessage(cfZ.Handle, 0x0232, IntPtr.Zero, IntPtr.Zero); // WM_EXITSIZEMOVE
+                        for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                        bool compOff = !Property(cfZ, "ResizeComposited");
+                        int endN = RefInt(cfZ, "resizeGuardEnds");
+                        cfZ.ClientSize = szS;
+                        for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                        bool guardOk = compOn && compOff && begN >= 1 && endN >= 1 && invIdle <= 1;
+                        Console.Out.WriteLine("CALIB-ANTIFLICK comp " + compOn + "->" + compOff
+                            + " begin/end=" + begN + "/" + endN + " idle-invalidates=" + invIdle
+                            + " (10 次刷新, ≤1) verdict=" + (guardOk ? "OK" : "FAIL<<<"));
+
                         Console.Out.WriteLine("CALIB-RESIZE hit=" + hL + "/" + hR + "/" + hT + "/" + hB
                             + " list " + lsH0 + "->" + (lsZ != null ? lsZ.Height : -1)
                             + " log " + lgH0 + "->" + (lgZ != null ? lgZ.Height : -1)
@@ -1038,6 +1068,60 @@ namespace StereoSplitter
                             + " starts=" + hdStarts + " moves=" + hdMoves
                             + " verdict=" + (hdStarts >= 1 && hdMoves >= 1 && hdPos1 > hdPos0 ? "OK" : "FAIL<<<"));
 
+                        // 批131: 竖向滑条真实鼠标拖拽 —— 列表 12 路 > 可视行数, 竖条在显示。
+                        // 从滑块顶按下往下拖, 看 nPos 前进 (ListView 对 SB_THUMBTRACK 不响应,
+                        // 与横条同病; 修法应走 LVM_SCROLL 按像素)。
+                        int vdPos0 = -1, vdPos1 = -1, vdStarts = 0, vdMoves = 0;
+                        int vdOrigItems = lvCalib.Items.Count;
+                        if (dragShell != null && lvCalib.IsHandleCreated)
+                        {
+                            // 当前设备只有 3 路 (放得下, 无竖滚) —— 临时填 20 行制造竖滚, 测完移除。
+                            for (int i = vdOrigItems; i < 20; i++) lvCalib.Items.Add("测量路 " + i);
+                            for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(35); }
+                            SendMessage(lvCalib.Handle, 0x0115, (IntPtr)((0 << 16) | 6), IntPtr.Zero);  // SB_TOP
+                            for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(35); }
+                            ScrollInfo? vs0 = ScrollInfoOf(lvCalib, 1);
+                            vdPos0 = vs0.HasValue ? vs0.Value.nPos : -1;
+                            if (vs0.HasValue && vs0.Value.nMax > 0)
+                            {
+                                int padPxV = Dpi.S(10), barWPxV = Dpi.S(4);
+                                int trackTopV = padPxV, trackLenV = (dragShell as Control).Height - 1 - trackTopV * 2;
+                                int nMaxV = vs0.Value.nMax, nPageV = vs0.Value.nPage;
+                                int thV = Math.Max(Dpi.S(18), (int)((long)trackLenV * nPageV / (nMaxV + 1)));
+                                if (thV > trackLenV) thV = trackLenV;
+                                int maxTopV = nMaxV + 1 - nPageV;
+                                int tyV = trackTopV + (maxTopV > 0 ? (int)((long)(trackLenV - thV) * vdPos0 / maxTopV) : 0);
+                                int zoneLV = (dragShell as Control).Width - 1 - padPxV;
+                                int zoneWV = ((dragShell as Control).Width - 2) - zoneLV + 1;
+                                int bxV = zoneLV + Math.Max(0, (zoneWV - barWPxV) / 2);
+                                Point shellScrV = (dragShell as Control).PointToScreen(Point.Empty);
+                                Point grabV = new Point(shellScrV.X + bxV + barWPxV / 2,
+                                    shellScrV.Y + Math.Min(tyV + thV / 2, tyV + Math.Min(8, thV / 2)));
+                                SetCursorPos(grabV.X, grabV.Y);
+                                for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(35); }
+                                mouse_event(0x0002, 0, 0, 0, IntPtr.Zero);
+                                for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(35); }
+                                for (int i = 1; i <= 6; i++)
+                                {
+                                    SetCursorPos(grabV.X, grabV.Y + i * 12);
+                                    Application.DoEvents(); System.Threading.Thread.Sleep(30);
+                                    Application.DoEvents();
+                                }
+                                mouse_event(0x0004, 0, 0, 0, IntPtr.Zero);
+                                for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(35); }
+                                ScrollInfo? vs1 = ScrollInfoOf(lvCalib, 1);
+                                vdPos1 = vs1.HasValue ? vs1.Value.nPos : -1;
+                                vdStarts = RefInt(dragShell, "VDragStarts");
+                                vdMoves = RefInt(dragShell, "VDragMoves");
+                            }
+                            while (lvCalib.Items.Count > vdOrigItems)
+                                lvCalib.Items.RemoveAt(lvCalib.Items.Count - 1);
+                            for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                        }
+                        Console.Out.WriteLine("CALIB-VDRAG pos " + vdPos0 + "->" + vdPos1
+                            + " starts=" + vdStarts + " moves=" + vdMoves
+                            + " verdict=" + (vdStarts >= 1 && vdMoves >= 1 && vdPos1 > vdPos0 ? "OK" : "FAIL<<<"));
+
                         // 回拖 -400 → 补差把「输出设备」吃回去, 溢出消失, 滑条收回
                         lvCalib.Columns[3].Width -= 400;
                         for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
@@ -1267,6 +1351,16 @@ namespace StereoSplitter
                         g.CopyFromScreen(dlg.Location, Point.Empty, dlg.Size);
                     bmp.Save(file, System.Drawing.Imaging.ImageFormat.Png);
                 }
+                // 批131: 添加设备窗缩放防闪 (与其他两个自绘窗口同款)。
+                SendMessage(dlg.Handle, 0x0231, IntPtr.Zero, IntPtr.Zero);
+                for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                bool dlgOn = Property(dlg, "ResizeComposited");
+                SendMessage(dlg.Handle, 0x0232, IntPtr.Zero, IntPtr.Zero);
+                for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                bool dlgOff = !Property(dlg, "ResizeComposited");
+                Console.Out.WriteLine("ADDDLG-ANTIFLICK comp " + dlgOn + "->" + dlgOff
+                    + " begin/end=" + RefInt(dlg, "resizeGuardBegins") + "/" + RefInt(dlg, "resizeGuardEnds")
+                    + " verdict=" + (dlgOn && dlgOff ? "OK" : "FAIL<<<"));
                 dlg.Close();
                 Console.Out.WriteLine("ADDDLG rendered -> " + file);
                 return;
@@ -3873,6 +3967,20 @@ namespace StereoSplitter
                         + " moves=" + (int)Field(bar, "DragMoves"));
                 }
                 else Console.Out.WriteLine("CARDSHELL-DRAG skip (没找到滑块 —— 内容不足一屏?)");
+
+                // 批131: 主窗口缩放防闪 (输出卡片滚动条/日志同属这棵子树) —— 发 ENTER/EXIT
+                // SIZEMOVE 验证整窗合成开关 + 诊断计数。
+                SendMessage(mf.Handle, 0x0231, IntPtr.Zero, IntPtr.Zero);
+                for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                bool mfOn = Property(mf, "ResizeComposited");
+                int mfBeg = RefInt(mf, "resizeGuardBegins");
+                SendMessage(mf.Handle, 0x0232, IntPtr.Zero, IntPtr.Zero);
+                for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                bool mfOff = !(bool)Property(mf, "ResizeComposited");
+                int mfEnd = RefInt(mf, "resizeGuardEnds");
+                Console.Out.WriteLine("CARDSHELL-ANTIFLICK comp " + mfOn + "->" + mfOff
+                    + " begin/end=" + mfBeg + "/" + mfEnd
+                    + " verdict=" + (mfOn && mfOff && mfBeg >= 1 && mfEnd >= 1 ? "OK" : "FAIL<<<"));
                 mf.Close();
                 return;
             }
@@ -4345,6 +4453,15 @@ namespace StereoSplitter
         {
             var f = o.GetType().GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             return f == null ? -1 : (int)f.GetValue(o);
+        }
+
+        /// <summary>反射读 bool 属性 (internal 诊断, 如 ResizeComposited)。</summary>
+        static bool Property(object o, string name)
+        {
+            var p = o.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (p == null) return false;
+            object v = p.GetValue(o, null);
+            return v is bool && (bool)v;
         }
 
         /// <summary>反射找壳内第一个 NumericUpDown 的宽 (探针不用 Linq)。</summary>

@@ -395,8 +395,33 @@ namespace StereoSplitter
             }
         }
 
+        // 批131: 缩放防闪合成开关的诊断计数 (探针读)。
+        internal int resizeGuardBegins, resizeGuardEnds;
+        internal bool resizeEndAfter, resizeBeginAfter;
+        internal bool ResizeComposited { get { return IsHandleCreated && ResizeFlickerGuard.IsComposited(Handle); } }
+
         protected override void WndProc(ref Message m)
         {
+            // 批131: 缩放拖边期间整窗合成绘制, 消除列表/日志/滑条逐个重绘的闪帧。
+            if (m.Msg == 0x0231 /* WM_ENTERSIZEMOVE */)
+            {
+                ResizeFlickerGuard.Begin(Handle);
+                resizeGuardBegins++;
+                resizeBeginAfter = ResizeFlickerGuard.IsComposited(Handle);
+                base.WndProc(ref m);
+                return;
+            }
+            if (m.Msg == 0x0232 /* WM_EXITSIZEMOVE */)
+            {
+                resizeGuardEnds++;
+                // 必须放在 base 之后: WinForms 处理 EXIT 时会重读/恢复 ExStyle, 先清会被盖回。
+                base.WndProc(ref m);
+                ResizeFlickerGuard.End(Handle);
+                resizeEndAfter = ResizeFlickerGuard.IsComposited(Handle);
+                Invalidate(true);
+                if (IsHandleCreated) BeginInvoke((Action)(() => { try { if (!IsDisposed) Invalidate(true); } catch { } }));
+                return;
+            }
             if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
             {
                 m.Result = IntPtr.Zero;
