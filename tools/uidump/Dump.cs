@@ -142,7 +142,8 @@ namespace StereoSplitter
                         // 批108: 圆角弧线中段不能被白色内容面板盖掉。沿右上角弧线取三个
                         // 采样点 (y=2/3/4 物理 px, x 按当前 DPI 的弧线几何实时算), 全白
                         // 就说明又出现了"白缝"。固定偏移在 100%/125% 下弧线位置不同 (批118)。
-                        float R = RoundedCombo.PopupRadius * Dpi.Factor;
+                        // 注意 PopupRadius (=WindowRadiusPx=Dpi.S(8)) 已是缩放后像素, 别再乘 Factor。
+                        float R = RoundedCombo.PopupRadius;
                         float cx = fy.Width - 1 - R, cyy = R;
                         Func<int, int> arcX = delegate(int y)
                         {
@@ -559,6 +560,22 @@ namespace StereoSplitter
                     Console.Out.WriteLine("CALIB-STYLE border=" + cf.FormBorderStyle
                         + " paddingTop=" + cf.Padding.Top + " close=" + (titleClose != null ? titleClose.Bounds.ToString() : "null")
                         + " verdict=" + (styled ? "OK" : "FAIL<<<"));
+                    // 批119: 日志对齐主窗口风格 —— 裸 TextBox 换成 RoundLogShell 包 LogTextBox,
+                    // 字体/底色/右键菜单与主窗口日志同款。
+                    Control calibShell = Field(cf, "logShell") as Control;
+                    Control calibInner = calibShell != null && calibShell.Controls.Count > 0 ? calibShell.Controls[0] : null;
+                    TextBox logBox = calibInner as TextBox;
+                    ContextMenuStrip cmsLog = logBox != null ? logBox.ContextMenuStrip : null;
+                    bool logOk = calibShell is RoundLogShell
+                        && logBox != null
+                        && logBox.BackColor == Color.FromArgb(250, 250, 250)
+                        && logBox.BorderStyle == BorderStyle.None
+                        && logBox.ReadOnly
+                        && cmsLog != null && cmsLog.Items.Count == 3;
+                    Console.Out.WriteLine("CALIB-LOG shell=" + (calibShell != null ? calibShell.Bounds.ToString() : "null")
+                        + " back=" + (logBox != null ? logBox.BackColor.ToString() : "null")
+                        + " menu=" + (cmsLog != null ? cmsLog.Items.Count.ToString() : "null")
+                        + " verdict=" + (logOk ? "OK" : "FAIL<<<"));
                     Rectangle calibScreen = cf.RectangleToScreen(cf.ClientRectangle);
                     using (var bmp = new Bitmap(calibScreen.Width, calibScreen.Height))
                     {

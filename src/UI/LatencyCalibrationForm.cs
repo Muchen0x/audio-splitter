@@ -74,7 +74,10 @@ namespace StereoSplitter
         readonly RoundButton btnStart = new RoundButton { Text = "开始校准" };
         readonly RoundButton btnApply = new RoundButton { Text = "应用建议值" };
         readonly RoundButton btnClose = new RoundButton { Text = "关闭" };
-        readonly TextBox txtLog = new TextBox();
+        readonly LogTextBox txtLog = new LogTextBox();
+        /// <summary>批119: 日志圆角壳 (与主窗口同一套): 圆角浅灰框 + 左右对称内衬 + 自绘细滚动条。
+        /// 在 BuildUi 里赋值, 不能 readonly。</summary>
+        RoundLogShell logShell;
 
         List<MicDeviceInfo> mics = new List<MicDeviceInfo>();
         Thread worker;
@@ -176,13 +179,20 @@ namespace StereoSplitter
             btnClose.Size = new Size(90, 28);
             btnClose.Click += (s, e) => Close();
 
-            txtLog.Location = new Point(12, 306 + top);
-            txtLog.Size = new Size(556, 202);
+            // 批119: 日志显示对齐主窗口风格 —— 同一款 LogTextBox + RoundLogShell 圆角壳
+            // (圆角浅灰框 + 左右 10 设计px 对称内衬 + 自绘 4px 圆头细滚动条), 字体/底色也同款。
+            // 位置尺寸沿用原裸 TextBox 的摆位; BorderStyle/ScrollBars 由壳的构造统一接管。
             txtLog.Multiline = true;
             txtLog.ReadOnly = true;
-            txtLog.ScrollBars = ScrollBars.Vertical;
-            txtLog.BackColor = Color.White;
+            txtLog.BackColor = Color.FromArgb(250, 250, 250);   // 主窗口日志同款底色
+            txtLog.Font = new Font("Consolas", 9F);             // 主窗口日志同款等宽字体
             txtLog.WordWrap = true;
+            logShell = new RoundLogShell(txtLog)
+            {
+                Location = new Point(12, 306 + top),
+                Size = new Size(556, 202)
+            };
+            txtLog.ContextMenuStrip = BuildLogMenu();
 
             // 按钮换成主窗口同款自绘圆角描边按钮 (白底 + 同一支浅灰边框 + 深灰字)
             foreach (var b in new[] { btnRescan, btnStart, btnApply, btnClose })
@@ -196,7 +206,7 @@ namespace StereoSplitter
             Controls.AddRange(new Control[]
             {
                 lblMic, cmbMic, btnRescan, lblTip, lv, lblState,
-                btnStart, btnApply, btnClose, txtLog, titleClose
+                btnStart, btnApply, btnClose, logShell, titleClose
             });
             // 与主窗口同一套 DPI 放大 + 圆角边框 (控件都按 96 DPI 摆好后, Load 里整体乘一次)
             Load += (s2, e2) =>
@@ -304,6 +314,16 @@ namespace StereoSplitter
                         m.Result = (IntPtr)HTCAPTION;
                 }
             }
+        }
+
+        /// <summary>日志右键菜单 (批119): 与主窗口日志同一套 (复制 / 全选)。</summary>
+        ContextMenuStrip BuildLogMenu()
+        {
+            var cms = new ContextMenuStrip();
+            cms.Items.Add("复制", null, (s, e) => txtLog.Copy());
+            cms.Items.Add(new ToolStripSeparator());
+            cms.Items.Add("全选", null, (s, e) => txtLog.SelectAll());
+            return cms;
         }
 
         protected override void Dispose(bool disposing)
