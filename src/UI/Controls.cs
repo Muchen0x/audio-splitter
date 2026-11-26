@@ -1499,6 +1499,77 @@ namespace StereoSplitter
     }
 
     /// <summary>
+    /// 列表圆角壳 (批120): 包 ListView, 与 RoundLogShell 同一套观感 —— 圆角浅灰描边,
+    /// 系统边框藏掉, 列表的直角被 Region 切成圆角。列表的原生滚动条保留 (内容超高时
+    /// 照常可滚), 平时 (无滚动条) 与日志壳的观感完全一致。
+    /// </summary>
+    class RoundListShell : Panel
+    {
+        static Color BorderCol { get { return OutputCardControl.BorderColor; } }   // 与日志壳/卡片同一套浅灰框
+        static int CornerRadius { get { return NoFocusSplitContainer.WindowRadiusPx; } }   // 与窗口圆角同一弧度
+
+        public readonly ListView Inner;
+
+        public RoundListShell(ListView list)
+        {
+            Inner = list;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.ResizeRedraw, true);
+            list.BorderStyle = BorderStyle.None;      // 3D 边框不要, 圆角描边由外壳画
+            Controls.Add(list);
+            Size = list.Size;
+        }
+
+        void Recalc()
+        {
+            if (Inner == null || IsDisposed) return;
+            Inner.SetBounds(1, 1, Math.Max(1, Width - 2), Math.Max(1, Height - 2));
+            Region old = Inner.Region;
+            // 区域在 Inner 自己的坐标里: 外壳内衬圆角平移 Inner 原点后与窗口矩形求交
+            // (与日志壳同一手法)。原生滚动条在窗口右缘, 被路径覆盖所以照常可用。
+            using (var path = UiDraw.RoundRect(
+                new RectangleF(-1f, -1f, Width - 2f, Height - 2f), CornerRadius - 1f))
+            {
+                var reg = new Region(path);
+                reg.Intersect(new Rectangle(0, 0, Inner.Width, Inner.Height));
+                Inner.Region = reg;
+            }
+            if (old != null) old.Dispose();
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            BeginInvoke((Action)Recalc);   // 等消息循环走起来再摆 (与日志壳同理)
+        }
+
+        protected override void OnResize(EventArgs eventargs)
+        {
+            base.OnResize(eventargs);
+            Recalc();                      // DPI 缩放/布局变化时列表每步跟随
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            // 圆角外四个小角补成父容器底色 (与日志壳同一手法)
+            Color outside = Parent != null ? Parent.BackColor : SystemColors.Control;
+            using (var b = new SolidBrush(outside)) g.FillRectangle(b, ClientRectangle);
+
+            using (var path = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), CornerRadius))
+            using (var fill = new SolidBrush(Inner.BackColor))
+                g.FillPath(fill, path);
+
+            // 边框最后画: 同一套浅灰细边, 半像素对齐
+            using (var path = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), CornerRadius))
+            using (var pen = new Pen(BorderCol, 1f))
+                g.DrawPath(pen, path);
+        }
+    }
+
+    /// <summary>
     /// 输出卡片区滚动条覆盖层: 画在卡片区窗口**之上**的窄竖条控件 (宽 = 右侧留白带),
     /// 滑条的绘制与全部鼠标交互都在它身上。为什么要一层覆盖件而不直接在壳 (<see cref="CardScrollShell"/>,
     /// 卡片区的父窗口) 上画: 父窗口的绘制被 WS_CLIPCHILDREN 语义裁进子窗口矩形之外 ——

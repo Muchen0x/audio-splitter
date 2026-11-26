@@ -69,6 +69,8 @@ namespace StereoSplitter
         readonly RoundedCombo cmbMic = new RoundedCombo { Height = 24, ItemHeight = 24, MaxDropDownItems = 10 };
         readonly RoundButton btnRescan = new RoundButton { Text = "刷新" };
         readonly ListView lv = new ListView();
+        /// <summary>批120: 列表圆角壳 (与日志壳同一套观感)。在 BuildUi 里赋值, 不能 readonly。</summary>
+        RoundListShell listShell;
         readonly Label lblTip = new Label();
         readonly Label lblState = new Label();
         readonly RoundButton btnStart = new RoundButton { Text = "开始校准" };
@@ -157,11 +159,25 @@ namespace StereoSplitter
             lv.HeaderStyle = ColumnHeaderStyle.Nonclickable;
             lv.MultiSelect = false;
             lv.HideSelection = true;
+            // 列宽 (设计px): 数值列加宽到 84 —— 原来 66 放不下 "87.1 ms" 这类值 (125% 下必截断);
+            // 「输出设备」列不写死, LayoutListCols 按列表实际宽度把剩余宽度全给它 (批120:
+            // 原来列总宽 536 < 列表 556, 尾部多一条无主空白列)。
             lv.Columns.Add("输出设备", 226);
-            lv.Columns.Add("当前延迟", 66, HorizontalAlignment.Right);
-            lv.Columns.Add("实测", 66, HorizontalAlignment.Right);
-            lv.Columns.Add("建议", 66, HorizontalAlignment.Right);
-            lv.Columns.Add("状态", 112);
+            lv.Columns.Add("当前延迟", 84, HorizontalAlignment.Right);
+            lv.Columns.Add("实测", 84, HorizontalAlignment.Right);
+            lv.Columns.Add("建议", 84, HorizontalAlignment.Right);
+            lv.Columns.Add("状态", 120);
+            LayoutListCols();
+            lv.Resize += (s, e) => LayoutListCols();
+
+            // 批120: 列表也包进圆角壳 (与日志壳同一套): 圆角浅灰描边, 系统 3D 边框藏掉。
+            // 注意 Location/Size 必须用字面量 (与下面 logShell 同理) —— 构造函数里 Size 赋值
+            // 会触发 Recalc 把 lv 挪到 (1,1), 引用 lv 的现值就会把壳摆错位置 (批120 实测踩坑)。
+            listShell = new RoundListShell(lv)
+            {
+                Location = new Point(12, 96 + top),
+                Size = new Size(556, 140)
+            };
 
             lblState.Location = new Point(12, 244 + top);
             lblState.Size = new Size(556, 20);
@@ -205,7 +221,7 @@ namespace StereoSplitter
 
             Controls.AddRange(new Control[]
             {
-                lblMic, cmbMic, btnRescan, lblTip, lv, lblState,
+                lblMic, cmbMic, btnRescan, lblTip, listShell, lblState,
                 btnStart, btnApply, btnClose, logShell, titleClose
             });
             // 与主窗口同一套 DPI 放大 + 圆角边框 (控件都按 96 DPI 摆好后, Load 里整体乘一次)
@@ -324,6 +340,22 @@ namespace StereoSplitter
             cms.Items.Add(new ToolStripSeparator());
             cms.Items.Add("全选", null, (s, e) => txtLog.SelectAll());
             return cms;
+        }
+
+        /// <summary>
+        /// 列宽分配 (批120): 数值列按 DPI 设物理宽 (ListView 列宽不随 ScaleForm 缩放 ——
+        /// 原 66px 在 125% 下就是物理 66px, "87.1 ms" 这类值必截断, 这正是要修的问题);
+        /// 「输出设备」列吃掉剩余全部宽度 —— 列总宽恒等于列表客户区宽, 尾部不再有无主空白列。
+        /// </summary>
+        void LayoutListCols()
+        {
+            if (lv.Columns.Count < 5 || lv.ClientSize.Width <= 0) return;
+            lv.Columns[1].Width = Dpi.S(84);
+            lv.Columns[2].Width = Dpi.S(84);
+            lv.Columns[3].Width = Dpi.S(84);
+            lv.Columns[4].Width = Dpi.S(120);
+            int fixedW = Dpi.S(84) * 3 + Dpi.S(120);
+            lv.Columns[0].Width = Math.Max(Dpi.S(80), lv.ClientSize.Width - fixedW);
         }
 
         protected override void Dispose(bool disposing)

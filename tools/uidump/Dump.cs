@@ -576,6 +576,29 @@ namespace StereoSplitter
                         + " back=" + (logBox != null ? logBox.BackColor.ToString() : "null")
                         + " menu=" + (cmsLog != null ? cmsLog.Items.Count.ToString() : "null")
                         + " verdict=" + (logOk ? "OK" : "FAIL<<<"));
+                    // 批120: 列表也对齐圆角壳 + 列宽动态分配 (数值列不截断, 尾部无空白列)。
+                    Control listShellCtl = Field(cf, "listShell") as Control;
+                    ListView lvCalib = listShellCtl != null && listShellCtl.Controls.Count > 0
+                        ? listShellCtl.Controls[0] as ListView : null;
+                    bool listOk = listShellCtl is RoundListShell
+                        && lvCalib != null
+                        && lvCalib.BorderStyle == BorderStyle.None
+                        && lvCalib.Columns.Count == 5;
+                    int colSum = 0;
+                    if (lvCalib != null) foreach (ColumnHeader ch in lvCalib.Columns) colSum += ch.Width;
+                    // 数值列 (1..3) 至少 Dpi.S(84), "87.1 ms" 这类值放得下; 列总宽不超客户区 (无空白列)
+                    bool colsOk = lvCalib != null
+                        && lvCalib.Columns[1].Width >= Dpi.S(84)
+                        && lvCalib.Columns[2].Width >= Dpi.S(84)
+                        && lvCalib.Columns[3].Width >= Dpi.S(84)
+                        && colSum <= lvCalib.ClientSize.Width + 1;
+                    Console.Out.WriteLine("CALIB-LIST shell=" + (listShellCtl != null ? listShellCtl.Bounds.ToString() : "null")
+                        + " lv=" + (lvCalib != null ? lvCalib.Bounds.ToString() : "null")
+                        + " cols=" + (lvCalib != null
+                            ? lvCalib.Columns[0].Width + "/" + lvCalib.Columns[1].Width + "/" + lvCalib.Columns[2].Width
+                              + "/" + lvCalib.Columns[3].Width + "/" + lvCalib.Columns[4].Width : "null")
+                        + " colSum=" + colSum + " clientW=" + (lvCalib != null ? lvCalib.ClientSize.Width : -1)
+                        + " verdict=" + (listOk && colsOk ? "OK" : "FAIL<<<"));
                     Rectangle calibScreen = cf.RectangleToScreen(cf.ClientRectangle);
                     using (var bmp = new Bitmap(calibScreen.Width, calibScreen.Height))
                     {
