@@ -539,8 +539,9 @@ namespace StereoSplitter
             {
                 var lanes = new System.Collections.Generic.List<CalibLane>
                 {
-                    new CalibLane { DeviceId = "a", Display = "扬声器 (9- Xiaomi Speaker-3178)", CurrentDelayMs = 0 },
-                    new CalibLane { DeviceId = "b", Display = "扬声器 (2- Xiaomi Speaker-7801)", CurrentDelayMs = 120 }
+                    new CalibLane { DeviceId = "a", Display = "OF24Q (NVIDIA High Definition Audio)", CurrentDelayMs = 24 },
+                    new CalibLane { DeviceId = "b", Display = "扬声器 (2- Xiaomi Speaker-3178)", CurrentDelayMs = 0 },
+                    new CalibLane { DeviceId = "c", Display = "扬声器 (2- Xiaomi Speaker-7801)", CurrentDelayMs = 0 }
                 };
                 using (var cf = new LatencyCalibrationForm(lanes, 5, delegate { }))
                 {
@@ -616,6 +617,16 @@ namespace StereoSplitter
                     bool scrollOk = false; string scrollDbg = "null";
                     if (lv12 != null && lv12.IsHandleCreated)
                     {
+                        // 批122: 溢出态列头宽度 —— 原生条被吸收后, 列头是否仍被挤窄一段
+                        IntPtr hH2 = SendMessage(lv12.Handle, 0x101F, IntPtr.Zero, IntPtr.Zero);   // LVM_GETHEADER
+                        var rcH2 = new RECT(); GetWindowRect(hH2, ref rcH2);
+                        var rcL2 = new RECT(); GetWindowRect(lv12.Handle, ref rcL2);
+                        Console.Out.WriteLine("CALIB-HEADER12 headerW=" + (rcH2.Right - rcH2.Left)
+                            + " lvW=" + (rcL2.Right - rcL2.Left) + " clientW=" + lv12.ClientSize.Width
+                            + " colSum=" + (lv12.Columns[0].Width + lv12.Columns[1].Width + lv12.Columns[2].Width
+                                + lv12.Columns[3].Width + lv12.Columns[4].Width)
+                            + " verdict=" + (Math.Abs((rcH2.Right - rcH2.Left) - (rcL2.Right - rcL2.Left)) <= 1
+                                ? "OK" : "FAIL<<<"));   // 批122: 列头必须全宽 (原生条留位要被拉回)
                         ScrollInfo? s0 = VertScrollInfo(lv12);
                         if (s0.HasValue)
                         {
@@ -646,6 +657,30 @@ namespace StereoSplitter
                         using (var g = Graphics.FromImage(bmp))
                             g.CopyFromScreen(calibScreen.Location, Point.Empty, calibScreen.Size);
                         bmp.Save("calib-styled.png", System.Drawing.Imaging.ImageFormat.Png);
+                        // 批122: 右上角特写 (放大 4 倍) —— 查列头右端的"多余分隔条"是什么
+                        if (lvCalib != null && lvCalib.IsHandleCreated)
+                        {
+                            IntPtr hHeader = SendMessage(lvCalib.Handle, 0x101F, IntPtr.Zero, IntPtr.Zero);   // LVM_GETHEADER
+                            var rc = new RECT(); GetWindowRect(hHeader, ref rc);
+                            var rlv = new RECT(); GetWindowRect(lvCalib.Handle, ref rlv);
+                            Console.Out.WriteLine("CALIB-HEADER headerW=" + (rc.Right - rc.Left)
+                                + " lvW=" + (rlv.Right - rlv.Left) + " clientW=" + lvCalib.ClientSize.Width
+                                + " colSum=" + colSum
+                                + " verdict=" + (Math.Abs((rc.Right - rc.Left) - (rlv.Right - rlv.Left)) <= 1
+                                    ? "OK" : "FAIL<<<"));
+                            int cw = 56, ch = 56;
+                            using (var crop = new Bitmap(cw * 4, ch * 4))
+                            {
+                                using (var g2 = Graphics.FromImage(crop))
+                                {
+                                    g2.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                                    g2.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                                    g2.DrawImage(bmp, new Rectangle(0, 0, cw * 4, ch * 4),
+                                        new Rectangle(lvCalib.Width - cw, 0, cw, ch), GraphicsUnit.Pixel);
+                                }
+                                crop.Save("calib-corner.png", System.Drawing.Imaging.ImageFormat.Png);
+                            }
+                        }
                     }
                     foreach (Control c in cf.Controls)
                     {
@@ -3699,6 +3734,11 @@ namespace StereoSplitter
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct RECT { public int Left, Top, Right, Bottom; }
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool GetWindowRect(IntPtr hWnd, ref RECT rc);
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern int GetWindowLong(IntPtr hWnd, int nIndex);
