@@ -1499,20 +1499,27 @@ namespace StereoSplitter
     }
 
     /// <summary>
-    /// 会汇报滚动、且**原生滚动条永不占位/永不绘制**的 ListView (批121; 批122 补两刀)。
+    /// 会汇报滚动、且**原生滚动条永不占位/永不绘制**的 ListView (批121; 批123 列宽策略反转)。
     /// <para>拦 <see cref="WM_NCCALCSIZE"/>: 系统默认会为可见的原生滚动条留出非客户区
     /// (client 缩一圈) —— 这里把那条留位扩回 client, 原生条被整个盖进客户区之下;
     /// client 尺寸因此与滚动条状态**无关** —— 不会出现"竖条出现 → client 变窄 → 列宽
     /// 重排 → 又触发布局"的环形依赖 (加宽窗口再校正的老方案在 ListView 上就是这么震荡的)。
     /// <see cref="WM_NCPAINT"/> 直接吞掉: 滚动条只在非客户区绘制, 子窗口没有边框可画,
-    /// 吞掉后任何瞬态/残迹 (列头行右端的小箭头碎块) 都不再出现。滚动机制
-    /// (滚轮/WM_VSCROLL/GetScrollInfo) 原样保留。竖向滚动发生 (滚轮/拖条/WM_VSCROLL)
-    /// 或竖条状态翻转后发 <see cref="Scrolled"/>, 供 <see cref="RoundListShell"/>
-    /// 重画自绘细滑条 + 把列头拉回全宽。</para>
+    /// 吞掉后任何瞬态/残迹 (列头行右端的小箭头碎块) 都不再出现。</para>
+    /// <para>批123: LV 自己的内部布局宽 = client - 一条原生竖条宽 (竖条在时) —— 批122
+    /// 把列头硬拉回全宽是错方向: LV 内部仍按窄宽排版, 列总宽 (按全 client 算) 大于内部宽
+    /// → LV 以为要横向滚动, 行能横移而列头被我们钉在 x=0 → 行动了列头不动 (错位)。
+    /// 正解是反过来: 列宽总和**跟随 LV 排出来的列头宽** (<see cref="HeaderWidthPx"/>) ——
+    /// 三方 (列头/列/行) 恒等, 横向滚动失去存在理由。竖条翻转 / WM_SIZE / WM_PAINT 之后
+    /// 发 <see cref="LayoutSettled"/>, 让窗体把列宽重新对齐; 滚动本身发 <see cref="Scrolled"/>
+    /// 供壳画自绘细滑条。分隔条拖动用 <see cref="OnColumnWidthChanging"/> 整体禁掉 ——
+    /// 固定宽度的对话框里拖出来的列宽没有任何好结果。</para>
     /// </summary>
     class ScrollListView : ListView
     {
         public event EventHandler Scrolled;
+        /// <summary>LV 刚做完自己的布局 (列头重排/竖条翻转) —— 窗体该把列宽对齐了。</summary>
+        public event EventHandler LayoutSettled;
         const int WM_NCCALCSIZE = 0x0083, WM_NCPAINT = 0x0085, WM_VSCROLL = 0x115, WM_MOUSEWHEEL = 0x20A;
         const int GWL_STYLE = -16;
         const int WS_VSCROLL = 0x00200000, WS_HSCROLL = 0x00100000;
@@ -1523,40 +1530,51 @@ namespace StereoSplitter
         struct NCCALCSIZE_PARAMS { public RECT rgrc0, rgrc1, rgrc2; public IntPtr lppos; }
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-
-        int lastBarStyle = -1;   // 上次 NCCALCSIZE 时的滚动条 style 位 (检测翻转 → 通知壳)
-
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern bool GetWindowRect(IntPtr hWnd, ref RECT rc);
-        [System.Runtime.InteropServices.DllImport("user32.dll")]
-        static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, int flags);
         const int LVM_GETHEADER = 0x101F;
-        const int SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010;
+
+        int lastBarStyle = -1;   // 上次 NCCALCSIZE 时的滚动条 style 位 (检测翻转 → 通知壳)
+
+        /// <summary>原生竖条 style 位是否在 (LV 决定显示竖条时置位, 与我们的吸收无关)。</summary>
+        public bool VBarVisible
+        {
+            get { return IsHandleCreated && (GetWindowLong(Handle, GWL_STYLE) & WS_VSCROLL) != 0; }
+        }
 
         /// <summary>
-        /// 把列头子窗口拉回全宽 (批122): LV 有原生竖条留位时会把列头排窄一条条宽
-        /// (实测 660 vs client 681), 而条已被 WM_NCCALCSIZE 吸进 client —— 那截空隙就是
-        /// 列头行右端"多余分隔条"的来源。LV 在每次 WM_SIZE / 竖条翻转时都会重排,
-        /// 所以这两处之后都要再拉一次 (宽度已等则不动, 不会抖)。
+        /// LV 自己排出来的列头宽 (批123) —— 它等于 LV 的内部布局宽 (竖条在时窄一条条宽)。
+        /// 这是列宽分配的**唯一权威**: 列总宽对齐它, 行/列头/列三方恒一致, 永不横滚。
+        /// 句柄没建或量不到时返回 -1 (调用方退回 ClientSize.Width)。
         /// </summary>
-        public void FixHeaderWidth()
+        public int HeaderWidthPx
         {
-            if (!IsHandleCreated) return;
-            try
+            get
             {
-                IntPtr hh = SendMessage(Handle, LVM_GETHEADER, IntPtr.Zero, IntPtr.Zero);
-                if (hh == IntPtr.Zero) return;
-                var rc = new RECT();
-                if (!GetWindowRect(hh, ref rc)) return;
-                int wantW = ClientSize.Width;
-                int before = rc.Right - rc.Left;
-                if (before == wantW) return;
-                SetWindowPos(hh, IntPtr.Zero, 0, 0, wantW, rc.Bottom - rc.Top,
-                    SWP_NOZORDER | SWP_NOACTIVATE);
+                if (!IsHandleCreated) return -1;
+                try
+                {
+                    IntPtr hh = SendMessage(Handle, LVM_GETHEADER, IntPtr.Zero, IntPtr.Zero);
+                    var rc = new RECT();
+                    if (hh == IntPtr.Zero || !GetWindowRect(hh, ref rc)) return -1;
+                    return rc.Right - rc.Left;
+                }
+                catch { return -1; }
             }
-            catch { }
+        }
+
+        /// <summary>
+        /// 分隔条一律不可拖 (批123): 拖动会改变列宽, 而列宽由窗体统一分配 —— 拖出来的
+        /// 结果必然被拉回, 还会在列头右端拖出一条悬空的"多余分隔线"。宽度变化请求直接
+        /// 取消并保持原宽。只拦用户拖动; 程序设宽走 ColumnWidthChanged, 不经过这里。
+        /// </summary>
+        protected override void OnColumnWidthChanging(ColumnWidthChangingEventArgs e)
+        {
+            base.OnColumnWidthChanging(e);
+            e.Cancel = true;
+            e.NewWidth = Columns[e.ColumnIndex].Width;
         }
 
         protected override void WndProc(ref Message m)
@@ -1586,9 +1604,10 @@ namespace StereoSplitter
                     lastBarStyle = style;
                     if (!first)
                     {
-                        var h = Scrolled;   // 竖条翻转: 壳要重画滑条 + 列头拉回全宽
+                        var h = Scrolled;   // 竖条翻转: 壳重画滑条
                         if (h != null) h(this, EventArgs.Empty);
-                        BeginInvoke((Action)FixHeaderWidth);   // LV 稍后重排完列头再拉回
+                        // LV 稍后会按新的内部宽重排列头 —— 等它排完再对齐列宽
+                        BeginInvoke((Action)FireSettled);
                     }
                 }
                 return;
@@ -1596,12 +1615,18 @@ namespace StereoSplitter
             bool isSize = m.Msg == 0x0005;             // WM_SIZE: LV 在里面重排列头
             bool isPaint = m.Msg == 0x000F;            // WM_PAINT: 首绘/重绘时 LV 也会再排一次列头
             base.WndProc(ref m);
-            if (isSize || isPaint) FixHeaderWidth();   // base 排完立刻拉回 (宽度已等则空操作)
+            if (isSize || isPaint) FireSettled();      // base 排完列头, 窗体跟着对齐列宽
             else if (m.Msg == WM_VSCROLL || m.Msg == WM_MOUSEWHEEL)
             {
                 var h = Scrolled;
                 if (h != null) h(this, EventArgs.Empty);
             }
+        }
+
+        void FireSettled()
+        {
+            var h = LayoutSettled;
+            if (h != null) h(this, EventArgs.Empty);
         }
     }
 
@@ -1610,7 +1635,7 @@ namespace StereoSplitter
     /// 圆角浅灰描边 + 右侧 4px 圆头细滑条。原生滚动条由 <see cref="ScrollListView"/> 的
     /// WM_NCCALCSIZE 处理吸进 client (不可见、点不到), 滚动机制原样保留; 壳只负责在右侧
     /// 滑条带里画自绘细滑条 —— 内容一屏放得下时不画 ("显示完全就不要滚动条"); 横向永远
-    /// 不滚 (列宽恒等于客户区宽)。
+    /// 不滚 (列总宽由窗体对齐 LV 的列头宽, 批123)。
     /// </summary>
     class RoundListShell : Panel
     {
@@ -1651,9 +1676,9 @@ namespace StereoSplitter
             list.BorderStyle = BorderStyle.None;      // 3D 边框不要, 圆角描边由外壳画
             Controls.Add(list);
             if (scrollable != null)
-                scrollable.Scrolled += delegate { RefreshBar(); FixHeader(); };
+                scrollable.Scrolled += delegate { RefreshBar(); };
             // 竖条出现/消失会改 client 宽: 重新摆窗口 + 重画滑条 (Item 增删/尺寸变化都会走到)
-            list.ClientSizeChanged += delegate { Recalc(); RefreshBar(); FixHeader(); };
+            list.ClientSizeChanged += delegate { Recalc(); RefreshBar(); };
             Size = list.Size;
         }
 
@@ -1662,19 +1687,6 @@ namespace StereoSplitter
         {
             Recalc();
             RefreshBar();
-            FixHeader();
-        }
-
-        /// <summary>
-        /// 把列头子窗口拉回全宽 (批122): LV 给原生竖条留位时会把列头排窄一条滚动条宽,
-        /// 而条已被 <see cref="ScrollListView"/> 的 WM_NCCALCSIZE 吸进 client —— 那截空隙
-        /// 就是列头行右端"多余分隔条"的来源 (列头右缘 + 空隙里的背景断成两截)。
-        /// 实际修复在 <see cref="ScrollListView.FixHeaderWidth"/> (挂在 LV 自己的
-        /// WM_SIZE/竖条翻转消息流里才能压住它每次的重排); 这里只是外部入口转发。
-        /// </summary>
-        void FixHeader()
-        {
-            if (scrollable != null) scrollable.FixHeaderWidth();
         }
 
         /// <summary>
@@ -1700,8 +1712,6 @@ namespace StereoSplitter
                 Inner.Region = reg;
             }
             if (old != null) old.Dispose();
-            // LV 会在自己的 WM_SIZE 里重排列头 (有原生条留位时排窄) —— 等它排完再拉回全宽
-            if (Inner.IsHandleCreated && IsHandleCreated) BeginInvoke((Action)FixHeader);
         }
 
         protected override void OnHandleCreated(EventArgs e)

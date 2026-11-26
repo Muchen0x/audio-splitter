@@ -172,6 +172,10 @@ namespace StereoSplitter
             // 竖向滚动条出现/消失会改客户区宽 (列总宽没跟着变就会挤出原生横向条 —— 截图里的
             // 那条就是它)。客户区一变就重排列宽, 横向永远刚好放满, 原生横条从此没理由出现。
             lv.ClientSizeChanged += (s, e) => LayoutListCols();
+            // 批123: LV 每次自己重排完布局 (WM_SIZE/重绘/竖条翻转/滚动) 都把列宽重新对齐
+            // 到它排出来的列头宽 —— 列/列头/行三方恒一致, 横向滚动与悬空分隔线失去存在理由。
+            lv.LayoutSettled += (s, e) => LayoutListCols();
+            lv.Scrolled += (s, e) => LayoutListCols();
 
             // 批120: 列表也包进圆角壳 (与日志壳同一套): 圆角浅灰描边, 系统 3D 边框藏掉。
             // 注意 Location/Size 必须用字面量 (与下面 logShell 同理) —— 构造函数里 Size 赋值
@@ -346,19 +350,25 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 列宽分配 (批120): 数值列按 DPI 设物理宽 (ListView 列宽不随 ScaleForm 缩放 ——
-        /// 原 66px 在 125% 下就是物理 66px, "87.1 ms" 这类值必截断, 这正是要修的问题);
-        /// 「输出设备」列吃掉剩余全部宽度 —— 列总宽恒等于列表客户区宽, 尾部不再有无主空白列。
+        /// 列宽分配 (批120; 批123 目标宽换权威): 数值列按 DPI 设物理宽 (ListView 列宽不随
+        /// ScaleForm 缩放), 「输出设备」列吃掉剩余全部宽度。
+        /// <para>批123: 目标宽从 ClientSize.Width 换成 <see cref="ScrollListView.HeaderWidthPx"/>
+        /// —— LV 有原生竖条留位时内部布局宽比 client 窄一条条宽, 列总宽必须对齐它:
+        /// 对齐 client 反而多出一条竖条宽 → LV 以为要横滚 (行动了列头不动, 错位);
+        /// 对齐列头则列/列头/行三方恒等, 横滚与悬空分隔线都失去存在理由。列头量不到时
+        /// (句柄未建) 退回 ClientSize.Width。</para>
         /// </summary>
         void LayoutListCols()
         {
             if (lv.Columns.Count < 5 || lv.ClientSize.Width <= 0) return;
+            int target = lv.HeaderWidthPx;
+            if (target <= 0) target = lv.ClientSize.Width;
             lv.Columns[1].Width = Dpi.S(84);
             lv.Columns[2].Width = Dpi.S(84);
             lv.Columns[3].Width = Dpi.S(84);
             lv.Columns[4].Width = Dpi.S(120);
             int fixedW = Dpi.S(84) * 3 + Dpi.S(120);
-            lv.Columns[0].Width = Math.Max(Dpi.S(80), lv.ClientSize.Width - fixedW);
+            lv.Columns[0].Width = Math.Max(Dpi.S(80), target - fixedW);
         }
 
         protected override void Dispose(bool disposing)

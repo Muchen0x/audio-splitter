@@ -617,16 +617,22 @@ namespace StereoSplitter
                     bool scrollOk = false; string scrollDbg = "null";
                     if (lv12 != null && lv12.IsHandleCreated)
                     {
-                        // 批122: 溢出态列头宽度 —— 原生条被吸收后, 列头是否仍被挤窄一段
+                        // 批123: 溢出态 —— 列头宽应等于 client - 一条竖条宽 (LV 内部布局宽),
+                        // 列总宽对齐列头, 横向滚动量程为空 (行动/列头错位失去存在理由)。
                         IntPtr hH2 = SendMessage(lv12.Handle, 0x101F, IntPtr.Zero, IntPtr.Zero);   // LVM_GETHEADER
                         var rcH2 = new RECT(); GetWindowRect(hH2, ref rcH2);
                         var rcL2 = new RECT(); GetWindowRect(lv12.Handle, ref rcL2);
-                        Console.Out.WriteLine("CALIB-HEADER12 headerW=" + (rcH2.Right - rcH2.Left)
-                            + " lvW=" + (rcL2.Right - rcL2.Left) + " clientW=" + lv12.ClientSize.Width
-                            + " colSum=" + (lv12.Columns[0].Width + lv12.Columns[1].Width + lv12.Columns[2].Width
-                                + lv12.Columns[3].Width + lv12.Columns[4].Width)
-                            + " verdict=" + (Math.Abs((rcH2.Right - rcH2.Left) - (rcL2.Right - rcL2.Left)) <= 1
-                                ? "OK" : "FAIL<<<"));   // 批122: 列头必须全宽 (原生条留位要被拉回)
+                        int headerW2 = rcH2.Right - rcH2.Left;
+                        int colSum2 = lv12.Columns[0].Width + lv12.Columns[1].Width + lv12.Columns[2].Width
+                            + lv12.Columns[3].Width + lv12.Columns[4].Width;
+                        int barW2 = GetSystemMetrics(2);   // SM_CXVSCROLL
+                        bool hdrOk2 = Math.Abs(headerW2 - (lv12.ClientSize.Width - barW2)) <= 1
+                            && Math.Abs(colSum2 - headerW2) <= 1
+                            && ScrollInfoOf(lv12, 0) == null;   // 横向量程必须为空
+                        Console.Out.WriteLine("CALIB-HEADER12 headerW=" + headerW2
+                            + " clientW=" + lv12.ClientSize.Width + " barW=" + barW2
+                            + " colSum=" + colSum2
+                            + " verdict=" + (hdrOk2 ? "OK" : "FAIL<<<"));
                         ScrollInfo? s0 = VertScrollInfo(lv12);
                         if (s0.HasValue)
                         {
@@ -660,14 +666,19 @@ namespace StereoSplitter
                         // 批122: 右上角特写 (放大 4 倍) —— 查列头右端的"多余分隔条"是什么
                         if (lvCalib != null && lvCalib.IsHandleCreated)
                         {
+                            // 批123: 非溢出态 —— 列头 == client (无竖条留位), 列总宽对齐列头,
+                            // 横向量程为空; 列头右端不再有悬空的"多余分隔线"。
                             IntPtr hHeader = SendMessage(lvCalib.Handle, 0x101F, IntPtr.Zero, IntPtr.Zero);   // LVM_GETHEADER
                             var rc = new RECT(); GetWindowRect(hHeader, ref rc);
                             var rlv = new RECT(); GetWindowRect(lvCalib.Handle, ref rlv);
-                            Console.Out.WriteLine("CALIB-HEADER headerW=" + (rc.Right - rc.Left)
+                            int headerW = rc.Right - rc.Left;
+                            bool hdrOk = Math.Abs(headerW - lvCalib.ClientSize.Width) <= 1
+                                && Math.Abs(colSum - headerW) <= 1
+                                && ScrollInfoOf(lvCalib, 0) == null;
+                            Console.Out.WriteLine("CALIB-HEADER headerW=" + headerW
                                 + " lvW=" + (rlv.Right - rlv.Left) + " clientW=" + lvCalib.ClientSize.Width
                                 + " colSum=" + colSum
-                                + " verdict=" + (Math.Abs((rc.Right - rc.Left) - (rlv.Right - rlv.Left)) <= 1
-                                    ? "OK" : "FAIL<<<"));
+                                + " verdict=" + (hdrOk ? "OK" : "FAIL<<<"));
                             int cw = 56, ch = 56;
                             using (var crop = new Bitmap(cw * 4, ch * 4))
                             {
@@ -3790,13 +3801,16 @@ namespace StereoSplitter
         struct ScrollInfo { public int cbSize, fMask, nMin, nMax, nPage, nPos, nTrackPos; }
 
         /// <summary>读控件竖向滚动信息; 不需要滚动 (全文可见) 返回 null。</summary>
-        static ScrollInfo? VertScrollInfo(Control c)
+        static ScrollInfo? VertScrollInfo(Control c) { return ScrollInfoOf(c, 1); }
+
+        /// <summary>读指定方向滚动信息 (0=水平 1=竖向); 量程为空或不需要滚动返回 null。</summary>
+        static ScrollInfo? ScrollInfoOf(Control c, int nBar)
         {
             if (c == null || !c.IsHandleCreated) return null;
             var si = new ScrollInfo();
             si.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(ScrollInfo));
             si.fMask = 0x1 | 0x2 | 0x4;   // SIF_RANGE | SIF_PAGE | SIF_POS
-            if (!GetScrollInfo(c.Handle, 1, ref si) || si.nMax <= 0 || si.nPage >= si.nMax + 1) return null;
+            if (!GetScrollInfo(c.Handle, nBar, ref si) || si.nMax <= 0 || si.nPage >= si.nMax + 1) return null;
             return si;
         }
 
