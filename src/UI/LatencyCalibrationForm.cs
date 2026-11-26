@@ -162,10 +162,11 @@ namespace StereoSplitter
             // 列宽 (设计px): 数值列加宽到 84 —— 原来 66 放不下 "87.1 ms" 这类值 (125% 下必截断);
             // 「输出设备」列不写死, LayoutListCols 按列表实际宽度把剩余宽度全给它 (批120:
             // 原来列总宽 536 < 列表 556, 尾部多一条无主空白列)。
+            // 批126: 全部居左 (数值列原来右对齐, 用户要求网格文字统一居左)。
             lv.Columns.Add("输出设备", 226);
-            lv.Columns.Add("当前延迟", 84, HorizontalAlignment.Right);
-            lv.Columns.Add("实测", 84, HorizontalAlignment.Right);
-            lv.Columns.Add("建议", 84, HorizontalAlignment.Right);
+            lv.Columns.Add("当前延迟", 84);
+            lv.Columns.Add("实测", 84);
+            lv.Columns.Add("建议", 84);
             lv.Columns.Add("状态", 120);
             LayoutListCols();
             lv.Resize += (s, e) => LayoutListCols();
@@ -189,10 +190,33 @@ namespace StereoSplitter
             lv.Scrolled += (s, e) => LayoutListCols();
             // 批124: 分隔条拖动保留 —— 用户拖动后的列宽被尊重, 自动对齐让位;
             // 系统级事件 (窗口缩放/数据重填) 才回到自动分配。
-            lv.ColumnWidthChanged += (s, e) => { if (!colsAdjusting) colsUser = true; };
-            // 批125: 拖动**过程中** (逐像素 ColumnWidthChanging) 就立刻让位 —— 否则拖动期间
-            // 每次 WM_PAINT 还会触发 LayoutListCols 把列宽抢回去, 与拖动打架 = 文字闪烁。
-            lv.ColumnWidthChanging += (s, e) => { if (!colsAdjusting) colsUser = true; };
+            // 批126: 拖动中做两件事 —— 最小宽限制 (标题放不下就拦) + 实时补差 (弹性列吸收
+            // 差值, 列总宽恒等于列头宽: 悬空分隔线/幽灵拖点/行区细线从几何上消失)。
+            // 注意: ColumnWidthChanging 只在真实拖动时触发 (实测程序化设宽不发, 只有
+            // ColumnWidthChanged) —— 所以最小宽钳位与补差以 Changed 为可靠兜底,
+            // Changing 的 cancel 只是真实拖动的提前拦截 (分隔条停在最小宽, 不回弹)。
+            lv.ColumnWidthChanging += (s, e) =>
+            {
+                if (colsAdjusting || colsBalancing) return;
+                if (e.NewWidth < ColMinWidth(e.ColumnIndex)) e.Cancel = true;
+                else { colsUser = true; BalanceCols(e.ColumnIndex, e.NewWidth); }
+            };
+            lv.ColumnWidthChanged += (s, e) =>
+            {
+                if (colsAdjusting || colsBalancing) return;
+                colsUser = true;
+                if (e.ColumnIndex < 0 || e.ColumnIndex >= lv.Columns.Count) return;
+                // 兜底: 某些路径不发 Changing (实测程序化设宽只有 Changed) —— 最小宽钳位
+                // 和补差都在这里做一遍; 真实拖动时 Changing 已做过, 这里算出来差值为 0, 幂等。
+                colsBalancing = true;
+                try
+                {
+                    if (lv.Columns[e.ColumnIndex].Width < ColMinWidth(e.ColumnIndex))
+                        lv.Columns[e.ColumnIndex].Width = ColMinWidth(e.ColumnIndex);
+                    BalanceCols(e.ColumnIndex, lv.Columns[e.ColumnIndex].Width);
+                }
+                finally { colsBalancing = false; }
+            };
 
             // 批120: 列表也包进圆角壳 (与日志壳同一套): 圆角浅灰描边, 系统 3D 边框藏掉。
             // 注意 Location/Size 必须用字面量 (与下面 logShell 同理) —— 构造函数里 Size 赋值
@@ -368,6 +392,64 @@ namespace StereoSplitter
 
         bool colsUser;          // 批124: 用户拖过分隔条 → 自动对齐让位, 系统级事件才回到自动
         bool colsAdjusting;     // LayoutListCols 自己设宽也触发 ColumnWidthChanged, 别误记成用户拖动
+        bool colsBalancing;     // 批126: 钳位设宽是嵌套触发, 别再进来递归/误记
+        bool colsBalanceQueued; // 批126: 补差已排队 (每像素拖动只排一次, 最新差值覆盖)
+        int balanceFlex = -1, balanceWidth;   // 排队中的补差目标 (弹性列, 目标宽)
+
+        /// <summary>
+        /// 列最小宽 (批126, 用户: 拖动要有最小限制, 不要遮挡标题) —— 列头文字放得下再
+        /// 加一点内衬。拖动越过这条线就 cancel (分隔条停在最小宽), 补差钳位也用它。
+        /// </summary>
+        int ColMinWidth(int col)
+        {
+            if (col < 0 || col >= lv.Columns.Count) return Dpi.S(36);
+            int tw = TextRenderer.MeasureText(lv.Columns[col].Text, lv.Font).Width;
+            return Math.Max(tw + Dpi.S(14), Dpi.S(36));
+        }
+
+        /// <summary>
+        /// 拖动实时补差 (批126): 列总宽必须恒等于列头宽, 否则列头结尾分隔线悬在 x=总宽
+        /// —— 挖洞 Region 只挖掉了列头带那一小段, 行区细线还在, 而且那个位置的原生
+        /// 分隔条照样能拖 (列头子窗口的 hit-test 不吃 Region 挖洞, 实测)。根除办法是
+        /// 不让空隙出现: 拖某列时差值由**弹性列**实时吸收 —— 拖的不是「输出设备」就
+        /// 让它吃差值, 拖的是它本身则由「状态」列补; 弹性列顶到最小宽后剩余差值溢出,
+        /// 交给底部横向滑条 (批125)。自动对齐模式 (colsUser=false) 不走这里。
+        /// <para>**必须在通知处理外设宽**: 在 HDN_ITEMCHANGED 处理里改列宽, LV 的横向
+        /// 量程不会重算 (实测 range 卡在旧值, 原生横条 style 位不掉, 滑条翻转乱套) ——
+        /// 所以这里只把目标算好排队, BeginInvoke 出栈到消息队列再真正落宽度。</para>
+        /// </summary>
+        void BalanceCols(int changedIdx, int changedNewWidth)
+        {
+            if (lv.Columns.Count < 5) return;
+            // 目标宽 = 视口宽 (原生竖条在时再让一条)。**不能用 HeaderWidthPx**: 横滚激活时
+            // LV 把列头子窗口拉宽到与列总宽一致 (跟内容一起滚), 读回来的不再是视口宽,
+            // 补差会算出天差值 (实测 dev 多加 +400)。
+            int W = lv.ClientSize.Width;
+            if (lv.VBarVisible) W -= SystemInformation.VerticalScrollBarWidth;
+            if (W <= 0) return;
+            int total = 0;
+            for (int i = 0; i < 5; i++)
+                total += (i == changedIdx ? changedNewWidth : lv.Columns[i].Width);
+            int delta = W - total;            // >0 = 有空隙要填, <0 = 超宽要收
+            if (delta == 0) return;
+            int flex = changedIdx == 0 ? 4 : 0;
+            int w = lv.Columns[flex].Width + delta;
+            int min = ColMinWidth(flex);
+            if (w < min) w = min;             // 钳到最小宽, 剩余差值 → 溢出 (横滑条接管)
+            balanceFlex = flex;
+            balanceWidth = w;
+            if (colsBalanceQueued) return;    // 已有排队在先, 只更新目标 (最新差值覆盖)
+            colsBalanceQueued = true;
+            BeginInvoke((Action)(() =>
+            {
+                colsBalanceQueued = false;
+                if (IsDisposed || balanceFlex < 0 || balanceFlex >= lv.Columns.Count) return;
+                colsAdjusting = true;         // 自己落宽度: 不当作用户拖动, 也不再触发补差
+                try { lv.Columns[balanceFlex].Width = balanceWidth; }
+                catch (ObjectDisposedException) { }
+                finally { colsAdjusting = false; }
+            }));
+        }
 
         /// <summary>
         /// 列宽分配 (批120; 批123 目标宽换权威): 数值列按 DPI 设物理宽 (ListView 列宽不随

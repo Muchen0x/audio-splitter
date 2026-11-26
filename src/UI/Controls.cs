@@ -1670,6 +1670,9 @@ namespace StereoSplitter
                 if (style != lastBarStyle)
                 {
                     bool first = lastBarStyle == -1;
+                    // 批126: 横向条从有到无 (列拖窄回视口内) —— LV 不重置横向滚动位置
+                    // (实测量程已空、内容还停在旧偏移 283px), 强制 SB_LEFT 归零对齐。
+                    bool hCleared = (lastBarStyle & WS_HSCROLL) != 0 && (style & WS_HSCROLL) == 0;
                     lastBarStyle = style;
                     if (!first)
                     {
@@ -1677,6 +1680,7 @@ namespace StereoSplitter
                         if (h != null) h(this, EventArgs.Empty);
                         // LV 稍后会按新的内部宽重排列头 —— 等它排完再对齐列宽
                         BeginInvoke((Action)FireSettled);
+                        if (hCleared) BeginInvoke((Action)ResetHPos);
                     }
                 }
                 return;
@@ -1698,6 +1702,23 @@ namespace StereoSplitter
             var h = LayoutSettled;
             if (h != null) h(this, EventArgs.Empty);
             ClipHeaderEnd();   // LV 刚排完列头, 顺手把结尾分隔线裁掉 (宽度变了会重裁)
+        }
+
+        /// <summary>
+        /// 批126: 横向条 ON→OFF 翻转后 LV 不会自己把横向滚动位置归零 —— 量程已空但内容
+        /// 还停在旧偏移, 视觉上整片左移、悬空分隔线的黑像素就在那。补一条 SB_LEFT 让
+        /// LV 把内容拉回 x=0 (BeginInvoke 出栈, 等 LV 内部布局稳定后再发)。
+        /// </summary>
+        public int HResetCount;   // 探针诊断: ResetHPos 实际执行次数
+
+        void ResetHPos()
+        {
+            if (!IsHandleCreated) return;
+            HResetCount++;
+            // 横条 ON→OFF 翻转时 LV 可能仍停在旧横滚偏移 (量程已空, SB_LEFT 被忽略) ——
+            // LVM_SCROLL 按像素负向滚动把内容拉回 x=0。列头跟着内容滚是 LV 的正常行为,
+            // 归零后它自然复位 (实测 hdrLeftOff 283→0), 不需要手动摆列头。
+            SendMessage(Handle, 0x1014 /*LVM_SCROLL*/, (IntPtr)(-100000), IntPtr.Zero);
         }
     }
 
