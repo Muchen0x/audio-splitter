@@ -72,7 +72,6 @@ namespace StereoSplitter
         readonly ScrollListView lv = new ScrollListView();   // 批121: 会汇报滚动, 供壳画自绘细滑条
         /// <summary>批120: 列表圆角壳 (与日志壳同一套观感)。在 BuildUi 里赋值, 不能 readonly。</summary>
         RoundListShell listShell;
-        readonly Label lblTip = new Label();
         readonly Label lblState = new Label();
         readonly RoundButton btnStart = new RoundButton { Text = "开始校准" };
         readonly RoundButton btnApply = new RoundButton { Text = "应用建议值" };
@@ -119,7 +118,8 @@ namespace StereoSplitter
             // 用设计像素写, Load 里的 Dpi.ScaleForm 会再乘一次因子 (与主窗口一致)。
             Padding = new Padding(0, TitleBarDesignHeight, 0, 0);
             // 批129: 日志框高度减半 (202→101 设计px), 初始客户区高度同步减 101。
-            ClientSize = new Size(580, 419 + TitleBarDesignHeight);
+            // 批130: 说明移入日志、lblTip 撤掉, 列表上移 52px, 窗口再收紧 52px。
+            ClientSize = new Size(580, 367 + TitleBarDesignHeight);
             Font = BaseFont;
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
@@ -130,7 +130,8 @@ namespace StereoSplitter
             BuildUi();
             ReloadMics();
             FillLanes();
-            UpdateTip();
+            // 批130: 说明文字移到日志, 打开窗口即显示 (不再占 lblTip 的独立区域)。
+            AppendIntro();
             RefreshState();
         }
 
@@ -154,12 +155,9 @@ namespace StereoSplitter
             btnRescan.Height = 24;
             btnRescan.Click += (s, e) => ReloadMics();
 
-            lblTip.Location = new Point(12, 44 + top);
-            lblTip.Size = new Size(556, 50);
-            lblTip.AutoSize = false;
-            lblTip.ForeColor = Color.FromArgb(90, 96, 106);
+            // 批130: 说明文字移进日志, lblTip 占位撤掉 —— 列表上移到它的位置 (44+top)。
 
-            lv.Location = new Point(12, 96 + top);
+            lv.Location = new Point(12, 44 + top);
             lv.Size = new Size(556, 140);
             lv.View = View.Details;
             lv.FullRowSelect = true;
@@ -231,19 +229,19 @@ namespace StereoSplitter
             // 会触发 Recalc 把 lv 挪到 (1,1), 引用 lv 的现值就会把壳摆错位置 (批120 实测踩坑)。
             listShell = new RoundListShell(lv)
             {
-                Location = new Point(12, 96 + top),
+                Location = new Point(12, 44 + top),
                 Size = new Size(556, 140)
             };
 
-            lblState.Location = new Point(12, 244 + top);
+            lblState.Location = new Point(12, 192 + top);
             lblState.Size = new Size(556, 20);
             lblState.ForeColor = Color.FromArgb(90, 96, 106);
 
-            btnStart.Location = new Point(12, 268 + top);
+            btnStart.Location = new Point(12, 216 + top);
             btnStart.Size = new Size(112, 28);
             btnStart.Click += (s, e) => ToggleMeasure();
 
-            btnApply.Location = new Point(132, 268 + top);
+            btnApply.Location = new Point(132, 216 + top);
             btnApply.Size = new Size(112, 28);
             btnApply.Click += (s, e) => ApplySuggestions();
 
@@ -259,7 +257,7 @@ namespace StereoSplitter
             txtLog.WordWrap = true;
             logShell = new RoundLogShell(txtLog)
             {
-                Location = new Point(12, 306 + top),
+                Location = new Point(12, 254 + top),
                 // 批129: 日志框高度减半 —— 202 → 101 设计px。
                 Size = new Size(556, 101)
             };
@@ -276,7 +274,7 @@ namespace StereoSplitter
 
             Controls.AddRange(new Control[]
             {
-                lblMic, cmbMic, btnRescan, lblTip, listShell, lblState,
+                lblMic, cmbMic, btnRescan, listShell, lblState,
                 btnStart, btnApply, logShell, titleClose
             });
             // 与主窗口同一套 DPI 放大 + 圆角边框 (控件都按 96 DPI 摆好后, Load 里整体乘一次)
@@ -315,13 +313,12 @@ namespace StereoSplitter
                 Math.Max(Dpi.S(120), btnRescan.Left - Dpi.S(72) - Dpi.S(8)), Dpi.S(24));
             lblMic.Location = new Point(m, top + Dpi.S(15));
 
-            lblTip.SetBounds(m, top + Dpi.S(44), Math.Max(0, w - 2 * m), Dpi.S(50));
-
+            // 批130: lblTip 撤掉, 列表上移到它的位置 (44+top)。
             // 高度分配: 列表拿增量 2/5, 日志吃剩下的 (含底部留白), 中间行紧跟列表下缘
-            int baseH = Dpi.S(451);   // 批129: 552 - 日志减半的 101
+            int baseH = Dpi.S(399);   // 批129: 451 - 批130 撤掉提示区的 52
             int extraH = h - baseH;
             int listH = Math.Max(Dpi.S(90), Dpi.S(140) + (extraH > 0 ? extraH * 2 / 5 : extraH));
-            listShell.SetBounds(m, top + Dpi.S(96), Math.Max(0, w - 2 * m), listH);
+            listShell.SetBounds(m, top + Dpi.S(44), Math.Max(0, w - 2 * m), listH);
             lblState.SetBounds(m, listShell.Bottom + Dpi.S(8), Math.Max(0, w - 2 * m), Dpi.S(20));
             int btnY = lblState.Bottom + Dpi.S(4);
             btnStart.SetBounds(m, btnY, Dpi.S(112), Dpi.S(28));
@@ -566,17 +563,65 @@ namespace StereoSplitter
         {
             if (colsUser) return;
             if (lv.Columns.Count < 5 || lv.ClientSize.Width <= 0) return;
-            int target = lv.HeaderWidthPx;
-            if (target <= 0) target = lv.ClientSize.Width;
+            // 批130: 用 LV 内部布局宽 (client - 竖条) 做权威 —— 不能用 HeaderWidthPx: 横滚
+            // 激活后列头跟着内容滚, 它返回的是列总宽, 窗口再放大时列宽会卡在极限放不回来。
+            int target = lv.ClientSize.Width;
+            if (lv.VBarVisible) target -= SystemInformation.VerticalScrollBarWidth;
+            if (target <= 0) return;
+
+            // 期望宽: 输出设备吃剩余, 数值列 84/84/84, 状态 120。
+            int[] pref = { 0, Dpi.S(84), Dpi.S(84), Dpi.S(84), Dpi.S(120) };
+            int[] minW = new int[5];
+            for (int i = 0; i < 5; i++) minW[i] = ColMinWidth(i);
+            minW[0] = Math.Max(minW[0], Dpi.S(80));   // 输出设备保留原来的最小宽
+            int fixedW = pref[1] + pref[2] + pref[3] + pref[4];
+            pref[0] = Math.Max(minW[0], target - fixedW);
+
+            int sumPref = 0, sumMin = 0;
+            for (int i = 0; i < 5; i++) { sumPref += pref[i]; sumMin += minW[i]; }
+            int[] w = new int[5];
+
+            if (target >= sumPref)
+            {
+                // 窗口够宽: 输出设备吃全部剩余, 其余按基准。
+                w[0] = target - fixedW;
+                for (int i = 1; i < 5; i++) w[i] = pref[i];
+            }
+            else if (target <= sumMin)
+            {
+                // 批130: 连最小宽都放不下 —— 所有列压到极限 (分隔条推到底), 列总宽 > 视口
+                // 才交给横向滚动条。即"先缩分隔条到极限, 再用横滚"。
+                for (int i = 0; i < 5; i++) w[i] = minW[i];
+            }
+            else
+            {
+                // 窗口变窄但还没到极限: 按各列可压空间等比例分摊压缩量, 钳到最小宽;
+                // 一轮里压到极限的列退出, 剩余的压缩量下一轮分给别的列。
+                for (int i = 0; i < 5; i++) w[i] = pref[i];
+                int remain = sumPref - target;
+                for (int pass = 0; pass < 5 && remain > 0; pass++)
+                {
+                    int pool = 0;
+                    for (int i = 0; i < 5; i++) if (w[i] > minW[i]) pool += w[i] - minW[i];
+                    if (pool <= 0) break;
+                    int eaten = 0;
+                    for (int i = 0; i < 5; i++)
+                    {
+                        if (w[i] <= minW[i]) continue;
+                        int share = (int)Math.Round((double)(w[i] - minW[i]) * remain / pool);
+                        if (share < 0) share = 0;
+                        if (share > w[i] - minW[i]) share = w[i] - minW[i];
+                        w[i] -= share;
+                        eaten += share;
+                    }
+                    remain -= eaten;
+                    if (eaten == 0) break;
+                }
+            }
             colsAdjusting = true;
             try
             {
-                lv.Columns[1].Width = Dpi.S(84);
-                lv.Columns[2].Width = Dpi.S(84);
-                lv.Columns[3].Width = Dpi.S(84);
-                lv.Columns[4].Width = Dpi.S(120);
-                int fixedW = Dpi.S(84) * 3 + Dpi.S(120);
-                lv.Columns[0].Width = Math.Max(Dpi.S(80), target - fixedW);
+                for (int i = 0; i < 5; i++) lv.Columns[i].Width = w[i];
             }
             finally { colsAdjusting = false; }
         }
@@ -587,13 +632,16 @@ namespace StereoSplitter
             base.Dispose(disposing);
         }
 
-        /// <summary>提示文案: 说清"音乐不用停"以及失败时该调什么。</summary>
-        void UpdateTip()
+        /// <summary>
+        /// 批130: 原 lblTip 的说明文字移到日志, 打开窗口即作为第一段显示。
+        /// 日志里所有段落都不带前置空格 (用户要求)。
+        /// </summary>
+        void AppendIntro()
         {
-            lblTip.Text = "把麦克风放在你实际听音的位置（两只音箱中间）。程序会逐路播放 120ms 测试音" +
+            Append("把麦克风放在你实际听音的位置（两只音箱中间）。程序会逐路播放 120ms 测试音" +
                 "（每路预热 2 秒后测 3 次），测出每一路「声音到达耳朵」的时间差，再把差值补到较快的那一路。" +
                 "缓冲按当前「延迟」档位测量；测试音会叠在正在播放的音乐上，不必停音乐，" +
-                "但音乐太响时会测不准（程序会直接报错，不会给一个错的值）。";
+                "但音乐太响时会测不准（程序会直接报错，不会给一个错的值）。");
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -807,7 +855,7 @@ namespace StereoSplitter
                 {
                     Append("采集采样率 " + probe.CaptureRate + " Hz；按 " + outLatencyMs + "ms 缓冲测量 (" +
                         Takes + " 段/路, 预热 2 段)。");
-                    Append("  扫频 " + (MicLatencyProbe.ChirpSeconds * 1000).ToString("0") +
+                    Append("扫频 " + (MicLatencyProbe.ChirpSeconds * 1000).ToString("0") +
                         "ms, 可测上限 " + MicLatencyProbe.MaxMeasurableMs.ToString("0") + "ms；" +
                         "测试音叠在正在播放的音乐上。");
                 });
@@ -839,16 +887,16 @@ namespace StereoSplitter
                         Post(delegate
                         {
                             UpdateRow(row);
-                            Append(string.Format("  {0}: {1:0.0} ms  (r={2:0.00}, PSR {3:0.0}, 极差 {4:0.0}ms, {5} 段)",
+                            Append(string.Format("{0}: {1:0.0} ms  (r={2:0.00}, PSR {3:0.0}, 极差 {4:0.0}ms, {5} 段)",
                                 lane.Display, m.LatencyMs, m.Confidence,
                                 m.Psr, m.SpreadMs, m.Takes));
-                            Append("    各段: " + JoinMs(m.Samples));
+                            Append("各段: " + JoinMs(m.Samples));
                         });
                     }
                     catch (Exception ex)
                     {
                         if (cancel) return;
-                        Post(delegate { Append("  " + lane.Display + ": 未取到 — " + ex.Message); });
+                        Post(delegate { Append(lane.Display + ": 未取到 — " + ex.Message); });
                     }
                 }
 
@@ -960,7 +1008,7 @@ namespace StereoSplitter
                 if (!l.HasSuggestion) continue;
                 int diff = l.SuggestedMs - l.CurrentDelayMs;
                 if (diff != 0) changes++;
-                Append(string.Format("  {0}: 当前 {1} ms → 建议 {2} ms ({3}{4})",
+                Append(string.Format("{0}: 当前 {1} ms → 建议 {2} ms ({3}{4})",
                     l.Display, l.CurrentDelayMs, l.SuggestedMs,
                     diff >= 0 ? "+" : "", diff));
             }

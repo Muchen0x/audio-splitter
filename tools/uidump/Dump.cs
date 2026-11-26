@@ -610,6 +610,47 @@ namespace StereoSplitter
                             + " log " + lgH0 + "->" + (lgZ != null ? lgZ.Height : -1)
                             + " min=" + cfZ.MinimumSize + " grow=" + growOk + " shrink=" + shrinkOk
                             + " verdict=" + (hitOk && minSizeOk && growOk && shrinkOk ? "OK" : "FAIL<<<"));
+
+                        // 批130: 缩窗时先压分隔条到极限, 再用横滚 —— 用第三个独立窗体做缩宽测试,
+                        // 免得污染 cf / cfZ 的列宽状态。阶段①中等缩宽: 各列按比例变窄, 无横滚;
+                        // 阶段②缩到极限: 列宽都到最小宽, 横滚才出现 (列总宽 > 视口)。
+                        using (var cfW = new LatencyCalibrationForm(lanes, 5, delegate { }))
+                        {
+                            cfW.Show();
+                            for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                            var lvW = Field(cfW, "lv") as ListView;
+                            var shellW = Field(cfW, "listShell") as Control;
+                            int w0 = cfW.ClientSize.Width;
+                            int[] cols0 = null;
+                            if (lvW != null && lvW.Columns.Count == 5)
+                            {
+                                cols0 = new int[5];
+                                for (int i = 0; i < 5; i++) cols0[i] = lvW.Columns[i].Width;
+                            }
+                            // 阶段①: 缩到 0.72 宽 —— 没到最小宽总和, 应各列压缩且仍无横滚
+                            cfW.ClientSize = new Size(Dpi.S(430), cfW.ClientSize.Height);
+                            for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                            int[] cols1 = null;
+                            if (lvW != null && lvW.Columns.Count == 5)
+                            {
+                                cols1 = new int[5];
+                                for (int i = 0; i < 5; i++) cols1[i] = lvW.Columns[i].Width;
+                            }
+                            ScrollInfo? midH = lvW != null && lvW.IsHandleCreated ? ScrollInfoOf(lvW, 0) : null;
+                            bool compress = cols0 != null && cols1 != null
+                                && cols1[0] < cols0[0] && cols1[1] < cols0[1] && cols1[4] < cols0[4]
+                                && !midH.HasValue;   // 还没到极限 → 不该有横滚
+                            // 阶段②: 缩到 0.5 宽 —— 列宽全压到最小, 横滚出现
+                            cfW.ClientSize = new Size(Dpi.S(280), cfW.ClientSize.Height);
+                            for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                            ScrollInfo? tinyH = lvW != null && lvW.IsHandleCreated ? ScrollInfoOf(lvW, 0) : null;
+                            bool tinyBar = tinyH.HasValue;
+                            Console.Out.WriteLine("CALIB-SHRINKCOLS w0=" + w0
+                                + " cols " + (cols0 == null ? "null" : string.Join("/", Array.ConvertAll(cols0, v => v.ToString())))
+                                + " -> " + (cols1 == null ? "null" : string.Join("/", Array.ConvertAll(cols1, v => v.ToString())))
+                                + " midH=" + (midH.HasValue ? "yes" : "no") + " tinyH=" + (tinyH.HasValue ? "yes" : "no")
+                                + " verdict=" + (compress && tinyBar ? "OK" : "FAIL<<<"));
+                        }
                     }
 
                     // 批128: 不挂 owner (主窗口激活时能盖住它) + 独立任务栏按钮。
@@ -687,6 +728,15 @@ namespace StereoSplitter
                               + "/" + lvCalib.Columns[3].Width + "/" + lvCalib.Columns[4].Width : "null")
                         + " colSum=" + colSum + " clientW=" + (lvCalib != null ? lvCalib.ClientSize.Width : -1)
                         + " verdict=" + (listOk && colsOk ? "OK" : "FAIL<<<"));
+                    // 批130: 列表壳四边留白一致 (Pad) —— Inner 相对壳的左/上/右/下 inset 必须相等。
+                    int padExp = Dpi.S(10) + 1;
+                    int inL = lvCalib != null && listShellCtl != null ? lvCalib.Left : -1;
+                    int inT = lvCalib != null && listShellCtl != null ? lvCalib.Top : -1;
+                    int inR = lvCalib != null && listShellCtl != null ? listShellCtl.Width - lvCalib.Right : -1;
+                    int inB = lvCalib != null && listShellCtl != null ? listShellCtl.Height - lvCalib.Bottom : -1;
+                    bool padOk = inL == padExp && inT == padExp && inR == padExp && inB == padExp;
+                    Console.Out.WriteLine("CALIB-PAD l/t/r/b=" + inL + "/" + inT + "/" + inR + "/" + inB
+                        + " exp=" + padExp + " verdict=" + (padOk ? "OK" : "FAIL<<<"));
                     // 批121: 滚动态 —— 12 路超高: 自绘滑条出现 (原生条被 ScrollListView 的
                     // NCCALCSIZE 吸进 client), WM_VSCROLL 照常可滚, 列宽仍铺满 client
                     // (原生竖条不占位 → client 宽与滚动状态无关)。
@@ -943,6 +993,50 @@ namespace StereoSplitter
                                 (hdrOnlyW.Count > 0 ? string.Join(",", hdrOnlyW.ConvertAll(v => v.ToString()).ToArray()) : "none")
                                 + " verdict=" + (hdrOnlyW.Count == 0 ? "OK" : "FAIL<<<"));
                         }
+
+                        // 批130: 横向滑条真实鼠标拖拽 —— 从滑块当前 x 按下, 向右拖, 看 pos 前进 + 诊断计数。
+                        int hdPos0 = hsO.HasValue ? hsO.Value.nPos : -1, hdPos1 = -1;
+                        int hdStarts = 0, hdMoves = 0;
+                        if (dragShell != null && lvCalib.IsHandleCreated)
+                        {
+                            // 滑块几何 (壳坐标): 用反射拿私有 GetHorz / HThumbGeometry 太绕, 按绘制公式反推 ——
+                            // trackLeft = Pad, 滑块左缘 tx 从 pos 算出; shell 在屏幕上的位置由 PointToScreen 给。
+                            int padPx = Dpi.S(10), barWPx = Dpi.S(4);
+                            int trackLeft = padPx;
+                            int clientEndPx = (dragShell as Control).Width - 1 - padPx;
+                            int trackLen = clientEndPx - 1 - trackLeft * 2;
+                            int nMaxH = hsO.HasValue ? hsO.Value.nMax : 0, nPageH = hsO.HasValue ? hsO.Value.nPage : 0;
+                            int tw = Math.Max(Dpi.S(18), (int)((long)trackLen * nPageH / (nMaxH + 1)));
+                            if (tw > trackLen) tw = trackLen;
+                            int maxLeft = nMaxH + 1 - nPageH;
+                            int tx = trackLeft + (maxLeft > 0 ? (int)((long)(trackLen - tw) * hdPos0 / maxLeft) : 0);
+                            int hStripTopPx = (dragShell as Control).Height - 1 - padPx;
+                            int grabY = hStripTopPx + ((padPx - barWPx) / 2);
+                            Point shellScr = (dragShell as Control).PointToScreen(Point.Empty);
+                            Point grab = new Point(shellScr.X + tx + Math.Min(8, tw / 2), shellScr.Y + grabY);
+                            SetCursorPos(grab.X, grab.Y);
+                            for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                            mouse_event(0x0002, 0, 0, 0, IntPtr.Zero);
+                            for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                            for (int i = 1; i <= 6; i++)
+                            {
+                                SetCursorPos(grab.X + i * 12, grab.Y);
+                                Application.DoEvents(); System.Threading.Thread.Sleep(30);
+                                Application.DoEvents();
+                            }
+                            mouse_event(0x0004, 0, 0, 0, IntPtr.Zero);
+                            for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                            ScrollInfo? hsD = ScrollInfoOf(lvCalib, 0);
+                            hdPos1 = hsD.HasValue ? hsD.Value.nPos : -1;
+                            hdStarts = RefInt(dragShell, "HDragStarts");
+                            hdMoves = RefInt(dragShell, "HDragMoves");
+                            // 拖完滚回最左, 不影响后续 -400 回拖断言
+                            SendMessage(lvCalib.Handle, 0x0114, (IntPtr)6, IntPtr.Zero);
+                            for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                        }
+                        Console.Out.WriteLine("CALIB-HDRAG pos " + hdPos0 + "->" + hdPos1
+                            + " starts=" + hdStarts + " moves=" + hdMoves
+                            + " verdict=" + (hdStarts >= 1 && hdMoves >= 1 && hdPos1 > hdPos0 ? "OK" : "FAIL<<<"));
 
                         // 回拖 -400 → 补差把「输出设备」吃回去, 溢出消失, 滑条收回
                         lvCalib.Columns[3].Width -= 400;

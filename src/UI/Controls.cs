@@ -1736,8 +1736,9 @@ namespace StereoSplitter
         static readonly Color ThumbHotColor = Color.FromArgb(172, 178, 188);       // 悬停/拖拽加深一档
         static int CornerRadius { get { return NoFocusSplitContainer.WindowRadiusPx; } }   // 与窗口圆角同一弧度
         static int BarW { get { return Dpi.S(4); } }      // 滑条粗细 (与日志壳一致)
-        static int StripW { get { return Dpi.S(10); } }   // 右侧滑条带/命中区宽 (与日志壳一致)
-        static int StripH { get { return Dpi.S(10); } }   // 底部滑条带/命中区高 (批125, 与右侧带同宽)
+        // 批130: 四边留白统一 (用户: "上下左右留白要一致, 滚动条放留白中, 留白刚好裹住滚动条")。
+        // 滚动条画在这条留白内、不占内容区 —— 出现/消失不再改变列表高度。
+        static int Pad { get { return Dpi.S(10); } }
 
         public readonly ListView Inner;
         readonly ScrollListView scrollable;               // Inner 的强类型视图 (不是 ScrollListView 时为 null)
@@ -1749,15 +1750,18 @@ namespace StereoSplitter
         bool hbar;                   // 底部横向滑条是否在显示 (列总宽 > 视口宽)
         bool dragHThumb;             // 正在拖拽横向滑块
         int dragGrabX;               // 按下点相对横向滑块左缘的偏移
-        int hStripTop;               // 底部滑条带起点 (壳坐标); 不显示时 = Height-1
+        int hStripTop;               // 底部滑条带起点 (壳坐标); 批130: 恒 = Height-Pad (留白带)
         // 批125 诊断 (探针读): RefreshBar 调用计数 / 最近判定 / 量程读数 / 原生横条 style 位
         internal int HFlipCount, DbgHMax, DbgHPage;
         internal bool DbgHBarNeed, DbgHStyle;
+        // 批130 诊断 (探针读): 横条按下/拖拽消息次数 —— 验证"能用鼠标拖动"
+        internal int HDragStarts, HDragMoves;
 
         const int SB_VERT = 1;
         const int SB_HORZ = 0;
         const int SB_PAGEUP = 2, SB_PAGEDOWN = 3, SB_THUMBTRACK = 5;
         const int WM_VSCROLL = 0x115, WM_HSCROLL = 0x114, WM_MOUSEWHEEL = 0x20A;
+        const int LVM_SCROLL = 0x1014;   // 批130: ListView 对 SB_THUMBTRACK 不响应, 拖拽改走它按像素滚
 
         [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
         struct SCROLLINFO
@@ -1806,16 +1810,19 @@ namespace StereoSplitter
         void Recalc()
         {
             if (Inner == null || IsDisposed) return;
-            int ih = Math.Max(1, Height - 2 - (hbar ? StripH : 0));
-            int listW = Math.Max(StripW + 40, Width - 2 - StripW);   // 可视宽 = 壳宽 - 左右衬 - 滑条带
-            Inner.SetBounds(1, 1, listW, ih);
-            clientEnd = 1 + listW;
-            hStripTop = 1 + ih;
+            // 批130: 四边留白一致 (Pad), 列表内容区 = 壳 - 2*Pad, 横条出现与否都不改内容区高度
+            // —— 原来的做法 hbar 时把 ih 减掉 StripH, 列表会突然缩一截、内容跳动。
+            int pad = Pad;
+            int ih = Math.Max(1, Height - 2 - 2 * pad);
+            int listW = Math.Max(pad + 40, Width - 2 - 2 * pad);
+            Inner.SetBounds(1 + pad, 1 + pad, listW, ih);
+            clientEnd = 1 + pad + listW;         // 右侧留白带自此到边框, 滑条在其中居中
+            hStripTop = Height - 1 - pad;        // 底部留白带起点 (恒在, 不随 hbar 变)
             Region old = Inner.Region;
             // 区域在 Inner 自己的坐标里: 圆角路径 (平移掉外壳内衬) 与窗口矩形求交。
             // 原生滚动条已被 ScrollListView 的 WM_NCCALCSIZE 吸进 client, 不会出现在窗口右缘。
             using (var path = UiDraw.RoundRect(
-                new RectangleF(-1f, -1f, Width - 2f, Height - 2f), CornerRadius - 1f))
+                new RectangleF(-(1f + pad), -(1f + pad), Width - 2f, Height - 2f), CornerRadius - 1f))
             {
                 var reg = new Region(path);
                 reg.Intersect(new Rectangle(0, 0, listW, ih));
@@ -1855,7 +1862,7 @@ namespace StereoSplitter
                 Invalidate();
                 return;
             }
-            int from = clientEnd > 0 ? clientEnd : Width - StripW - 1;
+            int from = clientEnd > 0 ? clientEnd : Width - Pad - 1;
             Invalidate(new Rectangle(from, 0, Width - from, Height));
             if (hbar && hStripTop < Height)
                 Invalidate(new Rectangle(0, hStripTop, clientEnd, Height - hStripTop));
@@ -1889,14 +1896,14 @@ namespace StereoSplitter
         bool HBarNeeded()
         {
             return scrollable != null && scrollable.HBarVisible
-                && Width - 2 >= Dpi.S(6) * 2 + BarW * 4;   // 壳太窄画不下就不画
+                && Width - 2 >= Pad * 2 + BarW * 4;   // 壳太窄画不下就不画
         }
 
         /// <summary>算滑块几何 (条带内 trackTop..trackLen, 滑块顶 y 与高); 不需要滚动返回 false。</summary>
         bool ThumbGeometry(SCROLLINFO si, out int trackTop, out int trackLen, out int ty, out int th)
         {
             ty = th = 0;
-            trackTop = Dpi.S(6);
+            trackTop = Pad;
             trackLen = Height - 1 - trackTop * 2;
             if (si.nPage >= si.nMax + 1 || trackLen < BarW * 4) return false;   // 全部可见/太矮 → 不画
             th = Math.Max(Dpi.S(18), (int)((long)trackLen * si.nPage / (si.nMax + 1)));
@@ -1912,8 +1919,8 @@ namespace StereoSplitter
             if (!GetVert(out si)) return;
             int trackTop, trackLen, ty, th;
             if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
-            // 滑条在右侧留白带 (clientEnd .. 边框) 内水平居中
-            int zoneL = clientEnd > 0 ? clientEnd : Width - 1 - StripW;
+            // 批130: 滑条在右侧留白带 (clientEnd .. 边框) 内水平居中
+            int zoneL = clientEnd > 0 ? clientEnd : Width - 1 - Pad;
             int zoneW = (Width - 2) - zoneL + 1;
             int bx = zoneL + Math.Max(0, (zoneW - BarW) / 2);
             using (var path = UiDraw.RoundRect(new RectangleF(bx, ty, BarW, th), BarW / 2f))
@@ -1925,7 +1932,7 @@ namespace StereoSplitter
         bool HThumbGeometry(SCROLLINFO si, out int trackLeft, out int trackLen, out int tx, out int tw)
         {
             tx = tw = 0;
-            trackLeft = Dpi.S(6);
+            trackLeft = Pad;
             trackLen = clientEnd - 1 - trackLeft * 2;   // 底带横贯可视宽 (右侧竖条带之外)
             if (trackLen < BarW * 4) return false;
             tw = Math.Max(Dpi.S(18), (int)((long)trackLen * si.nPage / (si.nMax + 1)));
@@ -1942,8 +1949,8 @@ namespace StereoSplitter
             if (!GetHorz(out si) || si.nPage >= si.nMax + 1) return;
             int trackLeft, trackLen, tx, tw;
             if (!HThumbGeometry(si, out trackLeft, out trackLen, out tx, out tw)) return;
-            // 滑条在底部滑条带内垂直居中 (hStripTop .. 边框)
-            int zoneT = hStripTop > 0 ? hStripTop : Height - 1 - StripH;
+            // 批130: 滑条在底部留白带内垂直居中 (hStripTop .. 边框)
+            int zoneT = hStripTop > 0 ? hStripTop : Height - 1 - Pad;
             int zoneH = (Height - 2) - zoneT + 1;
             int by = zoneT + Math.Max(0, (zoneH - BarW) / 2);
             using (var path = UiDraw.RoundRect(new RectangleF(tx, by, tw, BarW), BarW / 2f))
@@ -1977,7 +1984,7 @@ namespace StereoSplitter
 
         bool InStrip(int x)
         {
-            int from = clientEnd > 0 ? clientEnd : Width - 1 - StripW;
+            int from = clientEnd > 0 ? clientEnd : Width - 1 - Pad;
             return x >= from;
         }
 
@@ -2015,6 +2022,7 @@ namespace StereoSplitter
                     dragHThumb = true;
                     dragGrabX = e.X - hx;
                     Capture = true;
+                    HDragStarts++;
                 }
                 else SendScrollH(e.X < hx ? SB_PAGEUP : SB_PAGEDOWN, 0);
                 return;
@@ -2049,7 +2057,13 @@ namespace StereoSplitter
                 if (maxLeft <= 0) return;
                 int pos = (int)Math.Round((e.X - hTrackLeft - dragGrabX) * (double)maxLeft / Math.Max(1, hTrackLen - hw));
                 pos = Math.Max(0, Math.Min(maxLeft, pos));
-                SendScrollH(SB_THUMBTRACK, pos);
+                // 批130: ListView 忽略 WM_HSCROLL/SB_THUMBTRACK (实测 moves=6 但 pos 不变) ——
+                // 改发 LVM_SCROLL 按像素滚动: 目标像素 - 当前 pos, 增量驱动。随后 Scrolled
+                // 事件会由 ScrollListView.WndProc 上报, 壳重画滑块。
+                int delta = pos - si.nPos;
+                if (delta != 0 && Inner.IsHandleCreated)
+                    SendMessage(Inner.Handle, LVM_SCROLL, (IntPtr)delta, IntPtr.Zero);
+                HDragMoves++;
                 return;
             }
             if (!dragThumb) return;
