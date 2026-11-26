@@ -1499,39 +1499,132 @@ namespace StereoSplitter
     }
 
     /// <summary>
-    /// 列表圆角壳 (批120): 包 ListView, 与 RoundLogShell 同一套观感 —— 圆角浅灰描边,
-    /// 系统边框藏掉, 列表的直角被 Region 切成圆角。列表的原生滚动条保留 (内容超高时
-    /// 照常可滚), 平时 (无滚动条) 与日志壳的观感完全一致。
+    /// 会汇报滚动、且**原生滚动条永不占位**的 ListView (批121)。
+    /// <para>拦 <see cref="WM_NCCALCSIZE"/>: 系统默认会为可见的原生滚动条留出非客户区
+    /// (client 缩一圈) —— 这里把那条留位扩回 client, 原生条被整个盖进客户区之下,
+    /// 不可见、点不到; 滚动机制 (滚轮/WM_VSCROLL/GetScrollInfo) 原样保留。
+    /// client 尺寸因此与滚动条状态**无关** —— 不会出现"竖条出现 → client 变窄 → 列宽
+    /// 重排 → 又触发布局"的环形依赖 (加宽窗口再校正的老方案在 ListView 上就是这么震荡的)。
+    /// 竖向滚动发生 (滚轮/拖条/WM_VSCROLL) 后发 <see cref="Scrolled"/>, 供
+    /// <see cref="RoundListShell"/> 重画自绘细滑条。</para>
+    /// </summary>
+    class ScrollListView : ListView
+    {
+        public event EventHandler Scrolled;
+        const int WM_NCCALCSIZE = 0x0083, WM_VSCROLL = 0x115, WM_MOUSEWHEEL = 0x20A;
+        const int GWL_STYLE = -16;
+        const int WS_VSCROLL = 0x00200000, WS_HSCROLL = 0x00100000;
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct RECT { public int Left, Top, Right, Bottom; }
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct NCCALCSIZE_PARAMS { public RECT rgrc0, rgrc1, rgrc2; public IntPtr lppos; }
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
+            {
+                base.DefWndProc(ref m);   // 系统先按默认算 (滚动条可见时留出非客户区)
+                var ncp = (NCCALCSIZE_PARAMS)System.Runtime.InteropServices.Marshal.PtrToStructure(
+                    m.LParam, typeof(NCCALCSIZE_PARAMS));
+                int style = GetWindowLong(Handle, GWL_STYLE);
+                if ((style & WS_VSCROLL) != 0)
+                    ncp.rgrc0.Right += SystemInformation.VerticalScrollBarWidth;
+                if ((style & WS_HSCROLL) != 0)
+                    ncp.rgrc0.Bottom += SystemInformation.HorizontalScrollBarHeight;
+                System.Runtime.InteropServices.Marshal.StructureToPtr(ncp, m.LParam, false);
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            base.WndProc(ref m);
+            if (m.Msg == WM_VSCROLL || m.Msg == WM_MOUSEWHEEL)
+            {
+                var h = Scrolled;
+                if (h != null) h(this, EventArgs.Empty);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 列表圆角壳 (批120; 批121 滚动条重做): 包 ListView, 与 RoundLogShell 同一套观感 ——
+    /// 圆角浅灰描边 + 右侧 4px 圆头细滑条。原生滚动条由 <see cref="ScrollListView"/> 的
+    /// WM_NCCALCSIZE 处理吸进 client (不可见、点不到), 滚动机制原样保留; 壳只负责在右侧
+    /// 滑条带里画自绘细滑条 —— 内容一屏放得下时不画 ("显示完全就不要滚动条"); 横向永远
+    /// 不滚 (列宽恒等于客户区宽)。
     /// </summary>
     class RoundListShell : Panel
     {
         static Color BorderCol { get { return OutputCardControl.BorderColor; } }   // 与日志壳/卡片同一套浅灰框
+        static readonly Color ThumbColor = Color.FromArgb(198, 203, 211);          // 与日志滑条同一支灰
+        static readonly Color ThumbHotColor = Color.FromArgb(172, 178, 188);       // 悬停/拖拽加深一档
         static int CornerRadius { get { return NoFocusSplitContainer.WindowRadiusPx; } }   // 与窗口圆角同一弧度
+        static int BarW { get { return Dpi.S(4); } }      // 滑条粗细 (与日志壳一致)
+        static int StripW { get { return Dpi.S(10); } }   // 右侧滑条带/命中区宽 (与日志壳一致)
 
         public readonly ListView Inner;
+        readonly ScrollListView scrollable;               // Inner 的强类型视图 (不是 ScrollListView 时为 null)
+        bool barHot;                 // 鼠标悬停在滑条带上
+        bool dragThumb;              // 正在拖拽滑块
+        int dragGrabY;               // 按下点相对滑块顶边的偏移 (拖拽中保持不跳)
+        int clientEnd;               // 列表可视右缘 (壳坐标, 不含): 右侧留白带自此到边框, 滑条在其中居中
+
+        const int SB_VERT = 1;
+        const int SB_PAGEUP = 2, SB_PAGEDOWN = 3, SB_THUMBTRACK = 5;
+        const int WM_VSCROLL = 0x115, WM_MOUSEWHEEL = 0x20A;
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct SCROLLINFO
+        {
+            public int cbSize, fMask, nMin, nMax, nPage, nPos, nTrackPos;
+        }
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool GetScrollInfo(IntPtr hWnd, int nBar, ref SCROLLINFO si);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
         public RoundListShell(ListView list)
         {
             Inner = list;
+            scrollable = list as ScrollListView;
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
                 | ControlStyles.ResizeRedraw, true);
             list.BorderStyle = BorderStyle.None;      // 3D 边框不要, 圆角描边由外壳画
             Controls.Add(list);
+            if (scrollable != null) scrollable.Scrolled += delegate { RefreshBar(); };
+            // 竖条出现/消失会改 client 宽: 重新摆窗口 + 重画滑条 (Item 增删/尺寸变化都会走到)
+            list.ClientSizeChanged += delegate { Recalc(); RefreshBar(); };
             Size = list.Size;
         }
 
+        /// <summary>Item 增删后由窗体调用: 滚动量程变了, 重摆窗口并重画滑条。</summary>
+        internal void SyncBar()
+        {
+            Recalc();
+            RefreshBar();
+        }
+
+        /// <summary>
+        /// 摆列表窗口 + 裁区域 (与日志壳同一套): Inner 窗口比可视区加宽一条原生竖条宽
+        /// (系统量度 SM_CXVSCROLL, 再按实测 ClientSize 自校正一次), 然后 Region 裁在
+        /// client 矩形内 —— 右缘排除原生竖条, 底缘排除原生横条, 两者整条不可见、点不到。
+        /// </summary>
         void Recalc()
         {
             if (Inner == null || IsDisposed) return;
-            Inner.SetBounds(1, 1, Math.Max(1, Width - 2), Math.Max(1, Height - 2));
+            int ih = Math.Max(1, Height - 2);
+            int listW = Math.Max(StripW + 40, Width - 2 - StripW);   // 可视宽 = 壳宽 - 左右衬 - 滑条带
+            Inner.SetBounds(1, 1, listW, ih);
+            clientEnd = 1 + listW;
             Region old = Inner.Region;
-            // 区域在 Inner 自己的坐标里: 外壳内衬圆角平移 Inner 原点后与窗口矩形求交
-            // (与日志壳同一手法)。原生滚动条在窗口右缘, 被路径覆盖所以照常可用。
+            // 区域在 Inner 自己的坐标里: 圆角路径 (平移掉外壳内衬) 与窗口矩形求交。
+            // 原生滚动条已被 ScrollListView 的 WM_NCCALCSIZE 吸进 client, 不会出现在窗口右缘。
             using (var path = UiDraw.RoundRect(
                 new RectangleF(-1f, -1f, Width - 2f, Height - 2f), CornerRadius - 1f))
             {
                 var reg = new Region(path);
-                reg.Intersect(new Rectangle(0, 0, Inner.Width, Inner.Height));
+                reg.Intersect(new Rectangle(0, 0, listW, ih));
                 Inner.Region = reg;
             }
             if (old != null) old.Dispose();
@@ -1549,6 +1642,52 @@ namespace StereoSplitter
             Recalc();                      // DPI 缩放/布局变化时列表每步跟随
         }
 
+        /// <summary>只重画右侧留白带 (滚动位置变了, 列表由它自己重画)。</summary>
+        void RefreshBar()
+        {
+            int from = clientEnd > 0 ? clientEnd : Width - StripW - 1;
+            Invalidate(new Rectangle(from, 0, Width - from, Height));
+        }
+
+        /// <summary>当前竖向滚动信息 (nMax/nPage/nPos, 行单位); 句柄未建或读不到返回 false。</summary>
+        bool GetVert(out SCROLLINFO si)
+        {
+            si = new SCROLLINFO();
+            if (Inner == null || !Inner.IsHandleCreated) return false;
+            si.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(SCROLLINFO));
+            si.fMask = 0x1 | 0x2 | 0x4;    // SIF_RANGE | SIF_PAGE | SIF_POS
+            return GetScrollInfo(Inner.Handle, SB_VERT, ref si) && si.nMax > 0;
+        }
+
+        /// <summary>算滑块几何 (条带内 trackTop..trackLen, 滑块顶 y 与高); 不需要滚动返回 false。</summary>
+        bool ThumbGeometry(SCROLLINFO si, out int trackTop, out int trackLen, out int ty, out int th)
+        {
+            ty = th = 0;
+            trackTop = Dpi.S(6);
+            trackLen = Height - 1 - trackTop * 2;
+            if (si.nPage >= si.nMax + 1 || trackLen < BarW * 4) return false;   // 全部可见/太矮 → 不画
+            th = Math.Max(Dpi.S(18), (int)((long)trackLen * si.nPage / (si.nMax + 1)));
+            if (th > trackLen) th = trackLen;
+            int maxTop = si.nMax + 1 - si.nPage;
+            ty = trackTop + (maxTop > 0 ? (int)((long)(trackLen - th) * si.nPos / maxTop) : 0);
+            return true;
+        }
+
+        void DrawBar(Graphics g)
+        {
+            SCROLLINFO si;
+            if (!GetVert(out si)) return;
+            int trackTop, trackLen, ty, th;
+            if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
+            // 滑条在右侧留白带 (clientEnd .. 边框) 内水平居中
+            int zoneL = clientEnd > 0 ? clientEnd : Width - 1 - StripW;
+            int zoneW = (Width - 2) - zoneL + 1;
+            int bx = zoneL + Math.Max(0, (zoneW - BarW) / 2);
+            using (var path = UiDraw.RoundRect(new RectangleF(bx, ty, BarW, th), BarW / 2f))
+            using (var b = new SolidBrush(barHot || dragThumb ? ThumbHotColor : ThumbColor))
+                g.FillPath(b, path);
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
@@ -1562,10 +1701,77 @@ namespace StereoSplitter
             using (var fill = new SolidBrush(Inner.BackColor))
                 g.FillPath(fill, path);
 
+            DrawBar(g);
+
             // 边框最后画: 同一套浅灰细边, 半像素对齐
             using (var path = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), CornerRadius))
             using (var pen = new Pen(BorderCol, 1f))
                 g.DrawPath(pen, path);
+        }
+
+        // ---- 滑条交互: 条带在 Inner 区域之外 (被 Inner 的窗口区域排除), 事件全落在外壳 ----
+
+        bool InStrip(int x)
+        {
+            int from = clientEnd > 0 ? clientEnd : Width - 1 - StripW;
+            return x >= from;
+        }
+
+        void SendScroll(int wParamLow, int pos)
+        {
+            if (!Inner.IsHandleCreated) return;
+            SendMessage(Inner.Handle, WM_VSCROLL, (IntPtr)((pos << 16) | wParamLow), IntPtr.Zero);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left || !InStrip(e.X)) return;
+            SCROLLINFO si;
+            if (!GetVert(out si)) return;
+            int trackTop, trackLen, ty, th;
+            if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
+            if (e.Y >= ty && e.Y < ty + th)
+            {
+                dragThumb = true;
+                dragGrabY = e.Y - ty;
+                Capture = true;
+            }
+            else SendScroll(e.Y < ty ? SB_PAGEUP : SB_PAGEDOWN, 0);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            bool over = InStrip(e.X);
+            if (over != barHot) { barHot = over; RefreshBar(); }
+            if (!dragThumb) return;
+            SCROLLINFO si;
+            if (!GetVert(out si)) return;
+            int trackTop, trackLen, ty, th;
+            if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
+            int maxTop = si.nMax + 1 - si.nPage;
+            if (maxTop <= 0) return;
+            int pos = (int)Math.Round((e.Y - trackTop - dragGrabY) * (double)maxTop / Math.Max(1, trackLen - th));
+            pos = Math.Max(0, Math.Min(maxTop, pos));
+            SendScroll(SB_THUMBTRACK, pos);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (dragThumb) { dragThumb = false; Capture = false; RefreshBar(); }
+        }
+
+        /// <summary>滚轮落在条带上时转发给列表 (正文区滚轮由列表原生处理, 不经过这里)。</summary>
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            if (!Inner.IsHandleCreated || e.Delta == 0) return;
+            var p = PointToScreen(e.Location);
+            SendMessage(Inner.Handle, WM_MOUSEWHEEL,
+                (IntPtr)((e.Delta << 16) & unchecked((int)0xFFFF0000)),
+                (IntPtr)(((p.Y & 0xFFFF) << 16) | (p.X & 0xFFFF)));
         }
     }
 

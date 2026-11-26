@@ -1069,9 +1069,21 @@ namespace StereoSplitter
 
             Log("[校准] 打开延迟校准: " + list.Count + " 路 (麦克风互相关, 输出缓冲 " + outMs + "ms" +
                 (hostRunning ? ", 分流继续播放" : "") + ")");
-            using (var f = new LatencyCalibrationForm(list, outMs, ApplyCalibratedDelay, hostRunning))
-                f.ShowDialog(this);
+            // 批121: 校准窗改**非模态** (Show 而不是 ShowDialog) —— 开着校准窗也能随时操作
+            // 主窗口 (调延迟/开关分流/加减卡片)。字段持引用防 GC, 窗口关闭时自动清空;
+            // 重复点「延迟校准」只把已开的窗口带到前台, 不再开第二份。
+            if (calibForm != null && !calibForm.IsDisposed)
+            {
+                calibForm.Activate();
+                return;
+            }
+            calibForm = new LatencyCalibrationForm(list, outMs, ApplyCalibratedDelay, hostRunning);
+            calibForm.FormClosed += delegate { calibForm = null; };
+            calibForm.Show(this);
         }
+
+        /// <summary>当前打开的延迟校准窗 (非模态, 批121); null = 没开。关窗时由 FormClosed 清空。</summary>
+        LatencyCalibrationForm calibForm;
 
         /// <summary>
         /// 把校准结果写回卡片。走 nudDelay.Value → ValueChanged → OnCardChanged → SaveSettings,

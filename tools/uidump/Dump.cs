@@ -577,12 +577,16 @@ namespace StereoSplitter
                         + " menu=" + (cmsLog != null ? cmsLog.Items.Count.ToString() : "null")
                         + " verdict=" + (logOk ? "OK" : "FAIL<<<"));
                     // 批120: 列表也对齐圆角壳 + 列宽动态分配 (数值列不截断, 尾部无空白列)。
+                    // 批121: lv 换 ScrollListView, 原生滚动条被壳 Region 裁掉, 滑条由壳自绘
+                    // (内容一屏放得下时不画)。
                     Control listShellCtl = Field(cf, "listShell") as Control;
                     ListView lvCalib = listShellCtl != null && listShellCtl.Controls.Count > 0
                         ? listShellCtl.Controls[0] as ListView : null;
                     bool listOk = listShellCtl is RoundListShell
+                        && lvCalib is ScrollListView
                         && lvCalib != null
                         && lvCalib.BorderStyle == BorderStyle.None
+                        && lvCalib.Region != null      // 原生滚动条靠 Region 裁掉 (批121)
                         && lvCalib.Columns.Count == 5;
                     int colSum = 0;
                     if (lvCalib != null) foreach (ColumnHeader ch in lvCalib.Columns) colSum += ch.Width;
@@ -599,6 +603,43 @@ namespace StereoSplitter
                               + "/" + lvCalib.Columns[3].Width + "/" + lvCalib.Columns[4].Width : "null")
                         + " colSum=" + colSum + " clientW=" + (lvCalib != null ? lvCalib.ClientSize.Width : -1)
                         + " verdict=" + (listOk && colsOk ? "OK" : "FAIL<<<"));
+                    // 批121: 滚动态 —— 12 路超高: 自绘滑条出现 (原生条被 ScrollListView 的
+                    // NCCALCSIZE 吸进 client), WM_VSCROLL 照常可滚, 列宽仍铺满 client
+                    // (原生竖条不占位 → client 宽与滚动状态无关)。
+                    var lanes12 = new System.Collections.Generic.List<CalibLane>();
+                    for (int i = 0; i < 12; i++)
+                        lanes12.Add(new CalibLane { DeviceId = "d" + i, Display = "滚动测试设备 #" + (i + 1), CurrentDelayMs = i });
+                    var cf2 = new LatencyCalibrationForm(lanes12, 5, delegate { });
+                    cf2.Show();
+                    for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                    ListView lv12 = Field(cf2, "lv") as ListView;
+                    bool scrollOk = false; string scrollDbg = "null";
+                    if (lv12 != null && lv12.IsHandleCreated)
+                    {
+                        ScrollInfo? s0 = VertScrollInfo(lv12);
+                        if (s0.HasValue)
+                        {
+                            int top0 = lv12.TopItem != null ? lv12.TopItem.Index : -1;
+                            SendMessage(lv12.Handle, 0x0115, (IntPtr)((0 << 16) | 3), IntPtr.Zero);   // WM_VSCROLL SB_PAGEDOWN
+                            for (int i = 0; i < 4; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                            int top1 = lv12.TopItem != null ? lv12.TopItem.Index : -1;
+                            ScrollInfo? s1 = VertScrollInfo(lv12);
+                            // WM_VSCROLL 分页后 TopItem 前进 = 滚动机制未被 NCCALCSIZE 拦截破坏
+                            scrollOk = top1 > top0 && s1.HasValue;
+                            scrollDbg = "page0=" + s0.Value.nPage + " max=" + s0.Value.nMax
+                                + " top " + top0 + "->" + top1;
+                        }
+                    }
+                    Console.Out.WriteLine("CALIB-SCROLL " + scrollDbg
+                        + " verdict=" + (scrollOk ? "OK" : "FAIL<<<"));
+                    Rectangle calibScreen2 = cf2.RectangleToScreen(cf2.ClientRectangle);
+                    using (var bmp2 = new Bitmap(calibScreen2.Width, calibScreen2.Height))
+                    {
+                        using (var g = Graphics.FromImage(bmp2))
+                            g.CopyFromScreen(calibScreen2.Location, Point.Empty, calibScreen2.Size);
+                        bmp2.Save("calib-scroll.png", System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    cf2.Dispose();
                     Rectangle calibScreen = cf.RectangleToScreen(cf.ClientRectangle);
                     using (var bmp = new Bitmap(calibScreen.Width, calibScreen.Height))
                     {

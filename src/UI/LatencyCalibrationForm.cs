@@ -68,7 +68,7 @@ namespace StereoSplitter
 
         readonly RoundedCombo cmbMic = new RoundedCombo { Height = 24, ItemHeight = 24, MaxDropDownItems = 10 };
         readonly RoundButton btnRescan = new RoundButton { Text = "刷新" };
-        readonly ListView lv = new ListView();
+        readonly ScrollListView lv = new ScrollListView();   // 批121: 会汇报滚动, 供壳画自绘细滑条
         /// <summary>批120: 列表圆角壳 (与日志壳同一套观感)。在 BuildUi 里赋值, 不能 readonly。</summary>
         RoundListShell listShell;
         readonly Label lblTip = new Label();
@@ -169,6 +169,9 @@ namespace StereoSplitter
             lv.Columns.Add("状态", 120);
             LayoutListCols();
             lv.Resize += (s, e) => LayoutListCols();
+            // 竖向滚动条出现/消失会改客户区宽 (列总宽没跟着变就会挤出原生横向条 —— 截图里的
+            // 那条就是它)。客户区一变就重排列宽, 横向永远刚好放满, 原生横条从此没理由出现。
+            lv.ClientSizeChanged += (s, e) => LayoutListCols();
 
             // 批120: 列表也包进圆角壳 (与日志壳同一套): 圆角浅灰描边, 系统 3D 边框藏掉。
             // 注意 Location/Size 必须用字面量 (与下面 logShell 同理) —— 构造函数里 Size 赋值
@@ -429,6 +432,8 @@ namespace StereoSplitter
                 }
             }
             finally { lv.EndUpdate(); }
+            // 行数变化会改滚动量程: 重摆窗口并重画自绘滑条 (放得下时不画 —— 批121)
+            if (listShell != null) listShell.SyncBar();
         }
 
         void UpdateRow(int i)
