@@ -579,7 +579,6 @@ namespace StereoSplitter
 
                         Control lsZ = Field(cfZ, "listShell") as Control;
                         Control lgZ = Field(cfZ, "logShell") as Control;
-                        Control cbZ = Field(cfZ, "btnClose") as Control;
                         Control micZ = Field(cfZ, "cmbMic") as Control;
                         Control tcZ = Field(cfZ, "titleClose") as Control;
                         Size sz0 = cfZ.ClientSize;
@@ -588,10 +587,11 @@ namespace StereoSplitter
                         cfZ.ClientSize = new Size(sz0.Width + Dpi.S(120), sz0.Height + Dpi.S(100));
                         for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
                         int mZ = Dpi.S(12), cwZ = cfZ.ClientSize.Width;
-                        bool growOk = lsZ != null && lgZ != null && cbZ != null && micZ != null && tcZ != null
+                        // 批129: 底部关闭键已移除 —— 缩放跟随断言不再依赖它, 标题栏 × 仍贴右。
+                        bool growOk = lsZ != null && lgZ != null && micZ != null && tcZ != null
                             && lsZ.Width == cwZ - 2 * mZ && lgZ.Width == cwZ - 2 * mZ
                             && lsZ.Height > lsH0 && lgZ.Height > lgH0
-                            && cbZ.Right == cwZ - mZ && tcZ.Right == cwZ
+                            && tcZ.Right == cwZ
                             && micZ.Width > micW0;
                         Rectangle scrZ = cfZ.RectangleToScreen(cfZ.ClientRectangle);
                         using (var bmpZ = new Bitmap(scrZ.Width, scrZ.Height))
@@ -603,7 +603,8 @@ namespace StereoSplitter
                         for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
                         bool shrinkOk = lsZ != null && lgZ != null && micZ != null
                             && lsZ.Height == lsH0 && lgZ.Height == lgH0 && micZ.Width == micW0;
-                        bool minSizeOk = cfZ.MinimumSize.Width > 0 && cfZ.MinimumSize.Height > 0;
+                        // 批129: 取消缩放最小限制 —— MinimumSize 必须为空 (无下限)。
+                        bool minSizeOk = cfZ.MinimumSize.IsEmpty;
                         Console.Out.WriteLine("CALIB-RESIZE hit=" + hL + "/" + hR + "/" + hT + "/" + hB
                             + " list " + lsH0 + "->" + (lsZ != null ? lsZ.Height : -1)
                             + " log " + lgH0 + "->" + (lgZ != null ? lgZ.Height : -1)
@@ -639,6 +640,26 @@ namespace StereoSplitter
                         + " back=" + (logBox != null ? logBox.BackColor.ToString() : "null")
                         + " menu=" + (cmsLog != null ? cmsLog.Items.Count.ToString() : "null")
                         + " verdict=" + (logOk ? "OK" : "FAIL<<<"));
+
+                    // 批129: 日志壳高度减半 (设计px 202→101); 底部「关闭」键移除, 标题栏 × 保留。
+                    bool logHalfOk = calibShell != null && Math.Abs(calibShell.Height - Dpi.S(101)) <= 3;
+                    Console.Out.WriteLine("CALIB-LOGHALF h=" + (calibShell != null ? calibShell.Height : -1)
+                        + " expect=" + Dpi.S(101) + " verdict=" + (logHalfOk ? "OK" : "FAIL<<<"));
+                    bool noBottomClose = Field(cf, "btnClose") == null && titleClose != null;
+                    Console.Out.WriteLine("CALIB-NOCLOSE bottom=" + (Field(cf, "btnClose") != null)
+                        + " title=" + (titleClose != null) + " verdict=" + (noBottomClose ? "OK" : "FAIL<<<"));
+                    // 批129: 每条日志之间空一行 —— 反射 Append 两段, 段间与末尾都是两个换行。
+                    MethodInfo appendM = typeof(LatencyCalibrationForm).GetMethod("Append",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+                    appendM.Invoke(cf, new object[] { "探针段一" });
+                    appendM.Invoke(cf, new object[] { "探针段二" });
+                    string sep2 = Environment.NewLine + Environment.NewLine;
+                    bool appendOk = logBox != null && logBox.Text.EndsWith(sep2)
+                        && logBox.Text.IndexOf("探针段一" + sep2) >= 0;
+                    Console.Out.WriteLine("CALIB-APPEND text=" + (logBox != null
+                            ? logBox.Text.Replace("\r", "\\r").Replace("\n", "\\n") : "null")
+                        + " verdict=" + (appendOk ? "OK" : "FAIL<<<"));
+
                     // 批120: 列表也对齐圆角壳 + 列宽动态分配 (数值列不截断, 尾部无空白列)。
                     // 批121: lv 换 ScrollListView, 原生滚动条被壳 Region 裁掉, 滑条由壳自绘
                     // (内容一屏放得下时不画)。
@@ -980,7 +1001,6 @@ namespace StereoSplitter
 
                     // 开始/停止 同一个按钮: 文字变、位置不变、不变宽、不溢出; 状态栏文字不能超出 556px
                     var btnStart = Field(cf, "btnStart") as Button;
-                    var btnClose = Field(cf, "btnClose") as Button;
                     var lblState = Field(cf, "lblState") as Label;
                     var t = cf.GetType();
                     var setM = t.GetMethod("SetMeasuringUi", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -991,7 +1011,7 @@ namespace StereoSplitter
                     {
                         Console.Out.WriteLine(tag + " start='" + btnStart.Text + "' enabled=" + btnStart.Enabled
                             + " bounds=" + btnStart.Bounds + " textFit=" + FitText(btnStart, 10)
-                            + " | closeEnabled=" + btnClose.Enabled
+                            + " | bottomClose=" + (Field(cf, "btnClose") != null)
                             + " | state='" + Trim(lblState.Text) + "' stateFit=" + FitLabel(lblState));
                     };
 

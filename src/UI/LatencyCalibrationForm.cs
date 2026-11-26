@@ -76,7 +76,7 @@ namespace StereoSplitter
         readonly Label lblState = new Label();
         readonly RoundButton btnStart = new RoundButton { Text = "开始校准" };
         readonly RoundButton btnApply = new RoundButton { Text = "应用建议值" };
-        readonly RoundButton btnClose = new RoundButton { Text = "关闭" };
+        // 批129: 底部「关闭」按钮去掉 —— 标题栏 × 是唯一关闭入口 (Alt+F4 亦可用)。
         readonly LogTextBox txtLog = new LogTextBox();
         /// <summary>批119: 日志圆角壳 (与主窗口同一套): 圆角浅灰框 + 左右对称内衬 + 自绘细滚动条。
         /// 在 BuildUi 里赋值, 不能 readonly。</summary>
@@ -118,7 +118,8 @@ namespace StereoSplitter
             DoubleBuffered = true;
             // 用设计像素写, Load 里的 Dpi.ScaleForm 会再乘一次因子 (与主窗口一致)。
             Padding = new Padding(0, TitleBarDesignHeight, 0, 0);
-            ClientSize = new Size(580, 520 + TitleBarDesignHeight);
+            // 批129: 日志框高度减半 (202→101 设计px), 初始客户区高度同步减 101。
+            ClientSize = new Size(580, 419 + TitleBarDesignHeight);
             Font = BaseFont;
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
@@ -246,9 +247,7 @@ namespace StereoSplitter
             btnApply.Size = new Size(112, 28);
             btnApply.Click += (s, e) => ApplySuggestions();
 
-            btnClose.Location = new Point(478, 268 + top);
-            btnClose.Size = new Size(90, 28);
-            btnClose.Click += (s, e) => Close();
+            // 批129: 底部「关闭」键移除, 只留标题栏 × (右上角)。
 
             // 批119: 日志显示对齐主窗口风格 —— 同一款 LogTextBox + RoundLogShell 圆角壳
             // (圆角浅灰框 + 左右 10 设计px 对称内衬 + 自绘 4px 圆头细滚动条), 字体/底色也同款。
@@ -261,12 +260,13 @@ namespace StereoSplitter
             logShell = new RoundLogShell(txtLog)
             {
                 Location = new Point(12, 306 + top),
-                Size = new Size(556, 202)
+                // 批129: 日志框高度减半 —— 202 → 101 设计px。
+                Size = new Size(556, 101)
             };
             txtLog.ContextMenuStrip = BuildLogMenu();
 
             // 按钮换成主窗口同款自绘圆角描边按钮 (白底 + 同一支浅灰边框 + 深灰字)
-            foreach (var b in new[] { btnRescan, btnStart, btnApply, btnClose })
+            foreach (var b in new[] { btnRescan, btnStart, btnApply })
             {
                 b.Outline = true;
                 b.FillColor = Color.White;
@@ -277,13 +277,14 @@ namespace StereoSplitter
             Controls.AddRange(new Control[]
             {
                 lblMic, cmbMic, btnRescan, lblTip, listShell, lblState,
-                btnStart, btnApply, btnClose, logShell, titleClose
+                btnStart, btnApply, logShell, titleClose
             });
             // 与主窗口同一套 DPI 放大 + 圆角边框 (控件都按 96 DPI 摆好后, Load 里整体乘一次)
             Load += (s2, e2) =>
             {
                 Dpi.ScaleForm(this);
-                MinimumSize = new Size(Dpi.S(520), Dpi.S(470));   // 批128: 别缩到控件互相压住
+                // 批129: 取消缩放最小限制 —— 想缩多小就缩多小, 控件由 LayoutBody 尽量跟随,
+                // 极小尺寸下部分控件会被裁掉/压扁, 但不再被 Windows 拦住无法缩小。
                 LayoutBody();
                 // DPI 缩放会重设 ListView 列宽 → 发 ColumnWidthChanged, 被批126 的兜底当成
                 // "用户拖动" 触发级联补差 (实测把「建议」压到最小宽)。初始化完成后清掉这个
@@ -317,7 +318,7 @@ namespace StereoSplitter
             lblTip.SetBounds(m, top + Dpi.S(44), Math.Max(0, w - 2 * m), Dpi.S(50));
 
             // 高度分配: 列表拿增量 2/5, 日志吃剩下的 (含底部留白), 中间行紧跟列表下缘
-            int baseH = Dpi.S(552);
+            int baseH = Dpi.S(451);   // 批129: 552 - 日志减半的 101
             int extraH = h - baseH;
             int listH = Math.Max(Dpi.S(90), Dpi.S(140) + (extraH > 0 ? extraH * 2 / 5 : extraH));
             listShell.SetBounds(m, top + Dpi.S(96), Math.Max(0, w - 2 * m), listH);
@@ -325,9 +326,8 @@ namespace StereoSplitter
             int btnY = lblState.Bottom + Dpi.S(4);
             btnStart.SetBounds(m, btnY, Dpi.S(112), Dpi.S(28));
             btnApply.SetBounds(btnStart.Right + Dpi.S(8), btnY, Dpi.S(112), Dpi.S(28));
-            btnClose.SetBounds(w - m - Dpi.S(90), btnY, Dpi.S(90), Dpi.S(28));
             int logY = btnY + Dpi.S(28) + Dpi.S(10);
-            logShell.SetBounds(m, logY, Math.Max(0, w - 2 * m), Math.Max(Dpi.S(60), h - logY - m));
+            logShell.SetBounds(m, logY, Math.Max(0, w - 2 * m), Math.Max(Dpi.S(24), h - logY - m));
 
             LayoutTitleBar();
         }
@@ -690,7 +690,7 @@ namespace StereoSplitter
                 lblState.Text = applied
                     ? (hostRunning
                         ? "已写入卡片，新的延迟已生效（分流无需重启）。"
-                        : "已写入卡片。点「关闭」后即可开始分流。")
+                        : "已写入卡片。点右上角 × 关闭后即可开始分流。")
                     : (changes == 0 ? "各路的到达时间已经一致，无需改动。" :
                        (hostRunning
                         ? "已算出建议值，点「应用建议值」写入卡片（分流运行中，立即生效）。"
@@ -710,7 +710,8 @@ namespace StereoSplitter
         void Append(string line)
         {
             if (txtLog.IsDisposed) return;
-            txtLog.AppendText(line + Environment.NewLine);
+            // 批129: 每条日志之间空一行 (段间距), 缩小一半的日志框里更易读。
+            txtLog.AppendText(line + Environment.NewLine + Environment.NewLine);
         }
 
         void Post(Action a)
@@ -752,7 +753,6 @@ namespace StereoSplitter
         {
             btnStart.Text = on ? "停止校准" : "开始校准";
             btnStart.Enabled = on || mics.Count > 0;
-            btnClose.Enabled = !on;
             cmbMic.Enabled = !on;
             btnRescan.Enabled = !on;
             if (on) btnApply.Enabled = false;
