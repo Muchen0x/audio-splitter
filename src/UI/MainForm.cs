@@ -1319,6 +1319,7 @@ namespace StereoSplitter
 
         // 批131: 缩放防闪合成开关的诊断计数 (探针读)。
         internal int resizeGuardBegins, resizeGuardEnds;
+        internal int resizeDepth;   // 批132: ENTER/EXIT 配对深度 (EXIT 后可能紧接新一轮 ENTER)
         internal bool ResizeComposited { get { return IsHandleCreated && ResizeFlickerGuard.IsComposited(Handle); } }
 
         protected override void OnResize(EventArgs e)
@@ -1570,6 +1571,7 @@ namespace StereoSplitter
             if (m.Msg == WM_ENTERSIZEMOVE)
             {
                 watchRestoreTicks = -1;     // 用户手动拖动/缩放开始: 关观察窗
+                resizeDepth++;
                 ResizeFlickerGuard.Begin(Handle);   // 批131: 整窗合成绘制防缩放闪帧
                 resizeGuardBegins++;
             }
@@ -1577,7 +1579,7 @@ namespace StereoSplitter
             if (exitResize)
             {
                 resizeGuardEnds++;
-                if (IsHandleCreated) BeginInvoke((Action)(() => { try { if (!IsDisposed) Invalidate(true); } catch { } }));
+                if (resizeDepth > 0) resizeDepth--;
             }
 
             // "最大化能占多大"由我们说了算: 系统默认给的是**工作区 + 两侧边框**
@@ -1611,10 +1613,20 @@ namespace StereoSplitter
 
             // 批131: EXIT 的合成位必须在 base 之后清 —— WinForms 处理 EXIT 时会重读/恢复
             // ExStyle, 先清会被盖回 (探针实测 comp True->True)。
+            // 批132: 再推迟到 BeginInvoke 队尾 —— 本轮 WM_SIZE 派发的布局回调
+            // (Recalc/FitCardWidths/FireSettled) 都在队列里, 同步 End 会让它们随后在
+            // 无合成保护下重绘, 松手瞬间闪一帧。depth>0 = 又进了新一轮缩放, 不撤。
             if (exitResize && IsHandleCreated)
             {
-                ResizeFlickerGuard.End(Handle);
-                Invalidate(true);
+                BeginInvoke((Action)(() =>
+                {
+                    try
+                    {
+                        if (IsDisposed || resizeDepth > 0) return;
+                        if (ResizeFlickerGuard.End(Handle)) Invalidate(true);
+                    }
+                    catch { }
+                }));
             }
 
             // 系统在 NC 区缺失时把所有点都当客户区。这里把它掰回来:

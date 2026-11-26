@@ -1906,6 +1906,7 @@ namespace StereoSplitter
             if (Width == lastShellW && Height == lastShellH && listWNow == lastListW
                 && Inner.IsHandleCreated && !forceRecalc) return;
             lastShellW = Width; lastShellH = Height; lastListW = listWNow; forceRecalc = false;
+            RecalcCount++;
             // 批130: 四边留白一致 (Pad), 列表内容区 = 壳 - 2*Pad, 横条出现与否都不改内容区高度
             // —— 原来的做法 hbar 时把 ih 减掉 StripH, 列表会突然缩一截、内容跳动。
             int pad = Pad;
@@ -1954,10 +1955,11 @@ namespace StereoSplitter
             if (need != hbar)
             {
                 hbar = need;
-                forceRecalc = true;   // 批131: 几何没变但布局状态变了, 突破尺寸守卫
-                Recalc();
-                Invalidate();
-                return;
+                HFlipReal++;      // 批132 诊断: 真实翻转次数
+                // 批132: 批130 起 hbar 已不占内容区高度 (hStripTop 恒定), 这里**不必**
+                // forceRecalc+整壳 Invalidate —— 快速缩放时列宽在临界宽度反复跨越会让
+                // hbar 反复翻转, 每次整壳重绘 = 用户看到的"滚动条出现并闪烁"。
+                // hbar 已进下方几何守卫的 key, 翻转必然放行一次, 只失效右/底两条滑条带。
             }
             int from = clientEnd > 0 ? clientEnd : Width - Pad - 1;
             // 批131: ScrollListView 每次 WM_PAINT 都发 LayoutSettled → 这里若无条件 Invalidate
@@ -1973,7 +1975,9 @@ namespace StereoSplitter
             lastVKey = vk; lastHKey = hk; lastStripFrom = from; lastHBar = hbar; lastHot = hotNow;
             InvalidateCount++;
             Invalidate(new Rectangle(from, 0, Width - from, Height));
-            if (hbar && hStripTop < Height)
+            // 批132: hbar 翻到 false 也要失效底带 —— 否则上一帧的自绘滑条留在留白里成残影
+            // (修复前靠整壳 Invalidate 顺带擦掉, 现在只失效条带, 必须显式覆盖)。
+            if (hStripTop < Height)
                 Invalidate(new Rectangle(0, hStripTop, clientEnd, Height - hStripTop));
         }
         int lastVKey = int.MinValue, lastHKey = int.MinValue, lastStripFrom = -1;
@@ -1982,6 +1986,9 @@ namespace StereoSplitter
         bool forceRecalc;
         // 批131 诊断 (探针读): 守卫放行、真正 Invalidate 的次数。
         internal int InvalidateCount;
+        // 批132 诊断 (探针读): hbar 真实翻转次数 / 真正重摆+重建 Region 的次数。
+        // 修复前每次 hbar 翻转都 forceRecalc→Recalc++, 强制 ListView 整片重绘 = 滚动条闪。
+        internal int HFlipReal, RecalcCount;
 
         /// <summary>当前竖向滚动信息 (nMax/nPage/nPos, 行单位); 句柄未建或读不到返回 false。</summary>
         bool GetVert(out SCROLLINFO si)

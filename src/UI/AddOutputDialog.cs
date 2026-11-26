@@ -236,6 +236,7 @@ namespace StereoSplitter
 
         // 批131: 缩放防闪 (与主窗/校准窗同款) —— 诊断计数供探针读。
         internal int resizeGuardBegins, resizeGuardEnds;
+        internal int resizeDepth;   // 批132: ENTER/EXIT 配对深度
         internal bool ResizeComposited { get { return IsHandleCreated && ResizeFlickerGuard.IsComposited(Handle); } }
 
         protected override void WndProc(ref Message m)
@@ -244,6 +245,7 @@ namespace StereoSplitter
             bool enterResize = m.Msg == 0x0231, exitResize = m.Msg == 0x0232;
             if (enterResize)
             {
+                resizeDepth++;
                 ResizeFlickerGuard.Begin(Handle);
                 resizeGuardBegins++;
             }
@@ -265,14 +267,21 @@ namespace StereoSplitter
             }
             base.WndProc(ref m);
             // 批131: EXIT 的合成位必须在 base 之后清 (WinForms 会重读/恢复 ExStyle)。
+            // 批132: 推迟到 BeginInvoke 队尾, 让本轮布局回调先在合成保护下跑完; depth>0
+            // 表示又进新一轮缩放, 别撤。三窗口一致。
             if (exitResize)
             {
                 resizeGuardEnds++;
-                if (IsHandleCreated)
+                if (resizeDepth > 0) resizeDepth--;
+                if (IsHandleCreated) BeginInvoke((Action)(() =>
                 {
-                    ResizeFlickerGuard.End(Handle);
-                    Invalidate(true);
-                }
+                    try
+                    {
+                        if (IsDisposed || resizeDepth > 0) return;
+                        if (ResizeFlickerGuard.End(Handle)) Invalidate(true);
+                    }
+                    catch { }
+                }));
             }
             // 系统没有标题栏可拖: 标题区空白交回 HTCAPTION (关闭键是子控件, 自己收点击)。
             if (m.Msg == WM_NCHITTEST && (int)m.Result == HTCLIENT)

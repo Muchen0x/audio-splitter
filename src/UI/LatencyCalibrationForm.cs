@@ -398,6 +398,7 @@ namespace StereoSplitter
         // 批131: 缩放防闪合成开关的诊断计数 (探针读)。
         internal int resizeGuardBegins, resizeGuardEnds;
         internal bool resizeEndAfter, resizeBeginAfter;
+        internal int resizeDepth;   // 批132: ENTER/EXIT 配对深度 (EXIT 后可能紧接新一轮 ENTER)
         internal bool ResizeComposited { get { return IsHandleCreated && ResizeFlickerGuard.IsComposited(Handle); } }
 
         protected override void WndProc(ref Message m)
@@ -405,6 +406,7 @@ namespace StereoSplitter
             // 批131: 缩放拖边期间整窗合成绘制, 消除列表/日志/滑条逐个重绘的闪帧。
             if (m.Msg == 0x0231 /* WM_ENTERSIZEMOVE */)
             {
+                resizeDepth++;
                 ResizeFlickerGuard.Begin(Handle);
                 resizeGuardBegins++;
                 resizeBeginAfter = ResizeFlickerGuard.IsComposited(Handle);
@@ -416,10 +418,21 @@ namespace StereoSplitter
                 resizeGuardEnds++;
                 // 必须放在 base 之后: WinForms 处理 EXIT 时会重读/恢复 ExStyle, 先清会被盖回。
                 base.WndProc(ref m);
-                ResizeFlickerGuard.End(Handle);
-                resizeEndAfter = ResizeFlickerGuard.IsComposited(Handle);
-                Invalidate(true);
-                if (IsHandleCreated) BeginInvoke((Action)(() => { try { if (!IsDisposed) Invalidate(true); } catch { } }));
+                if (resizeDepth > 0) resizeDepth--;
+                // 批132: 合成撤销**排队到本轮 WM_SIZE 派发的布局回调之后** —— Recalc/
+                // FitCardWidths/FireSettled 都是 BeginInvoke, 快速缩放时堆积, 若同步 End
+                // 撤掉合成, 它们随后在无合成保护下重绘 = 松手瞬间仍闪一帧。 BeginInvoke
+                // FIFO 保证本回调排在它们之后; depth>0 表示又进了新一轮缩放, 不撤。
+                if (IsHandleCreated) BeginInvoke((Action)(() =>
+                {
+                    try
+                    {
+                        if (IsDisposed || resizeDepth > 0) return;
+                        if (ResizeFlickerGuard.End(Handle)) Invalidate(true);
+                        resizeEndAfter = ResizeFlickerGuard.IsComposited(Handle);
+                    }
+                    catch { }
+                }));
                 return;
             }
             if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)

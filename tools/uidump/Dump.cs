@@ -624,18 +624,67 @@ namespace StereoSplitter
                             Application.DoEvents();
                         }
                         int invIdle = RefInt(lsZ, "InvalidateCount") - invBefore;
+                        // 批132: 合成撤销必须排在 WM_SIZE 布局回调之后 —— 先往 BeginInvoke
+                        // 队列插一个探针回调, EXIT 后它应读到合成仍开着 (同步 End 则读到 False)。
+                        bool deferredSawComposite = false;
+                        cfZ.BeginInvoke((Action)(() =>
+                        {
+                            var pr = cfZ.GetType().GetProperty("ResizeComposited",
+                                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                            deferredSawComposite = pr != null && (bool)pr.GetValue(cfZ, null);
+                        }));
                         SendMessage(cfZ.Handle, 0x0232, IntPtr.Zero, IntPtr.Zero); // WM_EXITSIZEMOVE
                         for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
                         bool compOff = !Property(cfZ, "ResizeComposited");
                         int endN = RefInt(cfZ, "resizeGuardEnds");
                         cfZ.ClientSize = szS;
                         for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
-                        bool guardOk = compOn && compOff && begN >= 1 && endN >= 1 && invIdle <= 1;
+                        // 批132: deferred 为 true 证明 EXIT 时合成撤销排在布局回调之后
+                        // (同步 End 的话, 上面那个 BeginInvoke 回调读到的是 False)。
+                        bool guardOk = compOn && compOff && begN >= 1 && endN >= 1 && invIdle <= 1
+                            && deferredSawComposite;
                         Console.Out.WriteLine("CALIB-ANTIFLICK comp " + compOn + "->" + compOff
                             + " begin/end=" + begN + "/" + endN + " idle-invalidates=" + invIdle
+                            + " deferred=" + deferredSawComposite
                             + " (10 次刷新, ≤1) verdict=" + (guardOk ? "OK" : "FAIL<<<"));
 
-                        Console.Out.WriteLine("CALIB-RESIZE hit=" + hL + "/" + hR + "/" + hT + "/" + hB
+                        // 批132: hbar 快速翻转压力 —— 尺寸不变, 屏蔽补差后反复把列宽推过
+                        // 视口临界。修复前每次翻转都 forceRecalc→Recalc (重建 ListView Region
+                        // = 整片重绘); 修复后翻转只失效两条滑条带, RecalcCount 不增。
+                        int recalc0 = RefInt(lsZ, "RecalcCount");
+                        int flip0 = RefInt(lsZ, "HFlipReal");
+                        var fUser = cfZ.GetType().GetField("colsUser", BindingFlags.Instance | BindingFlags.NonPublic);
+                        var fBal = cfZ.GetType().GetField("colsBalancing", BindingFlags.Instance | BindingFlags.NonPublic);
+                        bool oldUser = fUser != null && (bool)fUser.GetValue(cfZ);
+                        bool oldBal = fBal != null && (bool)fBal.GetValue(cfZ);
+                        if (fUser != null) fUser.SetValue(cfZ, true);   // 关自动分配
+                        if (fBal != null) fBal.SetValue(cfZ, true);     // 关补差, 手动宽才留得住
+                        var lvZ = Field(cfZ, "lv") as ListView;
+                        if (lvZ != null && lvZ.Columns.Count == 5)
+                        {
+                            int cw0 = lvZ.Columns[0].Width;
+                            for (int i = 0; i < 6; i++)
+                            {
+                                lvZ.Columns[0].Width = cw0 + Dpi.S(240);   // 超宽 → hbar on
+                                if (rbM != null) rbM.Invoke(lsZ, null);
+                                Application.DoEvents(); System.Threading.Thread.Sleep(20);
+                                lvZ.Columns[0].Width = cw0;               // 回缩 → hbar off
+                                if (rbM != null) rbM.Invoke(lsZ, null);
+                                Application.DoEvents(); System.Threading.Thread.Sleep(20);
+                            }
+                            lvZ.Columns[0].Width = cw0;
+                            if (rbM != null) rbM.Invoke(lsZ, null);
+                            Application.DoEvents();
+                        }
+                        if (fUser != null) fUser.SetValue(cfZ, oldUser);
+                        if (fBal != null) fBal.SetValue(cfZ, oldBal);
+                        int recalcN = RefInt(lsZ, "RecalcCount") - recalc0;
+                        int flipN = RefInt(lsZ, "HFlipReal") - flip0;
+                        bool hflipOk = flipN >= 1 && recalcN == 0;
+                        Console.Out.WriteLine("CALIB-HFLIP flips=" + flipN + " recalcs=" + recalcN
+                            + " verdict=" + (hflipOk ? "OK" : "FAIL<<<"));
+
+                        Console.Out.WriteLine("CALIB-RESIZE hit=" + hL + "/" + hR + "/"+ hT + "/" + hB
                             + " list " + lsH0 + "->" + (lsZ != null ? lsZ.Height : -1)
                             + " log " + lgH0 + "->" + (lgZ != null ? lgZ.Height : -1)
                             + " min=" + cfZ.MinimumSize + " grow=" + growOk + " shrink=" + shrinkOk
