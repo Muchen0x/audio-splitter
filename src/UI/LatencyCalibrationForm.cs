@@ -171,7 +171,18 @@ namespace StereoSplitter
             lv.Resize += (s, e) => LayoutListCols();
             // 竖向滚动条出现/消失会改客户区宽 (列总宽没跟着变就会挤出原生横向条 —— 截图里的
             // 那条就是它)。客户区一变就重排列宽, 横向永远刚好放满, 原生横条从此没理由出现。
-            lv.ClientSizeChanged += (s, e) => { colsUser = false; LayoutListCols(); };
+            // 批125: 只看**宽度** —— 底部横向滑条带出现/消失会改客户区"高度", 不能因此把
+            // 用户手动列宽洗掉回自动对齐。
+            int lastClientW = -1;
+            lv.ClientSizeChanged += (s, e) =>
+            {
+                if (lv.ClientSize.Width != lastClientW)
+                {
+                    lastClientW = lv.ClientSize.Width;
+                    colsUser = false;
+                    LayoutListCols();
+                }
+            };
             // 批123: LV 每次自己重排完布局 (WM_SIZE/重绘/竖条翻转/滚动) 都把列宽重新对齐
             // 到它排出来的列头宽 —— 列/列头/行三方恒一致, 横向滚动与悬空分隔线失去存在理由。
             lv.LayoutSettled += (s, e) => LayoutListCols();
@@ -179,6 +190,9 @@ namespace StereoSplitter
             // 批124: 分隔条拖动保留 —— 用户拖动后的列宽被尊重, 自动对齐让位;
             // 系统级事件 (窗口缩放/数据重填) 才回到自动分配。
             lv.ColumnWidthChanged += (s, e) => { if (!colsAdjusting) colsUser = true; };
+            // 批125: 拖动**过程中** (逐像素 ColumnWidthChanging) 就立刻让位 —— 否则拖动期间
+            // 每次 WM_PAINT 还会触发 LayoutListCols 把列宽抢回去, 与拖动打架 = 文字闪烁。
+            lv.ColumnWidthChanging += (s, e) => { if (!colsAdjusting) colsUser = true; };
 
             // 批120: 列表也包进圆角壳 (与日志壳同一套): 圆角浅灰描边, 系统 3D 边框藏掉。
             // 注意 Location/Size 必须用字面量 (与下面 logShell 同理) —— 构造函数里 Size 赋值

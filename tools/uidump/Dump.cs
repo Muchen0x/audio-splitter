@@ -714,6 +714,78 @@ namespace StereoSplitter
                             }
                         }
                     }
+                    // 批125: 分隔条拖动 —— 拖宽某列 → 横向溢出: 壳底部自绘细滑条出现 (原生横条
+                    // 仍被 NCCALCSIZE 吸收, 不占位不留残迹), WM_HSCROLL 照常可滚; 拖窄 → 悬空
+                    // 的列头结尾分隔线被挖洞 Region 裁掉, 底部滑条收回。行文字不闪烁靠
+                    // LVS_EX_DOUBLEBUFFER (CALIB-DBLBUF)。
+                    if (lvCalib != null && lvCalib.IsHandleCreated)
+                    {
+                        int exStyle = (int)SendMessage(lvCalib.Handle, 0x1037, IntPtr.Zero, IntPtr.Zero);
+                        bool dblBuf = (exStyle & 0x00010000) != 0;
+                        Console.Out.WriteLine("CALIB-DBLBUF exStyle=0x" + exStyle.ToString("X")
+                            + " verdict=" + (dblBuf ? "OK" : "FAIL<<<"));
+
+                        object dragShell = Field(cf, "listShell");
+                        int hFull = lvCalib.ClientSize.Height;
+                        // 拖宽「当前延迟」+90 (模拟用户拖宽: ColumnWidthChanged → colsUser=true)
+                        lvCalib.Columns[1].Width += 90;
+                        for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                        ScrollInfo? hsW = ScrollInfoOf(lvCalib, 0);
+                        bool hbarOn = dragShell != null && Equals(Field(dragShell, "hbar"), true);
+                        int hStrip = lvCalib.ClientSize.Height;
+                        int stripH = hFull - hStrip;   // 壳为底部滑条让出的带高
+                        // 横向滚动机制仍活着: WM_HSCROLL 翻页后 nPos 前进
+                        SendMessage(lvCalib.Handle, 0x0114, (IntPtr)((0 << 16) | 3), IntPtr.Zero);
+                        for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                        ScrollInfo? hsW2 = ScrollInfoOf(lvCalib, 0);
+                        bool wideOk = hsW.HasValue && hbarOn && stripH == Dpi.S(10)
+                            && hsW2.HasValue && hsW2.Value.nPos > hsW.Value.nPos;
+                        Console.Out.WriteLine("CALIB-DRAGWIDE range=" + (hsW.HasValue
+                                ? hsW.Value.nMax + "/" + hsW.Value.nPage : "null")
+                            + " hbar=" + hbarOn + " stripH=" + stripH
+                            + " pos " + (hsW.HasValue ? hsW.Value.nPos : -1) + "->" + (hsW2.HasValue ? hsW2.Value.nPos : -1)
+                            + " verdict=" + (wideOk ? "OK" : "FAIL<<<"));
+                        Rectangle scrWide = cf.RectangleToScreen(cf.ClientRectangle);
+                        using (var bmpW = new Bitmap(scrWide.Width, scrWide.Height))
+                        {
+                            using (var g = Graphics.FromImage(bmpW))
+                                g.CopyFromScreen(scrWide.Location, Point.Empty, scrWide.Size);
+                            bmpW.Save("calib-dragwide.png", System.Drawing.Imaging.ImageFormat.Png);
+                            ScanVLines(bmpW, cf, lvCalib, "DRAGWIDE");
+                            var hdrOnlyW = HdrOnlyLineXs(bmpW, cf, lvCalib);
+                            Console.Out.WriteLine("CALIB-DRAGWIDE-HDRLINE x=" +
+                                (hdrOnlyW.Count > 0 ? string.Join(",", hdrOnlyW.ConvertAll(v => v.ToString()).ToArray()) : "none")
+                                + " verdict=" + (hdrOnlyW.Count == 0 ? "OK" : "FAIL<<<"));
+                        }
+
+                        // 拖窄回去 (再多缩 60 → 列总宽 < 列头宽): 悬空结尾分隔线必须消失, 横条收回
+                        lvCalib.Columns[1].Width -= 150;
+                        for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
+                        ScrollInfo? hsN = ScrollInfoOf(lvCalib, 0);
+                        bool hbarOff = dragShell != null && Equals(Field(dragShell, "hbar"), false);
+                        bool narrowOk = !hsN.HasValue && hbarOff && lvCalib.ClientSize.Height == hFull;
+                        Console.Out.WriteLine("CALIB-DRAGNARROW range=" + (hsN.HasValue
+                                ? hsN.Value.nMax + "/" + hsN.Value.nPage : "null")
+                            + " hbar=" + hbarOff + " clientH=" + lvCalib.ClientSize.Height + "/" + hFull
+                            + " diag=" + RefInt(dragShell, "HFlipCount")
+                            + " need=" + Field(dragShell, "DbgHBarNeed")
+                            + " style=" + Field(dragShell, "DbgHStyle")
+                            + " range=" + RefInt(dragShell, "DbgHMax") + "/" + RefInt(dragShell, "DbgHPage")
+                            + " verdict=" + (narrowOk ? "OK" : "FAIL<<<"));
+                        Rectangle scrNar = cf.RectangleToScreen(cf.ClientRectangle);
+                        using (var bmpN = new Bitmap(scrNar.Width, scrNar.Height))
+                        {
+                            using (var g = Graphics.FromImage(bmpN))
+                                g.CopyFromScreen(scrNar.Location, Point.Empty, scrNar.Size);
+                            bmpN.Save("calib-dragnarrow.png", System.Drawing.Imaging.ImageFormat.Png);
+                            ScanVLines(bmpN, cf, lvCalib, "DRAGNARROW");
+                            var hdrOnlyN = HdrOnlyLineXs(bmpN, cf, lvCalib);
+                            Console.Out.WriteLine("CALIB-DRAGNARROW-HDRLINE x=" +
+                                (hdrOnlyN.Count > 0 ? string.Join(",", hdrOnlyN.ConvertAll(v => v.ToString()).ToArray()) : "none")
+                                + " verdict=" + (hdrOnlyN.Count == 0 ? "OK" : "FAIL<<<"));
+                        }
+                    }
+
                     foreach (Control c in cf.Controls)
                     {
                         Console.Out.WriteLine("  " + c.GetType().Name + " '" + Trim(c.Text) + "' bounds=" + c.Bounds
@@ -3883,6 +3955,31 @@ namespace StereoSplitter
             }
             Console.Out.WriteLine("CALIB-VSCAN[" + tag + "] clientW=" + target.ClientSize.Width
                 + " lines=" + (hits.Count > 0 ? string.Join(" ", hits.ToArray()) : "none"));
+        }
+
+        /// <summary>
+        /// 找"只出现在列头带"的竖线 x (批125): darkHdr≥5 而 darkRow&lt;20 的列 —— 悬空的
+        /// 列头结尾分隔条 (拖窄列后 T≠W 才露出来)。列边界线整行高 (darkRow 也高), 不会误报。
+        /// 返回 lv 客户区坐标。
+        /// </summary>
+        static System.Collections.Generic.List<int> HdrOnlyLineXs(Bitmap bmp, Control host, Control target)
+        {
+            var res = new System.Collections.Generic.List<int>();
+            if (bmp == null || target == null || !target.IsHandleCreated) return res;
+            Point tl = host.PointToClient(target.PointToScreen(Point.Empty));
+            int right = tl.X + target.ClientSize.Width;
+            int x0 = Math.Max(0, right - 70);
+            for (int x = x0; x < right; x++)
+            {
+                int darkHdr = 0, darkRow = 0;
+                for (int y = tl.Y + 1; y < tl.Y + 100 && y < bmp.Height; y++)
+                {
+                    if (bmp.GetPixel(x, y).R >= 242) continue;
+                    if (y < tl.Y + 30) darkHdr++; else darkRow++;
+                }
+                if (darkHdr >= 5 && darkRow < 20) res.Add(x - tl.X);
+            }
+            return res;
         }
 
         /// <summary>按 RoundLogShell 的几何算滑块顶边 y (壳局部) 与滑块高。</summary>

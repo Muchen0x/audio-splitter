@@ -1521,7 +1521,10 @@ namespace StereoSplitter
         public event EventHandler Scrolled;
         /// <summary>LV 刚做完自己的布局 (列头重排/竖条翻转) —— 窗体该把列宽对齐了。</summary>
         public event EventHandler LayoutSettled;
-        const int WM_NCCALCSIZE = 0x0083, WM_NCPAINT = 0x0085, WM_VSCROLL = 0x115, WM_MOUSEWHEEL = 0x20A;
+        const int WM_NCCALCSIZE = 0x0083, WM_NCPAINT = 0x0085;
+        const int WM_VSCROLL = 0x115, WM_HSCROLL = 0x114, WM_MOUSEWHEEL = 0x20A;
+        const int LVM_SETEXTENDEDLISTVIEWSTYLE = 0x1036, LVM_GETEXTENDEDLISTVIEWSTYLE = 0x1037;
+        const int LVS_EX_DOUBLEBUFFER = 0x00010000;
         const int GWL_STYLE = -16;
         const int WS_VSCROLL = 0x00200000, WS_HSCROLL = 0x00100000;
 
@@ -1543,6 +1546,16 @@ namespace StereoSplitter
         public bool VBarVisible
         {
             get { return IsHandleCreated && (GetWindowLong(Handle, GWL_STYLE) & WS_VSCROLL) != 0; }
+        }
+
+        /// <summary>
+        /// 原生横向条 style 位是否在 (批125): LV 决定要横向滚动时置位 —— 这是"该不该有横向
+        /// 滑条"的权威信号 (NCCALCSIZE 的吸收与壳的底部留带都跟着它走)。GetScrollInfo 的
+        /// 量程在"收窄回不再滚"的瞬间可能读到旧值, style 位由系统维护, 不会有陈旧问题。
+        /// </summary>
+        public bool HBarVisible
+        {
+            get { return IsHandleCreated && (GetWindowLong(Handle, GWL_STYLE) & WS_HSCROLL) != 0; }
         }
 
         /// <summary>
@@ -1573,19 +1586,23 @@ namespace StereoSplitter
 
         [System.Runtime.InteropServices.DllImport("gdi32.dll")]
         static extern IntPtr CreateRectRgn(int x1, int y1, int x2, int y2);
+        [System.Runtime.InteropServices.DllImport("gdi32.dll")]
+        static extern int CombineRgn(IntPtr hDest, IntPtr hSrc1, IntPtr hSrc2, int mode);
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
         [System.Runtime.InteropServices.DllImport("gdi32.dll")]
         static extern bool DeleteObject(IntPtr hWnd);
 
         int headerClipW = -1;   // 已套用裁剪的列头宽 (同宽不重复套, 防闪烁)
+        int headerClipT = -1;   // 裁剪时记住的列总宽: 悬空分隔线在 x=总宽, 总宽变了要重裁
 
         /// <summary>
-        /// 裁掉列头右端的结尾分隔线 (批124): 列头控件永远在最后一列右缘画一条分隔线 ——
-        /// 高度只有列头那么高 (实测 25px), 所以是一小段: 正常态贴着右框 (x=680),
-        /// 溢出态悬在空白带中间 (x=659, 离框 21px)。像素扫描 CALIB-VSCAN 实锤。
-        /// 给列头子窗口套 Region 排除最右 2px, 这条线从任何状态下消失; 列头自己不横滚
-        /// (列总宽对齐它), Region 无需跟随滚动。
+        /// 裁掉列头右端的结尾分隔线 (批124; 批125 升级): 列头控件永远在**最后一列的右缘**
+        /// 画一条分隔线 —— 自动对齐时列总宽 == 列头宽, 它贴在右框 (x=w-1), 裁掉最右 2px 即可;
+        /// 用户拖窄某列后 (批125: 手动列宽被尊重, 不再自动补差) 列总宽 T < 列头宽 w, 这条线
+        /// 悬在 x=T —— 不在最右 2px 的裁剪带里, 又露出来了 (用户截图实锤)。
+        /// Region 改成"整个列头矩形 MINUS x=T 处 3px 竖条"的组合区域: 无论 T 在哪, 结尾线
+        /// 都被挖掉; 正常态 T==w-1 时挖洞与右缘裁剪带重合, 效果同批124。
         /// </summary>
         void ClipHeaderEnd()
         {
@@ -1596,14 +1613,37 @@ namespace StereoSplitter
                 var rc = new RECT();
                 if (hh == IntPtr.Zero || !GetWindowRect(hh, ref rc)) return;
                 int w = rc.Right - rc.Left;
-                if (w <= 4 || w == headerClipW) return;
-                IntPtr rgn = CreateRectRgn(0, 0, w - 2, rc.Bottom - rc.Top);
+                int total = 0;
+                foreach (ColumnHeader col in Columns) total += col.Width;
+                if (w <= 4 || (w == headerClipW && total == headerClipT)) return;
+                IntPtr rgn = CreateRectRgn(0, 0, w - 2, rc.Bottom - rc.Top);   // 批124 的右缘裁剪
+                // 列总宽 T 落在列头内部 (T < w) 时, 结尾分隔线悬在 x=T-1: 从区域里挖掉 3px 竖条。
+                // T 距右缘只剩 1~2px 时挖洞与右缘裁剪带重叠 —— DIFF 只减不增, 结果仍正确。
+                if (total < w)
+                {
+                    IntPtr hole = CreateRectRgn(total - 1, 0, total + 2, rc.Bottom - rc.Top);
+                    IntPtr combined = CreateRectRgn(0, 0, 0, 0);
+                    if (CombineRgn(combined, rgn, hole, 4 /*RGN_DIFF*/) != 0)
+                    {
+                        DeleteObject(rgn);
+                        rgn = combined;
+                    }
+                    else { DeleteObject(hole); DeleteObject(combined); }
+                }
                 // bRedraw 必须为 true: 裁剪前已经画上去的分隔线像素不会自己消失 (实测溢出态
                 // 截图残留), 让系统立刻按新 Region 重绘列头。
-                if (SetWindowRgn(hh, rgn, true) != 0) headerClipW = w;
+                if (SetWindowRgn(hh, rgn, true) != 0) { headerClipW = w; headerClipT = total; }
                 else DeleteObject(rgn);   // 系统拒收才自己释放; 收了就归系统管
             }
             catch { }
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            // 批125: 打开 LV 自带双缓冲 —— 拖分隔条/滚动时整片重绘走缓冲, 行文字不再闪烁。
+            SendMessage(Handle, LVM_SETEXTENDEDLISTVIEWSTYLE,
+                (IntPtr)LVS_EX_DOUBLEBUFFER, (IntPtr)LVS_EX_DOUBLEBUFFER);
         }
 
         protected override void WndProc(ref Message m)
@@ -1645,8 +1685,9 @@ namespace StereoSplitter
             bool isPaint = m.Msg == 0x000F;            // WM_PAINT: 首绘/重绘时 LV 也会再排一次列头
             base.WndProc(ref m);
             if (isSize || isPaint) FireSettled();      // base 排完列头, 窗体跟着对齐列宽
-            else if (m.Msg == WM_VSCROLL || m.Msg == WM_MOUSEWHEEL)
+            else if (m.Msg == WM_VSCROLL || m.Msg == WM_HSCROLL || m.Msg == WM_MOUSEWHEEL)
             {
+                // 批125: 横向滚动 (用户拖宽列导致溢出) 也要上报 —— 壳据此画底部细滑条。
                 var h = Scrolled;
                 if (h != null) h(this, EventArgs.Empty);
             }
@@ -1675,6 +1716,7 @@ namespace StereoSplitter
         static int CornerRadius { get { return NoFocusSplitContainer.WindowRadiusPx; } }   // 与窗口圆角同一弧度
         static int BarW { get { return Dpi.S(4); } }      // 滑条粗细 (与日志壳一致)
         static int StripW { get { return Dpi.S(10); } }   // 右侧滑条带/命中区宽 (与日志壳一致)
+        static int StripH { get { return Dpi.S(10); } }   // 底部滑条带/命中区高 (批125, 与右侧带同宽)
 
         public readonly ListView Inner;
         readonly ScrollListView scrollable;               // Inner 的强类型视图 (不是 ScrollListView 时为 null)
@@ -1682,10 +1724,19 @@ namespace StereoSplitter
         bool dragThumb;              // 正在拖拽滑块
         int dragGrabY;               // 按下点相对滑块顶边的偏移 (拖拽中保持不跳)
         int clientEnd;               // 列表可视右缘 (壳坐标, 不含): 右侧留白带自此到边框, 滑条在其中居中
+        // 批125: 横向滑条 (用户把列拖得比视口宽时出现, 与日志/竖向同一套观感)
+        bool hbar;                   // 底部横向滑条是否在显示 (列总宽 > 视口宽)
+        bool dragHThumb;             // 正在拖拽横向滑块
+        int dragGrabX;               // 按下点相对横向滑块左缘的偏移
+        int hStripTop;               // 底部滑条带起点 (壳坐标); 不显示时 = Height-1
+        // 批125 诊断 (探针读): RefreshBar 调用计数 / 最近判定 / 量程读数 / 原生横条 style 位
+        internal int HFlipCount, DbgHMax, DbgHPage;
+        internal bool DbgHBarNeed, DbgHStyle;
 
         const int SB_VERT = 1;
+        const int SB_HORZ = 0;
         const int SB_PAGEUP = 2, SB_PAGEDOWN = 3, SB_THUMBTRACK = 5;
-        const int WM_VSCROLL = 0x115, WM_MOUSEWHEEL = 0x20A;
+        const int WM_VSCROLL = 0x115, WM_HSCROLL = 0x114, WM_MOUSEWHEEL = 0x20A;
 
         [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
         struct SCROLLINFO
@@ -1706,7 +1757,12 @@ namespace StereoSplitter
             list.BorderStyle = BorderStyle.None;      // 3D 边框不要, 圆角描边由外壳画
             Controls.Add(list);
             if (scrollable != null)
+            {
                 scrollable.Scrolled += delegate { RefreshBar(); };
+                // 批125: 列宽变化 (拖分隔条) 会改横向量程 —— LV 每次重排完布局都来核对
+                // 横向滑条该不该出现; 量程翻转时 RefreshBar 里会重摆 Inner 并全重画。
+                scrollable.LayoutSettled += delegate { RefreshBar(); };
+            }
             // 竖条出现/消失会改 client 宽: 重新摆窗口 + 重画滑条 (Item 增删/尺寸变化都会走到)
             list.ClientSizeChanged += delegate { Recalc(); RefreshBar(); };
             Size = list.Size;
@@ -1723,14 +1779,17 @@ namespace StereoSplitter
         /// 摆列表窗口 + 裁区域 (与日志壳同一套): Inner 窗口比可视区加宽一条原生竖条宽
         /// (系统量度 SM_CXVSCROLL, 再按实测 ClientSize 自校正一次), 然后 Region 裁在
         /// client 矩形内 —— 右缘排除原生竖条, 底缘排除原生横条, 两者整条不可见、点不到。
+        /// <para>批125: 横向滑条在显示时 (列拖得比视口宽), 底部再让出一条滑条带 ——
+        /// 横向原生条已被 NCCALCSIZE 吸进 client (不可见), 这条带画的是自绘细滑条。</para>
         /// </summary>
         void Recalc()
         {
             if (Inner == null || IsDisposed) return;
-            int ih = Math.Max(1, Height - 2);
+            int ih = Math.Max(1, Height - 2 - (hbar ? StripH : 0));
             int listW = Math.Max(StripW + 40, Width - 2 - StripW);   // 可视宽 = 壳宽 - 左右衬 - 滑条带
             Inner.SetBounds(1, 1, listW, ih);
             clientEnd = 1 + listW;
+            hStripTop = 1 + ih;
             Region old = Inner.Region;
             // 区域在 Inner 自己的坐标里: 圆角路径 (平移掉外壳内衬) 与窗口矩形求交。
             // 原生滚动条已被 ScrollListView 的 WM_NCCALCSIZE 吸进 client, 不会出现在窗口右缘。
@@ -1756,11 +1815,29 @@ namespace StereoSplitter
             Recalc();                      // DPI 缩放/布局变化时列表每步跟随
         }
 
-        /// <summary>只重画右侧留白带 (滚动位置变了, 列表由它自己重画)。</summary>
+        /// <summary>滚动位置/量程变了: 右侧留白带重画竖向滑条; 横向量程翻转时重摆再全重画。</summary>
         void RefreshBar()
         {
+            // 批125: 横向滑条需求翻转 (列拖得比视口宽 → 出现; 拖窄回缩 → 消失) ——
+            // Inner 高度要让出/收回底部滑条带, 必须 Recalc 重摆, 并整壳重画。
+            bool need = HBarNeeded();
+            // 批125 诊断 (探针读): 翻转计数 + 最近一次判定依据
+            HFlipCount++;
+            DbgHBarNeed = need;
+            SCROLLINFO dbg;
+            if (GetHorz(out dbg)) { DbgHMax = dbg.nMax; DbgHPage = dbg.nPage; } else { DbgHMax = -1; DbgHPage = -1; }
+            DbgHStyle = scrollable != null && scrollable.HBarVisible;
+            if (need != hbar)
+            {
+                hbar = need;
+                Recalc();
+                Invalidate();
+                return;
+            }
             int from = clientEnd > 0 ? clientEnd : Width - StripW - 1;
             Invalidate(new Rectangle(from, 0, Width - from, Height));
+            if (hbar && hStripTop < Height)
+                Invalidate(new Rectangle(0, hStripTop, clientEnd, Height - hStripTop));
         }
 
         /// <summary>当前竖向滚动信息 (nMax/nPage/nPos, 行单位); 句柄未建或读不到返回 false。</summary>
@@ -1771,6 +1848,27 @@ namespace StereoSplitter
             si.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(SCROLLINFO));
             si.fMask = 0x1 | 0x2 | 0x4;    // SIF_RANGE | SIF_PAGE | SIF_POS
             return GetScrollInfo(Inner.Handle, SB_VERT, ref si) && si.nMax > 0;
+        }
+
+        /// <summary>当前横向滚动信息 (像素单位); 句柄未建或读不到返回 false。</summary>
+        bool GetHorz(out SCROLLINFO si)
+        {
+            si = new SCROLLINFO();
+            if (Inner == null || !Inner.IsHandleCreated) return false;
+            si.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(SCROLLINFO));
+            si.fMask = 0x1 | 0x2 | 0x4;
+            return GetScrollInfo(Inner.Handle, SB_HORZ, ref si) && si.nMax > 0;
+        }
+
+        /// <summary>
+        /// 横向滑条该不该出现 (批125): 以 LV 的原生横条 style 位为准 (系统维护, 无陈旧问题;
+        /// style 翻转时 ScrollListView 的 NCCALCSIZE 检测会发 Scrolled, 这里必被调用到)。
+        /// GetScrollInfo 量程只用来画滑块几何 —— "收窄回不再滚"的瞬间量程可能还是旧值。
+        /// </summary>
+        bool HBarNeeded()
+        {
+            return scrollable != null && scrollable.HBarVisible
+                && Width - 2 >= Dpi.S(6) * 2 + BarW * 4;   // 壳太窄画不下就不画
         }
 
         /// <summary>算滑块几何 (条带内 trackTop..trackLen, 滑块顶 y 与高); 不需要滚动返回 false。</summary>
@@ -1802,6 +1900,36 @@ namespace StereoSplitter
                 g.FillPath(b, path);
         }
 
+        /// <summary>横向滑块几何 (条带内 trackLeft..trackLen, 滑块左 x 与宽); 不需要滚动返回 false。</summary>
+        bool HThumbGeometry(SCROLLINFO si, out int trackLeft, out int trackLen, out int tx, out int tw)
+        {
+            tx = tw = 0;
+            trackLeft = Dpi.S(6);
+            trackLen = clientEnd - 1 - trackLeft * 2;   // 底带横贯可视宽 (右侧竖条带之外)
+            if (trackLen < BarW * 4) return false;
+            tw = Math.Max(Dpi.S(18), (int)((long)trackLen * si.nPage / (si.nMax + 1)));
+            if (tw > trackLen) tw = trackLen;
+            int maxLeft = si.nMax + 1 - si.nPage;
+            tx = trackLeft + (maxLeft > 0 ? (int)((long)(trackLen - tw) * si.nPos / maxLeft) : 0);
+            return true;
+        }
+
+        void DrawHBar(Graphics g)
+        {
+            if (!hbar) return;
+            SCROLLINFO si;
+            if (!GetHorz(out si) || si.nPage >= si.nMax + 1) return;
+            int trackLeft, trackLen, tx, tw;
+            if (!HThumbGeometry(si, out trackLeft, out trackLen, out tx, out tw)) return;
+            // 滑条在底部滑条带内垂直居中 (hStripTop .. 边框)
+            int zoneT = hStripTop > 0 ? hStripTop : Height - 1 - StripH;
+            int zoneH = (Height - 2) - zoneT + 1;
+            int by = zoneT + Math.Max(0, (zoneH - BarW) / 2);
+            using (var path = UiDraw.RoundRect(new RectangleF(tx, by, tw, BarW), BarW / 2f))
+            using (var b = new SolidBrush(dragHThumb ? ThumbHotColor : ThumbColor))
+                g.FillPath(b, path);
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
@@ -1816,6 +1944,7 @@ namespace StereoSplitter
                 g.FillPath(fill, path);
 
             DrawBar(g);
+            DrawHBar(g);   // 批125: 横向滑条 (列溢出时才出现)
 
             // 边框最后画: 同一套浅灰细边, 半像素对齐
             using (var path = UiDraw.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), CornerRadius))
@@ -1831,20 +1960,49 @@ namespace StereoSplitter
             return x >= from;
         }
 
+        /// <summary>点是否落在底部滑条带 (批125, 仅横向滑条在显示时)。</summary>
+        bool InBottomStrip(int y)
+        {
+            return hbar && y >= hStripTop;
+        }
+
         void SendScroll(int wParamLow, int pos)
         {
             if (!Inner.IsHandleCreated) return;
             SendMessage(Inner.Handle, WM_VSCROLL, (IntPtr)((pos << 16) | wParamLow), IntPtr.Zero);
         }
 
+        void SendScrollH(int wParamLow, int pos)
+        {
+            if (!Inner.IsHandleCreated) return;
+            SendMessage(Inner.Handle, WM_HSCROLL, (IntPtr)((pos << 16) | wParamLow), IntPtr.Zero);
+        }
+
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
-            if (e.Button != MouseButtons.Left || !InStrip(e.X)) return;
-            SCROLLINFO si;
-            if (!GetVert(out si)) return;
+            if (e.Button != MouseButtons.Left) return;
+            // 批125: 底部滑条带 —— 横向滑块拖拽 / 带上翻页
+            if (InBottomStrip(e.Y))
+            {
+                SCROLLINFO si;
+                if (!GetHorz(out si) || si.nPage >= si.nMax + 1) return;
+                int hTrackLeft, hTrackLen, hx, hw;
+                if (!HThumbGeometry(si, out hTrackLeft, out hTrackLen, out hx, out hw)) return;
+                if (e.X >= hx && e.X < hx + hw)
+                {
+                    dragHThumb = true;
+                    dragGrabX = e.X - hx;
+                    Capture = true;
+                }
+                else SendScrollH(e.X < hx ? SB_PAGEUP : SB_PAGEDOWN, 0);
+                return;
+            }
+            if (!InStrip(e.X)) return;
+            SCROLLINFO sv;
+            if (!GetVert(out sv)) return;
             int trackTop, trackLen, ty, th;
-            if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
+            if (!ThumbGeometry(sv, out trackTop, out trackLen, out ty, out th)) return;
             if (e.Y >= ty && e.Y < ty + th)
             {
                 dragThumb = true;
@@ -1857,24 +2015,39 @@ namespace StereoSplitter
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
-            bool over = InStrip(e.X);
+            bool over = InStrip(e.X) && !InBottomStrip(e.Y);
             if (over != barHot) { barHot = over; RefreshBar(); }
+            // 批125: 横向滑块拖拽
+            if (dragHThumb)
+            {
+                SCROLLINFO si;
+                if (!GetHorz(out si)) { return; }
+                int hTrackLeft, hTrackLen, hx, hw;
+                if (!HThumbGeometry(si, out hTrackLeft, out hTrackLen, out hx, out hw)) return;
+                int maxLeft = si.nMax + 1 - si.nPage;
+                if (maxLeft <= 0) return;
+                int pos = (int)Math.Round((e.X - hTrackLeft - dragGrabX) * (double)maxLeft / Math.Max(1, hTrackLen - hw));
+                pos = Math.Max(0, Math.Min(maxLeft, pos));
+                SendScrollH(SB_THUMBTRACK, pos);
+                return;
+            }
             if (!dragThumb) return;
-            SCROLLINFO si;
-            if (!GetVert(out si)) return;
-            int trackTop, trackLen, ty, th;
-            if (!ThumbGeometry(si, out trackTop, out trackLen, out ty, out th)) return;
-            int maxTop = si.nMax + 1 - si.nPage;
+            SCROLLINFO sv;
+            if (!GetVert(out sv)) return;
+            int trackTop, trackLen2, ty, th;
+            if (!ThumbGeometry(sv, out trackTop, out trackLen2, out ty, out th)) return;
+            int maxTop = sv.nMax + 1 - sv.nPage;
             if (maxTop <= 0) return;
-            int pos = (int)Math.Round((e.Y - trackTop - dragGrabY) * (double)maxTop / Math.Max(1, trackLen - th));
-            pos = Math.Max(0, Math.Min(maxTop, pos));
-            SendScroll(SB_THUMBTRACK, pos);
+            int posv = (int)Math.Round((e.Y - trackTop - dragGrabY) * (double)maxTop / Math.Max(1, trackLen2 - th));
+            posv = Math.Max(0, Math.Min(maxTop, posv));
+            SendScroll(SB_THUMBTRACK, posv);
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
             if (dragThumb) { dragThumb = false; Capture = false; RefreshBar(); }
+            if (dragHThumb) { dragHThumb = false; Capture = false; RefreshBar(); }
         }
 
         /// <summary>滚轮落在条带上时转发给列表 (正文区滚轮由列表原生处理, 不经过这里)。</summary>
