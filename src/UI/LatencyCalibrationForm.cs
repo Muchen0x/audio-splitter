@@ -394,7 +394,7 @@ namespace StereoSplitter
         bool colsAdjusting;     // LayoutListCols 自己设宽也触发 ColumnWidthChanged, 别误记成用户拖动
         bool colsBalancing;     // 批126: 钳位设宽是嵌套触发, 别再进来递归/误记
         bool colsBalanceQueued; // 批126: 补差已排队 (每像素拖动只排一次, 最新差值覆盖)
-        int balanceFlex = -1, balanceWidth;   // 排队中的补差目标 (弹性列, 目标宽)
+        readonly int[] balanceWidths = new int[5];   // 批127: 排队的补差目标 (每列; -1=不变, 级联分配)
 
         /// <summary>
         /// 列最小宽 (批126, 用户: 拖动要有最小限制, 不要遮挡标题) —— 列头文字放得下再
@@ -411,13 +411,26 @@ namespace StereoSplitter
         /// 拖动实时补差 (批126): 列总宽必须恒等于列头宽, 否则列头结尾分隔线悬在 x=总宽
         /// —— 挖洞 Region 只挖掉了列头带那一小段, 行区细线还在, 而且那个位置的原生
         /// 分隔条照样能拖 (列头子窗口的 hit-test 不吃 Region 挖洞, 实测)。根除办法是
-        /// 不让空隙出现: 拖某列时差值由**弹性列**实时吸收 —— 拖的不是「输出设备」就
-        /// 让它吃差值, 拖的是它本身则由「状态」列补; 弹性列顶到最小宽后剩余差值溢出,
-        /// 交给底部横向滑条 (批125)。自动对齐模式 (colsUser=false) 不走这里。
+        /// 不让空隙出现: 拖某列时差值由**弹性列**实时吸收。批127 修正弹性列的选择 ——
+        /// 必须是被拖列的**右邻列**: 分隔条的位置 = 它左边各列宽之和, 只有让右邻列反向
+        /// 伸缩, 分隔条才会跟着鼠标走 (批126 错用左邻/固定「输出设备」, 被拖列 +N 与
+        /// 左邻 -N 在分隔条位置上相互抵消, 分隔条纹丝不动 = 用户报告的"拖动异常")。
+        /// 右邻反向伸缩还保证再右边的列整体不动 (它们的左边界 = 右邻右缘, 恒定)。
+        /// 最后一列没有右邻时用左邻兜底; 弹性列顶到最小宽后剩余差值溢出, 交给底部
+        /// 横向滑条 (批125)。自动对齐模式 (colsUser=false) 不走这里。
         /// <para>**必须在通知处理外设宽**: 在 HDN_ITEMCHANGED 处理里改列宽, LV 的横向
         /// 量程不会重算 (实测 range 卡在旧值, 原生横条 style 位不掉, 滑条翻转乱套) ——
         /// 所以这里只把目标算好排队, BeginInvoke 出栈到消息队列再真正落宽度。</para>
         /// </summary>
+        /// <summary>级联补差: 让列 i 吸收差值 d (负=收缩), 钳到最小宽, 返回没吸收完的余量。</summary>
+        int GiveToCol(int i, int d)
+        {
+            int cur = lv.Columns[i].Width;
+            int nw = Math.Max(ColMinWidth(i), cur + d);
+            balanceWidths[i] = nw;
+            return d - (nw - cur);            // 收缩不够的部分继续传给下一列
+        }
+
         void BalanceCols(int changedIdx, int changedNewWidth)
         {
             if (lv.Columns.Count < 5) return;
@@ -432,20 +445,34 @@ namespace StereoSplitter
                 total += (i == changedIdx ? changedNewWidth : lv.Columns[i].Width);
             int delta = W - total;            // >0 = 有空隙要填, <0 = 超宽要收
             if (delta == 0) return;
-            int flex = changedIdx == 0 ? 4 : 0;
-            int w = lv.Columns[flex].Width + delta;
-            int min = ColMinWidth(flex);
-            if (w < min) w = min;             // 钳到最小宽, 剩余差值 → 溢出 (横滑条接管)
-            balanceFlex = flex;
-            balanceWidth = w;
+            // 批127 级联分配: 从被拖列的**右邻**开始向右找有空间的列吸收差值 —— 右邻
+            // 顶到最小宽后继续吃下一列 (用户选择"级联吃后面列"), 全部顶到最小才溢出。
+            // 末列没有右邻, 改为向左级联。分隔条位置只依赖被拖列左缘, 故右侧列怎么分配
+            // 都不影响分隔条跟鼠标走。
+            for (int i = 0; i < balanceWidths.Length; i++) balanceWidths[i] = -1;
+            int remain = delta;
+            if (changedIdx < 4)
+            {
+                for (int i = changedIdx + 1; i < 5 && remain != 0; i++)
+                    remain = GiveToCol(i, remain);
+            }
+            else
+            {
+                for (int i = 3; i >= 0 && remain != 0; i--)
+                    remain = GiveToCol(i, remain);
+            }
             if (colsBalanceQueued) return;    // 已有排队在先, 只更新目标 (最新差值覆盖)
             colsBalanceQueued = true;
             BeginInvoke((Action)(() =>
             {
                 colsBalanceQueued = false;
-                if (IsDisposed || balanceFlex < 0 || balanceFlex >= lv.Columns.Count) return;
+                if (IsDisposed) return;
                 colsAdjusting = true;         // 自己落宽度: 不当作用户拖动, 也不再触发补差
-                try { lv.Columns[balanceFlex].Width = balanceWidth; }
+                try
+                {
+                    for (int i = 0; i < balanceWidths.Length && i < lv.Columns.Count; i++)
+                        if (balanceWidths[i] >= 0) lv.Columns[i].Width = balanceWidths[i];
+                }
                 catch (ObjectDisposedException) { }
                 finally { colsAdjusting = false; }
             }));

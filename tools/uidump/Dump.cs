@@ -754,6 +754,41 @@ namespace StereoSplitter
                         Console.Out.WriteLine("CALIB-ALIGN n=" + lvCalib.Columns.Count
                             + " verdict=" + (alignOk ? "OK" : "FAIL<<<"));
 
+                        // 批127 通用分隔条测试: 逐个拖 col1/2/3/4 (即「当前延迟/实测/建议/状态」
+                        // 的左分隔条) +40, 验证 (a) 分隔条位置(左侧列宽和)右移 40 —— 跟鼠标走;
+                        // (b) 右邻反向收缩; (c) 总宽不变无溢出。测完设回, 补差自动幂等复原。
+                        bool sepAllOk = true;
+                        for (int ci = 0; ci <= 3; ci++)
+                        {
+                            int flexI = ci + 1 < 5 ? ci + 1 : ci - 1;
+                            int sepBefore = 0; for (int k = 0; k <= ci; k++) sepBefore += lvCalib.Columns[k].Width;
+                            int flexBefore = lvCalib.Columns[flexI].Width;
+                            int sumBefore = SumCols(lvCalib);
+                            lvCalib.Columns[ci].Width += 40;
+                            for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                            int sepAfter = 0; for (int k = 0; k <= ci; k++) sepAfter += lvCalib.Columns[k].Width;
+                            // 批127 级联: 分隔条必须右移 40 (跟鼠标); 右侧链收缩合计=40
+                            // (右邻不够时继续吃下一列), 且各列不低于自身最小宽。
+                            int shrink = 0;   // 各列都不低于自己的最小宽
+                            for (int k = 0; k < 5; k++)
+                            {
+                                int mn = TextRenderer.MeasureText(lvCalib.Columns[k].Text, lvCalib.Font).Width + Dpi.S(14);
+                                if (lvCalib.Columns[k].Width < mn) shrink = -1;
+                            }
+                            // 实际收缩合计 = 拖前总宽 + 被拖列增量 - 拖后总宽
+                            int afterSum = SumCols(lvCalib);
+                            int shrinkTotal = sumBefore + 40 - afterSum;
+                            bool ok = sepAfter - sepBefore == 40 && shrinkTotal == 40 && shrink != -1;
+                            if (!ok) sepAllOk = false;
+                            Console.Out.WriteLine("CALIB-SEPMOVE col" + ci + " flex" + flexI
+                                + " sep+" + (sepAfter - sepBefore) + " shrink=" + shrinkTotal
+                                + " flex " + flexBefore + "->" + lvCalib.Columns[flexI].Width
+                                + " verdict=" + (ok ? "OK" : "FAIL<<<"));
+                            lvCalib.Columns[ci].Width -= 40;
+                            for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                        }
+                        Console.Out.WriteLine("CALIB-SEPALL verdict=" + (sepAllOk ? "OK" : "FAIL<<<"));
+
                         // 最小宽 (批126): 「实测」压到 20 → 不发 Changing (实测), Changed 兜底钳回
                         // 最小宽 —— 结果宽度必须 >= 标题能放下的最小值
                         int wBefore = lvCalib.Columns[2].Width;
@@ -766,30 +801,39 @@ namespace StereoSplitter
                             + " evt(chg=" + evtChanging + " changed=" + evtChanged + " cancelled=" + evtCancelled + ")"
                             + " verdict=" + (minOk ? "OK" : "FAIL<<<"));
 
-                        // 拖宽「建议」+60 → 补差: 「输出设备」-60, 总宽==列头宽, 无溢出无空隙
-                        int dev0 = lvCalib.Columns[0].Width;
+                        // 批127: 拖宽「建议」+60 → 补差由**右邻「状态」**-60 (不是批126 的
+                        // 「输出设备」)。关键: 分隔条位置 = 左侧列宽之和, 右邻反向伸缩才会
+                        // 让分隔条真的跟着鼠标走; 左邻吸收会让分隔条纹丝不动 (批126 的 bug)。
+                        int st0 = lvCalib.Columns[4].Width;
+                        int sep0 = lvCalib.Columns[0].Width + lvCalib.Columns[1].Width
+                            + lvCalib.Columns[2].Width + lvCalib.Columns[3].Width;  // 「建议」右分隔条位置
                         lvCalib.Columns[3].Width += 60;
                         for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
-                        int dev1 = lvCalib.Columns[0].Width;
+                        int st1 = lvCalib.Columns[4].Width;
+                        int sep1 = lvCalib.Columns[0].Width + lvCalib.Columns[1].Width
+                            + lvCalib.Columns[2].Width + lvCalib.Columns[3].Width;
                         int sumB = 0; foreach (ColumnHeader ch in lvCalib.Columns) sumB += ch.Width;
                         IntPtr hHB = SendMessage(lvCalib.Handle, 0x101F, IntPtr.Zero, IntPtr.Zero);
                         var rcHB = new RECT(); GetWindowRect(hHB, ref rcHB);
                         int hdrB = rcHB.Right - rcHB.Left;
-                        bool balOk = dev1 == dev0 - 60 && Math.Abs(sumB - hdrB) <= 1
+                        // 分隔条必须右移 60 (sep1-sep0==60), 右邻「状态」-60, 总宽不变无溢出
+                        bool balOk = st1 == st0 - 60 && sep1 - sep0 == 60 && Math.Abs(sumB - hdrB) <= 1
                             && ScrollInfoOf(lvCalib, 0) == null
                             && Equals(Field(dragShell, "hbar"), false)
                             && lvCalib.ClientSize.Height == hFull;
-                        Console.Out.WriteLine("CALIB-BALANCE dev " + dev0 + "->" + dev1
+                        Console.Out.WriteLine("CALIB-BALANCE st " + st0 + "->" + st1
+                            + " sep " + sep0 + "->" + sep1 + " (+" + (sep1 - sep0) + ")"
                             + " sum=" + sumB + " hdrW=" + hdrB
                             + " verdict=" + (balOk ? "OK" : "FAIL<<<"));
 
-                        // 继续拖宽 +400 → 弹性列顶到最小宽 → 真溢出: 底部滑条出现, WM_HSCROLL 可滚
+                        // 继续拖宽 +400 → 弹性列(右邻「状态」)顶到最小宽 → 真溢出: 底部滑条出现,
+                        // WM_HSCROLL 可滚。批127: 钳的是「状态」不是「输出设备」。
                         lvCalib.Columns[3].Width += 400;
                         for (int i = 0; i < 10; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(40); }
                         ScrollInfo? hsO = ScrollInfoOf(lvCalib, 0);
                         bool hbarOn = dragShell != null && Equals(Field(dragShell, "hbar"), true);
-                        int minDev = TextRenderer.MeasureText("输出设备", lvCalib.Font).Width + Dpi.S(14);
-                        bool clamped = lvCalib.Columns[0].Width <= minDev + 1;
+                        int minDev = TextRenderer.MeasureText("状态", lvCalib.Font).Width + Dpi.S(14);
+                        bool clamped = lvCalib.Columns[4].Width <= minDev + 1;
                         SendMessage(lvCalib.Handle, 0x0114, (IntPtr)((0 << 16) | 3), IntPtr.Zero);
                         for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
                         ScrollInfo? hsO2 = ScrollInfoOf(lvCalib, 0);
@@ -798,7 +842,7 @@ namespace StereoSplitter
                         for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
                         bool ovfOk = hsO.HasValue && hbarOn && clamped
                             && hsO2.HasValue && hsO2.Value.nPos > hsO.Value.nPos;
-                        Console.Out.WriteLine("CALIB-OVERFLOW dev=" + lvCalib.Columns[0].Width
+                        Console.Out.WriteLine("CALIB-OVERFLOW st=" + lvCalib.Columns[4].Width
                             + " (min " + minDev + ") range=" + (hsO.HasValue
                                 ? hsO.Value.nMax + "/" + hsO.Value.nPage : "null")
                             + " hbar=" + hbarOn
