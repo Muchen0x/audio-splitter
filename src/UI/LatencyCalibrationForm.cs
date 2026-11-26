@@ -66,6 +66,7 @@ namespace StereoSplitter
         /// </summary>
         readonly bool hostRunning;
 
+        readonly Label lblMic = new Label();   // 批128: 提升为字段, 缩放时随布局走
         readonly RoundedCombo cmbMic = new RoundedCombo { Height = 24, ItemHeight = 24, MaxDropDownItems = 10 };
         readonly RoundButton btnRescan = new RoundButton { Text = "刷新" };
         readonly ScrollListView lv = new ScrollListView();   // 批121: 会汇报滚动, 供壳画自绘细滑条
@@ -99,14 +100,18 @@ namespace StereoSplitter
             this.hostRunning = hostRunning;
 
             Text = "延迟校准";
-            StartPosition = FormStartPosition.CenterParent;
+            // 批128: 窗口不再挂在 MainForm 之下 —— 主窗口获得焦点时可以盖住校准窗,
+            // 不会永远浮在最上面。独立任务栏按钮让它被盖住后仍能一键切回来。
+            // 无 owner 时 CenterParent 会退化成屏幕居中, 索性写清楚。
+            StartPosition = FormStartPosition.CenterScreen;
             // 批105: 同步主窗口风格 —— 收掉系统标题栏, 自己画同色标题栏 + 圆角边框。
-            // 保留 WS_THICKFRAME 让 DWM 给出 Win11 圆角与边框几何 (与主窗口同一手法),
-            // 但不给缩放热区 (见 WM_NCHITTEST), 仍是固定大小的对话框。
+            // 保留 WS_THICKFRAME 让 DWM 给出 Win11 圆角与边框几何 (与主窗口同一手法);
+            // 批128: 边缘缩放热区由 WM_NCHITTEST 手工给出 (与主窗口 HitTestCaption 同一套),
+            // 现在窗口可以自由拉大拉小, 内部控件由 LayoutBody 跟随。
             FormBorderStyle = FormBorderStyle.None;
             MaximizeBox = false;
             MinimizeBox = false;
-            ShowInTaskbar = false;
+            ShowInTaskbar = true;
             AutoScaleMode = AutoScaleMode.None;
             SetStyle(ControlStyles.ResizeRedraw | ControlStyles.OptimizedDoubleBuffer
                 | ControlStyles.AllPaintingInWmPaint, true);
@@ -134,7 +139,9 @@ namespace StereoSplitter
         {
             // 内容整体让出一条自绘标题栏 (设计像素; Load 里 ScaleForm 会统一乘 DPI)。
             int top = TitleBarDesignHeight;
-            var lblMic = new Label { Text = "麦克风:", Location = new Point(12, 15 + top), AutoSize = true };
+            lblMic.Text = "麦克风:";
+            lblMic.Location = new Point(12, 15 + top);
+            lblMic.AutoSize = true;
 
             cmbMic.Location = new Point(72, 12 + top);
             cmbMic.Width = 400;
@@ -197,13 +204,13 @@ namespace StereoSplitter
             // Changing 的 cancel 只是真实拖动的提前拦截 (分隔条停在最小宽, 不回弹)。
             lv.ColumnWidthChanging += (s, e) =>
             {
-                if (colsAdjusting || colsBalancing) return;
+                if (initializing || colsAdjusting || colsBalancing) return;
                 if (e.NewWidth < ColMinWidth(e.ColumnIndex)) e.Cancel = true;
                 else { colsUser = true; BalanceCols(e.ColumnIndex, e.NewWidth); }
             };
             lv.ColumnWidthChanged += (s, e) =>
             {
-                if (colsAdjusting || colsBalancing) return;
+                if (initializing || colsAdjusting || colsBalancing) return;
                 colsUser = true;
                 if (e.ColumnIndex < 0 || e.ColumnIndex >= lv.Columns.Count) return;
                 // 兜底: 某些路径不发 Changing (实测程序化设宽只有 Changed) —— 最小宽钳位
@@ -276,9 +283,53 @@ namespace StereoSplitter
             Load += (s2, e2) =>
             {
                 Dpi.ScaleForm(this);
-                LayoutTitleBar();
+                MinimumSize = new Size(Dpi.S(520), Dpi.S(470));   // 批128: 别缩到控件互相压住
+                LayoutBody();
+                // DPI 缩放会重设 ListView 列宽 → 发 ColumnWidthChanged, 被批126 的兜底当成
+                // "用户拖动" 触发级联补差 (实测把「建议」压到最小宽)。初始化完成后清掉这个
+                // 误记, 按最终视口宽重新铺满 —— 之后用户真拖动才置 colsUser。
+                initializing = false;
+                colsUser = false;
+                LayoutListCols();
                 ApplyWindowFrame();
             };
+            // 批128: 用户拖边缘改大小 → 所有控件按当前客户区重新摆 (水平跟随, 列表/日志分高度)
+            ClientSizeChanged += (s2, e2) => { if (IsHandleCreated) LayoutBody(); };
+        }
+
+        /// <summary>
+        /// 批128: 窗口可缩放后的统一布局。所有位置都由「设计像素 × DPI + 当前客户区」算出,
+        /// 与 BuildUi 的初值同构 (100% DPI、初始尺寸下逐项相等)。多出来的宽度给横向铺满的
+        /// 控件 (提示/列表/状态/日志), 多出来的高度按 2:3 分给列表与日志。
+        /// </summary>
+        void LayoutBody()
+        {
+            int w = ClientSize.Width, h = ClientSize.Height;
+            int m = Dpi.S(12), top = Padding.Top;
+            if (w <= 0 || h <= 0 || cmbMic == null || logShell == null) return;
+
+            // 顶部麦克风行: 刷新键贴右, 下拉框吃到它左边 (初始 580 宽时 72+400+8+88+12=580)
+            btnRescan.SetBounds(w - m - Dpi.S(88), top + Dpi.S(11), Dpi.S(88), Dpi.S(24));
+            cmbMic.SetBounds(Dpi.S(72), top + Dpi.S(12),
+                Math.Max(Dpi.S(120), btnRescan.Left - Dpi.S(72) - Dpi.S(8)), Dpi.S(24));
+            lblMic.Location = new Point(m, top + Dpi.S(15));
+
+            lblTip.SetBounds(m, top + Dpi.S(44), Math.Max(0, w - 2 * m), Dpi.S(50));
+
+            // 高度分配: 列表拿增量 2/5, 日志吃剩下的 (含底部留白), 中间行紧跟列表下缘
+            int baseH = Dpi.S(552);
+            int extraH = h - baseH;
+            int listH = Math.Max(Dpi.S(90), Dpi.S(140) + (extraH > 0 ? extraH * 2 / 5 : extraH));
+            listShell.SetBounds(m, top + Dpi.S(96), Math.Max(0, w - 2 * m), listH);
+            lblState.SetBounds(m, listShell.Bottom + Dpi.S(8), Math.Max(0, w - 2 * m), Dpi.S(20));
+            int btnY = lblState.Bottom + Dpi.S(4);
+            btnStart.SetBounds(m, btnY, Dpi.S(112), Dpi.S(28));
+            btnApply.SetBounds(btnStart.Right + Dpi.S(8), btnY, Dpi.S(112), Dpi.S(28));
+            btnClose.SetBounds(w - m - Dpi.S(90), btnY, Dpi.S(90), Dpi.S(28));
+            int logY = btnY + Dpi.S(28) + Dpi.S(10);
+            logShell.SetBounds(m, logY, Math.Max(0, w - 2 * m), Math.Max(Dpi.S(60), h - logY - m));
+
+            LayoutTitleBar();
         }
 
         /// <summary>标题栏右端的关闭键: 与主窗口窗口键同宽 (46 设计px), 高 = 标题栏高。</summary>
@@ -332,6 +383,8 @@ namespace StereoSplitter
         const int WM_NCPAINT = 0x0085;
         const int HTCLIENT = 1;
         const int HTCAPTION = 2;
+        const int HTLEFT = 10, HTRIGHT = 11, HTTOP = 12, HTBOTTOM = 15;
+        const int HTTOPLEFT = 13, HTTOPRIGHT = 14, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
 
         protected override CreateParams CreateParams
         {
@@ -364,20 +417,39 @@ namespace StereoSplitter
                 return;
             }
             base.WndProc(ref m);
-            // 系统没有标题栏可拖: 标题区空白交回 HTCAPTION (关闭键是子控件, 自己收点击)。
+            // 自绘标题栏: 边缘 → 缩放热区, 标题空白 → 可拖动 (批128 起与主窗口同款)。
             if (m.Msg == WM_NCHITTEST && (int)m.Result == HTCLIENT)
             {
                 var cursor = new Point((short)(m.LParam.ToInt64() & 0xFFFF),
                                        (short)((m.LParam.ToInt64() >> 16) & 0xFFFF));
-                Point p = PointToClient(cursor);
-                if (p.Y >= 0 && p.Y < Padding.Top)
-                {
-                    if (titleClose != null && titleClose.Visible && titleClose.Bounds.Contains(p))
-                        m.Result = (IntPtr)HTCLIENT;
-                    else
-                        m.Result = (IntPtr)HTCAPTION;
-                }
+                m.Result = (IntPtr)HitTestBody(PointToClient(cursor));
             }
+        }
+
+        /// <summary>窗口左上角起算的点 → 命中码; 边缘是缩放热区, 标题栏空白可拖动。</summary>
+        int HitTestBody(Point p)
+        {
+            int w = ClientSize.Width, h = ClientSize.Height;
+            int grip = Dpi.S(6);
+            bool left = p.X < grip, right = p.X >= w - grip;
+            bool top = p.Y < grip, bottom = p.Y >= h - grip;
+            if (top && left) return HTTOPLEFT;
+            if (top && right) return HTTOPRIGHT;
+            if (bottom && left) return HTBOTTOMLEFT;
+            if (bottom && right) return HTBOTTOMRIGHT;
+            if (left) return HTLEFT;
+            if (right) return HTRIGHT;
+            if (top) return HTTOP;
+            if (bottom) return HTBOTTOM;
+
+            if (p.Y >= 0 && p.Y < Padding.Top)
+            {
+                // 关闭键是子控件, 命中它要交还 HTCLIENT 才按得动
+                if (titleClose != null && titleClose.Visible && titleClose.Bounds.Contains(p))
+                    return HTCLIENT;
+                return HTCAPTION;
+            }
+            return HTCLIENT;
         }
 
         /// <summary>日志右键菜单 (批119): 与主窗口日志同一套 (复制 / 全选)。</summary>
@@ -390,6 +462,7 @@ namespace StereoSplitter
             return cms;
         }
 
+        bool initializing = true; // 批128: Dpi.ScaleForm 重设列宽期间屏蔽 Changed, 别误记成用户拖动
         bool colsUser;          // 批124: 用户拖过分隔条 → 自动对齐让位, 系统级事件才回到自动
         bool colsAdjusting;     // LayoutListCols 自己设宽也触发 ColumnWidthChanged, 别误记成用户拖动
         bool colsBalancing;     // 批126: 钳位设宽是嵌套触发, 别再进来递归/误记

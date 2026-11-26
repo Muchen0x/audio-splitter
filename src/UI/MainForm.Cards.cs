@@ -1079,7 +1079,9 @@ namespace StereoSplitter
             }
             calibForm = new LatencyCalibrationForm(list, outMs, ApplyCalibratedDelay, hostRunning);
             calibForm.FormClosed += delegate { calibForm = null; };
-            calibForm.Show(this);
+            // 批128: 不传 owner —— owned 窗口永远压在 MainForm 之上, 用户要能把它切到后面。
+            // 校准窗自己 ShowInTaskbar=true, 被主窗口盖住后可从任务栏切回。
+            calibForm.Show();
         }
 
         /// <summary>当前打开的延迟校准窗 (非模态, 批121); null = 没开。关窗时由 FormClosed 清空。</summary>

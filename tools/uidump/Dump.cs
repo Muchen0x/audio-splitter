@@ -561,6 +561,68 @@ namespace StereoSplitter
                     Console.Out.WriteLine("CALIB-STYLE border=" + cf.FormBorderStyle
                         + " paddingTop=" + cf.Padding.Top + " close=" + (titleClose != null ? titleClose.Bounds.ToString() : "null")
                         + " verdict=" + (styled ? "OK" : "FAIL<<<"));
+
+                    // 批128: 可缩放 —— 边缘 hit-test 热区 + 最小尺寸 + 改大小后控件跟随。
+                    // 独立窗体做缩放测试 —— 自绘边框窗的 ClientSize setter 有 +16px 补偿,
+                    // 改完恢复不会精确回到原值, 绝不能污染下面用 cf 做的列宽断言。
+                    using (var cfZ = new LatencyCalibrationForm(lanes, 5, delegate { }))
+                    {
+                        cfZ.Show();
+                        for (int i = 0; i < 6; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                        MethodInfo hitM = typeof(LatencyCalibrationForm).GetMethod("HitTestBody",
+                            BindingFlags.Instance | BindingFlags.NonPublic);
+                        int hL = hitM != null ? (int)hitM.Invoke(cfZ, new object[] { new Point(1, cfZ.ClientSize.Height / 2) }) : -1;
+                        int hR = hitM != null ? (int)hitM.Invoke(cfZ, new object[] { new Point(cfZ.ClientSize.Width - 1, cfZ.ClientSize.Height / 2) }) : -1;
+                        int hT = hitM != null ? (int)hitM.Invoke(cfZ, new object[] { new Point(cfZ.ClientSize.Width / 2, 1) }) : -1;
+                        int hB = hitM != null ? (int)hitM.Invoke(cfZ, new object[] { new Point(cfZ.ClientSize.Width / 2, cfZ.ClientSize.Height - 1) }) : -1;
+                        bool hitOk = hL == 10 && hR == 11 && hT == 12 && hB == 15;
+
+                        Control lsZ = Field(cfZ, "listShell") as Control;
+                        Control lgZ = Field(cfZ, "logShell") as Control;
+                        Control cbZ = Field(cfZ, "btnClose") as Control;
+                        Control micZ = Field(cfZ, "cmbMic") as Control;
+                        Control tcZ = Field(cfZ, "titleClose") as Control;
+                        Size sz0 = cfZ.ClientSize;
+                        int lsH0 = lsZ != null ? lsZ.Height : -1, lgH0 = lgZ != null ? lgZ.Height : -1;
+                        int micW0 = micZ != null ? micZ.Width : -1;
+                        cfZ.ClientSize = new Size(sz0.Width + Dpi.S(120), sz0.Height + Dpi.S(100));
+                        for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                        int mZ = Dpi.S(12), cwZ = cfZ.ClientSize.Width;
+                        bool growOk = lsZ != null && lgZ != null && cbZ != null && micZ != null && tcZ != null
+                            && lsZ.Width == cwZ - 2 * mZ && lgZ.Width == cwZ - 2 * mZ
+                            && lsZ.Height > lsH0 && lgZ.Height > lgH0
+                            && cbZ.Right == cwZ - mZ && tcZ.Right == cwZ
+                            && micZ.Width > micW0;
+                        Rectangle scrZ = cfZ.RectangleToScreen(cfZ.ClientRectangle);
+                        using (var bmpZ = new Bitmap(scrZ.Width, scrZ.Height))
+                        {
+                            using (var gz = Graphics.FromImage(bmpZ)) gz.CopyFromScreen(scrZ.Location, Point.Empty, scrZ.Size);
+                            bmpZ.Save("calib-resized.png", System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                        cfZ.ClientSize = sz0;
+                        for (int i = 0; i < 8; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(30); }
+                        bool shrinkOk = lsZ != null && lgZ != null && micZ != null
+                            && lsZ.Height == lsH0 && lgZ.Height == lgH0 && micZ.Width == micW0;
+                        bool minSizeOk = cfZ.MinimumSize.Width > 0 && cfZ.MinimumSize.Height > 0;
+                        Console.Out.WriteLine("CALIB-RESIZE hit=" + hL + "/" + hR + "/" + hT + "/" + hB
+                            + " list " + lsH0 + "->" + (lsZ != null ? lsZ.Height : -1)
+                            + " log " + lgH0 + "->" + (lgZ != null ? lgZ.Height : -1)
+                            + " min=" + cfZ.MinimumSize + " grow=" + growOk + " shrink=" + shrinkOk
+                            + " verdict=" + (hitOk && minSizeOk && growOk && shrinkOk ? "OK" : "FAIL<<<"));
+                    }
+
+                    // 批128: 不挂 owner (主窗口激活时能盖住它) + 独立任务栏按钮。
+                    // MainForm 的调用点用源码断言兜底 (OpenLatencyCalibration 需要两张卡, 探针不便走 UI)。
+                    string cardsSrcPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                        "..", "..", "..", "src", "UI", "MainForm.Cards.cs"));
+                    bool srcNoOwner = !System.IO.File.Exists(cardsSrcPath)
+                        || (System.IO.File.ReadAllText(cardsSrcPath).Contains("calibForm.Show();")
+                            && !System.IO.File.ReadAllText(cardsSrcPath).Contains("calibForm.Show(this)"));
+                    bool noOwner = cf.Owner == null && cf.ShowInTaskbar
+                        && cf.StartPosition == FormStartPosition.CenterScreen && srcNoOwner;
+                    Console.Out.WriteLine("CALIB-NOOWNER owner=" + (cf.Owner != null)
+                        + " taskbar=" + cf.ShowInTaskbar + " start=" + cf.StartPosition
+                        + " src=" + srcNoOwner + " verdict=" + (noOwner ? "OK" : "FAIL<<<"));
                     // 批119: 日志对齐主窗口风格 —— 裸 TextBox 换成 RoundLogShell 包 LogTextBox,
                     // 字体/底色/右键菜单与主窗口日志同款。
                     Control calibShell = Field(cf, "logShell") as Control;
