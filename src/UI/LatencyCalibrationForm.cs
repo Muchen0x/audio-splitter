@@ -171,11 +171,14 @@ namespace StereoSplitter
             lv.Resize += (s, e) => LayoutListCols();
             // 竖向滚动条出现/消失会改客户区宽 (列总宽没跟着变就会挤出原生横向条 —— 截图里的
             // 那条就是它)。客户区一变就重排列宽, 横向永远刚好放满, 原生横条从此没理由出现。
-            lv.ClientSizeChanged += (s, e) => LayoutListCols();
+            lv.ClientSizeChanged += (s, e) => { colsUser = false; LayoutListCols(); };
             // 批123: LV 每次自己重排完布局 (WM_SIZE/重绘/竖条翻转/滚动) 都把列宽重新对齐
             // 到它排出来的列头宽 —— 列/列头/行三方恒一致, 横向滚动与悬空分隔线失去存在理由。
             lv.LayoutSettled += (s, e) => LayoutListCols();
             lv.Scrolled += (s, e) => LayoutListCols();
+            // 批124: 分隔条拖动保留 —— 用户拖动后的列宽被尊重, 自动对齐让位;
+            // 系统级事件 (窗口缩放/数据重填) 才回到自动分配。
+            lv.ColumnWidthChanged += (s, e) => { if (!colsAdjusting) colsUser = true; };
 
             // 批120: 列表也包进圆角壳 (与日志壳同一套): 圆角浅灰描边, 系统 3D 边框藏掉。
             // 注意 Location/Size 必须用字面量 (与下面 logShell 同理) —— 构造函数里 Size 赋值
@@ -349,6 +352,9 @@ namespace StereoSplitter
             return cms;
         }
 
+        bool colsUser;          // 批124: 用户拖过分隔条 → 自动对齐让位, 系统级事件才回到自动
+        bool colsAdjusting;     // LayoutListCols 自己设宽也触发 ColumnWidthChanged, 别误记成用户拖动
+
         /// <summary>
         /// 列宽分配 (批120; 批123 目标宽换权威): 数值列按 DPI 设物理宽 (ListView 列宽不随
         /// ScaleForm 缩放), 「输出设备」列吃掉剩余全部宽度。
@@ -357,18 +363,26 @@ namespace StereoSplitter
         /// 对齐 client 反而多出一条竖条宽 → LV 以为要横滚 (行动了列头不动, 错位);
         /// 对齐列头则列/列头/行三方恒等, 横滚与悬空分隔线都失去存在理由。列头量不到时
         /// (句柄未建) 退回 ClientSize.Width。</para>
+        /// <para>批124: 用户拖过分隔条 (colsUser) 就不再自动重排 —— 拖动是保留的功能,
+        /// 手动列宽被尊重; 窗口缩放/数据重填等系统级事件才回到自动分配。</para>
         /// </summary>
         void LayoutListCols()
         {
+            if (colsUser) return;
             if (lv.Columns.Count < 5 || lv.ClientSize.Width <= 0) return;
             int target = lv.HeaderWidthPx;
             if (target <= 0) target = lv.ClientSize.Width;
-            lv.Columns[1].Width = Dpi.S(84);
-            lv.Columns[2].Width = Dpi.S(84);
-            lv.Columns[3].Width = Dpi.S(84);
-            lv.Columns[4].Width = Dpi.S(120);
-            int fixedW = Dpi.S(84) * 3 + Dpi.S(120);
-            lv.Columns[0].Width = Math.Max(Dpi.S(80), target - fixedW);
+            colsAdjusting = true;
+            try
+            {
+                lv.Columns[1].Width = Dpi.S(84);
+                lv.Columns[2].Width = Dpi.S(84);
+                lv.Columns[3].Width = Dpi.S(84);
+                lv.Columns[4].Width = Dpi.S(120);
+                int fixedW = Dpi.S(84) * 3 + Dpi.S(120);
+                lv.Columns[0].Width = Math.Max(Dpi.S(80), target - fixedW);
+            }
+            finally { colsAdjusting = false; }
         }
 
         protected override void Dispose(bool disposing)
@@ -442,7 +456,10 @@ namespace StereoSplitter
                 }
             }
             finally { lv.EndUpdate(); }
-            // 行数变化会改滚动量程: 重摆窗口并重画自绘滑条 (放得下时不画 —— 批121)
+            // 行数变化会改滚动量程: 重摆窗口并重画自绘滑条 (放得下时不画 —— 批121)。
+            // 数据换了一轮, 手动列宽多半不再适配新内容: 回到自动分配 (批124)。
+            colsUser = false;
+            LayoutListCols();
             if (listShell != null) listShell.SyncBar();
         }
 

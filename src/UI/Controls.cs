@@ -1512,8 +1512,9 @@ namespace StereoSplitter
     /// 正解是反过来: 列宽总和**跟随 LV 排出来的列头宽** (<see cref="HeaderWidthPx"/>) ——
     /// 三方 (列头/列/行) 恒等, 横向滚动失去存在理由。竖条翻转 / WM_SIZE / WM_PAINT 之后
     /// 发 <see cref="LayoutSettled"/>, 让窗体把列宽重新对齐; 滚动本身发 <see cref="Scrolled"/>
-    /// 供壳画自绘细滑条。分隔条拖动用 <see cref="OnColumnWidthChanging"/> 整体禁掉 ——
-    /// 固定宽度的对话框里拖出来的列宽没有任何好结果。</para>
+    /// 供壳画自绘细滑条。</para>
+    /// <para>批124: 列头结尾分隔线用 Region 裁掉 (见 <see cref="ClipHeaderEnd"/>);
+    /// 分隔条拖动保留 (批123 曾禁, 用户要求恢复), 由窗体区分用户拖动/程序设宽。</para>
     /// </summary>
     class ScrollListView : ListView
     {
@@ -1566,15 +1567,43 @@ namespace StereoSplitter
         }
 
         /// <summary>
-        /// 分隔条一律不可拖 (批123): 拖动会改变列宽, 而列宽由窗体统一分配 —— 拖出来的
-        /// 结果必然被拉回, 还会在列头右端拖出一条悬空的"多余分隔线"。宽度变化请求直接
-        /// 取消并保持原宽。只拦用户拖动; 程序设宽走 ColumnWidthChanged, 不经过这里。
+        /// 分隔条拖动保留 (批124, 批123 曾整体禁掉): 用户可以拖动调整列宽, 结果被尊重;
+        /// 窗体侧用 ColumnWidthChanged 记住"用户调过", 自动对齐让位 (见校准窗 LayoutListCols)。
         /// </summary>
-        protected override void OnColumnWidthChanging(ColumnWidthChangingEventArgs e)
+
+        [System.Runtime.InteropServices.DllImport("gdi32.dll")]
+        static extern IntPtr CreateRectRgn(int x1, int y1, int x2, int y2);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
+        [System.Runtime.InteropServices.DllImport("gdi32.dll")]
+        static extern bool DeleteObject(IntPtr hWnd);
+
+        int headerClipW = -1;   // 已套用裁剪的列头宽 (同宽不重复套, 防闪烁)
+
+        /// <summary>
+        /// 裁掉列头右端的结尾分隔线 (批124): 列头控件永远在最后一列右缘画一条分隔线 ——
+        /// 高度只有列头那么高 (实测 25px), 所以是一小段: 正常态贴着右框 (x=680),
+        /// 溢出态悬在空白带中间 (x=659, 离框 21px)。像素扫描 CALIB-VSCAN 实锤。
+        /// 给列头子窗口套 Region 排除最右 2px, 这条线从任何状态下消失; 列头自己不横滚
+        /// (列总宽对齐它), Region 无需跟随滚动。
+        /// </summary>
+        void ClipHeaderEnd()
         {
-            base.OnColumnWidthChanging(e);
-            e.Cancel = true;
-            e.NewWidth = Columns[e.ColumnIndex].Width;
+            if (!IsHandleCreated) return;
+            try
+            {
+                IntPtr hh = SendMessage(Handle, LVM_GETHEADER, IntPtr.Zero, IntPtr.Zero);
+                var rc = new RECT();
+                if (hh == IntPtr.Zero || !GetWindowRect(hh, ref rc)) return;
+                int w = rc.Right - rc.Left;
+                if (w <= 4 || w == headerClipW) return;
+                IntPtr rgn = CreateRectRgn(0, 0, w - 2, rc.Bottom - rc.Top);
+                // bRedraw 必须为 true: 裁剪前已经画上去的分隔线像素不会自己消失 (实测溢出态
+                // 截图残留), 让系统立刻按新 Region 重绘列头。
+                if (SetWindowRgn(hh, rgn, true) != 0) headerClipW = w;
+                else DeleteObject(rgn);   // 系统拒收才自己释放; 收了就归系统管
+            }
+            catch { }
         }
 
         protected override void WndProc(ref Message m)
@@ -1627,6 +1656,7 @@ namespace StereoSplitter
         {
             var h = LayoutSettled;
             if (h != null) h(this, EventArgs.Empty);
+            ClipHeaderEnd();   // LV 刚排完列头, 顺手把结尾分隔线裁掉 (宽度变了会重裁)
         }
     }
 

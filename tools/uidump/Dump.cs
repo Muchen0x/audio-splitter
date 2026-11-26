@@ -633,6 +633,8 @@ namespace StereoSplitter
                             + " clientW=" + lv12.ClientSize.Width + " barW=" + barW2
                             + " colSum=" + colSum2
                             + " verdict=" + (hdrOk2 ? "OK" : "FAIL<<<"));
+                        // 批124: 列头 Region 诊断 —— 结尾分隔线裁剪是否真的套上了
+                        Console.Out.WriteLine("CALIB-HDRRGN " + HeaderRgnDump(lv12));
                         ScrollInfo? s0 = VertScrollInfo(lv12);
                         if (s0.HasValue)
                         {
@@ -655,6 +657,24 @@ namespace StereoSplitter
                         using (var g = Graphics.FromImage(bmp2))
                             g.CopyFromScreen(calibScreen2.Location, Point.Empty, calibScreen2.Size);
                         bmp2.Save("calib-scroll.png", System.Drawing.Imaging.ImageFormat.Png);
+                        // 批124: 溢出态右上角特写 + 像素级竖线扫描 —— "状态旁边那一小段分隔条"取证。
+                        if (lv12 != null && lv12.IsHandleCreated)
+                        {
+                            Console.Out.WriteLine("CALIB-HDRRGN2 " + HeaderRgnDump(lv12));   // 截图时刻的 Region 现状
+                            ScanVLines(bmp2, cf2, lv12, "OVERFLOW");
+                            int cw = 80, ch = 48;
+                            using (var crop = new Bitmap(cw * 4, ch * 4))
+                            {
+                                using (var g2 = Graphics.FromImage(crop))
+                                {
+                                    g2.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                                    g2.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                                    g2.DrawImage(bmp2, new Rectangle(0, 0, cw * 4, ch * 4),
+                                        new Rectangle(lv12.Width - cw, 0, cw, ch), GraphicsUnit.Pixel);
+                                }
+                                crop.Save("calib-scroll-corner.png", System.Drawing.Imaging.ImageFormat.Png);
+                            }
+                        }
                     }
                     cf2.Dispose();
                     Rectangle calibScreen = cf.RectangleToScreen(cf.ClientRectangle);
@@ -663,6 +683,7 @@ namespace StereoSplitter
                         using (var g = Graphics.FromImage(bmp))
                             g.CopyFromScreen(calibScreen.Location, Point.Empty, calibScreen.Size);
                         bmp.Save("calib-styled.png", System.Drawing.Imaging.ImageFormat.Png);
+                        ScanVLines(bmp, cf, lvCalib, "NORMAL");   // 批124: 正常态右上竖线扫描取证
                         // 批122: 右上角特写 (放大 4 倍) —— 查列头右端的"多余分隔条"是什么
                         if (lvCalib != null && lvCalib.IsHandleCreated)
                         {
@@ -3812,6 +3833,56 @@ namespace StereoSplitter
             si.fMask = 0x1 | 0x2 | 0x4;   // SIF_RANGE | SIF_PAGE | SIF_POS
             if (!GetScrollInfo(c.Handle, nBar, ref si) || si.nMax <= 0 || si.nPage >= si.nMax + 1) return null;
             return si;
+        }
+
+        /// <summary>读控件列头子窗口当前 Region 框 (批124 诊断); 没套 Region 返回 "none"。</summary>
+        static string HeaderRgnDump(ListView lv)
+        {
+            if (lv == null || !lv.IsHandleCreated) return "nohandle";
+            IntPtr hh = SendMessage(lv.Handle, 0x101F, IntPtr.Zero, IntPtr.Zero);
+            if (hh == IntPtr.Zero) return "noheader";
+            IntPtr rgn = CreateRectRgn(0, 0, 0, 0);
+            int type = GetWindowRgn(hh, rgn);
+            var rc = new RECT();
+            if (type == 0 /*NULLREGION*/ || GetRgnBox(rgn, ref rc) == 0) return "nullregion";
+            return "type=" + type + " box=" + (rc.Right - rc.Left) + "x" + (rc.Bottom - rc.Top);
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern int GetWindowRgn(IntPtr hWnd, IntPtr hRgn);
+        [System.Runtime.InteropServices.DllImport("gdi32.dll")]
+        static extern int GetRgnBox(IntPtr hRgn, ref RECT rc);
+        [System.Runtime.InteropServices.DllImport("gdi32.dll")]
+        static extern IntPtr CreateRectRgn(int x1, int y1, int x2, int y2);
+
+        /// <summary>
+        /// 像素级竖线扫描 (批124 取证): 在 lv 右上区域逐列统计非白像素 (R&lt;242, 能抓到浅灰
+        /// 网格线/分隔条), 找它们落在哪个 x —— 用户报告"状态旁边还有一小段分隔条",
+        /// 先用数据定位它再修。输出 x 为 lv 客户区坐标, h=列头带, r=行带 (30..100px)。
+        /// </summary>
+        static void ScanVLines(Bitmap bmp, Control host, Control target, string tag)
+        {
+            if (bmp == null || target == null || !target.IsHandleCreated) return;
+            Point tl = host.PointToClient(target.PointToScreen(Point.Empty));
+            int right = tl.X + target.ClientSize.Width;
+            int x0 = Math.Max(0, right - 70);
+            var hits = new System.Collections.Generic.List<string>();
+            for (int x = x0; x < right; x++)
+            {
+                int darkHdr = 0, darkRow = 0, minR = 255;
+                for (int y = tl.Y + 1; y < tl.Y + 100 && y < bmp.Height; y++)
+                {
+                    Color c = bmp.GetPixel(x, y);
+                    if (c.R < minR) minR = c.R;
+                    bool dark = c.R < 242;
+                    if (!dark) continue;
+                    if (y < tl.Y + 30) darkHdr++; else darkRow++;
+                }
+                if (darkHdr >= 5 || darkRow >= 20)
+                    hits.Add((x - tl.X) + ":h" + darkHdr + "/r" + darkRow + "/min" + minR);
+            }
+            Console.Out.WriteLine("CALIB-VSCAN[" + tag + "] clientW=" + target.ClientSize.Width
+                + " lines=" + (hits.Count > 0 ? string.Join(" ", hits.ToArray()) : "none"));
         }
 
         /// <summary>按 RoundLogShell 的几何算滑块顶边 y (壳局部) 与滑块高。</summary>
